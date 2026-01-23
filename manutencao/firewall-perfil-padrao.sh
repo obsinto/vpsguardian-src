@@ -157,7 +157,6 @@ echo ""
 # =========================================
 log_info "Permitindo tráfego loopback..."
 ufw allow in on lo > /dev/null 2>&1
-ufw allow out on lo > /dev/null 2>&1
 log_success "Loopback configurado"
 echo ""
 
@@ -288,10 +287,6 @@ if command -v tailscale &> /dev/null && ip link show tailscale0 &> /dev/null 2>&
         # Permitir todo tráfego de entrada na interface tailscale0
         ufw allow in on tailscale0 comment 'Tailscale all' > /dev/null 2>&1
         log_success "  ✓ Permitido todo tráfego de entrada em tailscale0"
-
-        # Permitir SSH na interface tailscale0
-        ufw allow in on tailscale0 to any port 22 comment 'Tailscale SSH' > /dev/null 2>&1
-        log_success "  ✓ Permitido SSH em tailscale0"
 
         # Permitir todo tráfego de saída na interface tailscale0
         ufw allow out on tailscale0 comment 'Tailscale out' > /dev/null 2>&1

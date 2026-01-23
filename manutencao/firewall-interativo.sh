@@ -297,10 +297,6 @@ apply_tailscale_rules() {
     ufw allow in on tailscale0 comment 'Tailscale all' > /dev/null 2>&1
     log_success "  ✓ Permitido todo tráfego de entrada em tailscale0"
 
-    # Permitir SSH na interface tailscale0
-    ufw allow in on tailscale0 to any port 22 comment 'Tailscale SSH' > /dev/null 2>&1
-    log_success "  ✓ Permitido SSH em tailscale0"
-
     # Permitir todo tráfego de saída na interface tailscale0
     ufw allow out on tailscale0 comment 'Tailscale out' > /dev/null 2>&1
     log_success "  ✓ Permitido tráfego de saída em tailscale0"
@@ -428,7 +424,6 @@ apply_firewall_secure() {
 
     log_info "Configurando loopback (Cloudflare Tunnel)..."
     ufw allow in on lo > /dev/null 2>&1
-    ufw allow out on lo > /dev/null 2>&1
 
     log_info "Permitindo HTTP/HTTPS público..."
     ufw allow 80/tcp comment 'HTTP' > /dev/null 2>&1
@@ -491,7 +486,6 @@ apply_firewall_hybrid() {
 
     log_info "Configurando loopback..."
     ufw allow in on lo > /dev/null 2>&1
-    ufw allow out on lo > /dev/null 2>&1
 
     log_info "Permitindo HTTP/HTTPS público..."
     ufw allow 80/tcp comment 'HTTP' > /dev/null 2>&1
@@ -573,7 +567,6 @@ apply_firewall_basic() {
 
     log_info "Configurando loopback..."
     ufw allow in on lo > /dev/null 2>&1
-    ufw allow out on lo > /dev/null 2>&1
 
     log_info "Permitindo HTTP/HTTPS público..."
     ufw allow 80/tcp comment 'HTTP' > /dev/null 2>&1

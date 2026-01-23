@@ -9,7 +9,6 @@ sudo ufw default allow outgoing
 
 # Loopback (essencial)
 sudo ufw allow in on lo
-sudo ufw allow out on lo
 
 # HTTP/HTTPS (Coolify - Público)
 sudo ufw allow 80/tcp comment 'HTTP'
@@ -42,7 +41,7 @@ docker run --rm --network coolify alpine sh -c "wget -qO- https://api.github.com
 
 echo ""
 echo "2️⃣ Docker → Host SSH:"
-docker run --rm --network coolify --add-host=host.docker.internal:host-gateway alpine sh -c "apk add --no-cache netcat-openbsd && nc -z -w 5 host.docker.internal 22" && echo "✅ SSH (Porta 22 Host) OK" || echo "❌ SSH (Porta 22 Host) Falhou" funciona
+docker run --rm --network coolify --add-host=host.docker.internal:host-gateway alpine sh -c "apk add --no-cache netcat-openbsd && nc -z -w 5 host.docker.internal 22" && echo "✅ SSH (Porta 22 Host) OK" || echo "❌ SSH (Porta 22 Host) Falhou"
 
 echo ""
 echo "🎉 Tudo configurado! Pode testar deploy no Coolify!"

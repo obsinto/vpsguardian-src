@@ -65,8 +65,14 @@ while [[ $# -gt 0 ]]; do
             echo "  NEW_SERVER_PORT=\"22\""
             echo "  SSH_PRIVATE_KEY_PATH=\"/root/.ssh/id_rsa\""
             echo "  BACKUP_FILE=\"/var/backups/vpsguardian/coolify/backup.tar.gz\""
+            echo "  MIGRATE_PROXY=\"true\"  # or \"false\" for clean proxy install"
+            echo "  KEY_ROTATION_MODE=\"1\"  # 1=keep same key, 2=rotate key"
             echo ""
             echo "Environment variables can also be used to set configuration."
+            echo ""
+            echo "Proxy Migration Options:"
+            echo "  MIGRATE_PROXY=true   - Migrate proxy with SSL certs (default)"
+            echo "  MIGRATE_PROXY=false  - Clean proxy installation (no certs)"
             exit 0
             ;;
         *)
@@ -466,6 +472,89 @@ fi
 
 # Verificar dependências necessárias
 check_and_install_dependencies
+
+### ========== PROXY MIGRATION CHOICE ==========
+log_section "Proxy Migration Strategy"
+
+# Detectar se há configurações de proxy no backup
+PROXY_EXISTS=false
+DETECTED_PROXY_CERTS=0
+DETECTED_PROXY_CONFIGS=0
+
+if [ -d "$TEMP_EXTRACT_DIR/proxy-config" ]; then
+    DETECTED_PROXY_CERTS=$(find "$TEMP_EXTRACT_DIR/proxy-config" -name "*.crt" -o -name "*.pem" -o -name "*.key" 2>/dev/null | wc -l)
+    DETECTED_PROXY_CONFIGS=$(find "$TEMP_EXTRACT_DIR/proxy-config" -name "*.conf" -o -name "*.toml" -o -name "*.yaml" 2>/dev/null | wc -l)
+
+    if [ $DETECTED_PROXY_CERTS -gt 0 ] || [ $DETECTED_PROXY_CONFIGS -gt 0 ]; then
+        PROXY_EXISTS=true
+    fi
+fi
+
+# Decisão sobre migração do proxy
+MIGRATE_PROXY="${MIGRATE_PROXY:-}"
+
+if [ "$PROXY_EXISTS" = true ]; then
+    echo ""
+    log_success "Configurações de proxy detectadas no backup!"
+    echo ""
+    echo "  Encontrado:"
+    echo "    • $DETECTED_PROXY_CERTS certificado(s) SSL/TLS"
+    echo "    • $DETECTED_PROXY_CONFIGS arquivo(s) de configuração"
+    echo ""
+    echo "  Isso pode incluir:"
+    echo "    • Cloudflare Origin Certificates"
+    echo "    • Certificados SSL personalizados"
+    echo "    • Configurações de proxy/middleware (Traefik/Caddy/Nginx)"
+    echo ""
+
+    if [ "$AUTO_MODE" = false ]; then
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "  Estratégia de Migração do Proxy"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        echo "  ${GREEN}1. Migrar COM proxy${NC} (Recomendado)"
+        echo "     • Transfere certificados SSL/TLS"
+        echo "     • Preserva configurações personalizadas"
+        echo "     • Mantém Cloudflare Origin Certificates"
+        echo "     • Aplicações funcionam imediatamente com SSL"
+        echo ""
+        echo "  ${YELLOW}2. Migrar SEM proxy${NC} (Instalação limpa)"
+        echo "     • Proxy será reinstalado do zero"
+        echo "     • Certificados precisarão ser reconfigurados"
+        echo "     • Bom para mudança de estratégia de proxy"
+        echo "     • Aplicações podem precisar reconfigurar SSL"
+        echo ""
+        read -p "Escolha (1-2, padrão=1): " PROXY_CHOICE
+        PROXY_CHOICE=${PROXY_CHOICE:-1}
+
+        if [ "$PROXY_CHOICE" = "1" ]; then
+            MIGRATE_PROXY="true"
+        else
+            MIGRATE_PROXY="false"
+        fi
+        echo ""
+    else
+        # Modo automático: usar variável de ambiente ou padrão (migrar com proxy)
+        MIGRATE_PROXY="${MIGRATE_PROXY:-true}"
+        if [ "$MIGRATE_PROXY" = "true" ]; then
+            log_info "Modo automático: Migrando COM proxy (MIGRATE_PROXY=true)"
+        else
+            log_info "Modo automático: Migrando SEM proxy (MIGRATE_PROXY=false)"
+        fi
+    fi
+
+    if [ "$MIGRATE_PROXY" = "true" ]; then
+        log_success "✅ Proxy será migrado com todas as configurações"
+    else
+        log_warning "⚠️  Proxy NÃO será migrado (instalação limpa no servidor novo)"
+    fi
+else
+    log_info "ℹ️  Nenhuma configuração personalizada de proxy detectada no backup"
+    log_info "   Proxy será instalado do zero no servidor novo"
+    MIGRATE_PROXY="false"
+fi
+
+echo ""
 
 ### ========== SSH SETUP ==========
 log_section "SSH Setup"
@@ -1029,65 +1118,44 @@ echo ""
 # ==============================================================================
 
 # ==============================================================================
-# DETECÇÃO DE CONFIGURAÇÕES DO PROXY (salvar para usar após Final Install)
+# PREPARAÇÃO DAS CONFIGURAÇÕES DO PROXY (baseado na escolha anterior)
 # ==============================================================================
-log_info "🔍 Verificando configurações do proxy..."
+log_info "🔍 Preparando configurações do proxy..."
 
 PROXY_SOURCE=""
 PROXY_CERTS_COUNT=0
 PROXY_CONFIGS_COUNT=0
-PROXY_RESTORE="n"
 
-if [ -d "$TEMP_EXTRACT_DIR/proxy-config" ]; then
-    # Verificar se há arquivos realmente customizados
+if [ "$MIGRATE_PROXY" = "true" ] && [ -d "$TEMP_EXTRACT_DIR/proxy-config" ]; then
+    # Contar arquivos de proxy
     PROXY_CERTS_COUNT=$(find "$TEMP_EXTRACT_DIR/proxy-config" -name "*.crt" -o -name "*.pem" -o -name "*.key" 2>/dev/null | wc -l)
     PROXY_CONFIGS_COUNT=$(find "$TEMP_EXTRACT_DIR/proxy-config" -name "*.conf" -o -name "*.toml" -o -name "*.yaml" 2>/dev/null | wc -l)
 
     if [ $PROXY_CERTS_COUNT -gt 0 ] || [ $PROXY_CONFIGS_COUNT -gt 0 ]; then
-        echo ""
-        log_warning "Configurações personalizadas de proxy detectadas!"
-        echo ""
-        echo "Foram encontradas:"
-        echo "  - $PROXY_CERTS_COUNT certificado(s) SSL/TLS"
-        echo "  - $PROXY_CONFIGS_COUNT arquivo(s) de configuração"
-        echo ""
-        echo "Isso pode incluir:"
-        echo "  • Cloudflare Origin Certificates"
-        echo "  • Certificados SSL personalizados"
-        echo "  • Configurações de proxy/middleware"
-        echo ""
+        # Copiar para temp local antes de limpar o backup
+        TEMP_PROXY_BACKUP="/tmp/coolify-proxy-$$"
+        log_info "📦 Preparando configurações do proxy para migração..."
+        mkdir -p "$TEMP_PROXY_BACKUP"
+        cp -r "$TEMP_EXTRACT_DIR/proxy-config"/. "$TEMP_PROXY_BACKUP/" 2>/dev/null
 
-        if [ "$AUTO_MODE" = false ]; then
-            read -p "Deseja restaurar essas configurações no servidor novo? (s/N): " PROXY_RESTORE
-            PROXY_RESTORE=${PROXY_RESTORE:-n}
-        fi
-
-        if [[ "$PROXY_RESTORE" =~ ^[Ss]$ ]]; then
-            # Copiar para temp local antes de limpar o backup
-            TEMP_PROXY_BACKUP="/tmp/coolify-proxy-$$"
-            log_info "📦 Criando backup temporário das configurações do proxy..."
-            mkdir -p "$TEMP_PROXY_BACKUP"
-            cp -r "$TEMP_EXTRACT_DIR/proxy-config"/. "$TEMP_PROXY_BACKUP/" 2>/dev/null
-
-            if [ $? -eq 0 ]; then
-                PROXY_SOURCE="$TEMP_PROXY_BACKUP"
-                log_success "✅ Configurações do proxy salvas para transferência posterior"
-                log_info "   Certificados: $PROXY_CERTS_COUNT | Configs: $PROXY_CONFIGS_COUNT"
-            else
-                log_error "❌ Falha ao criar backup temporário do proxy"
-            fi
+        if [ $? -eq 0 ]; then
+            PROXY_SOURCE="$TEMP_PROXY_BACKUP"
+            log_success "✅ Configurações do proxy preparadas"
+            log_info "   Certificados: $PROXY_CERTS_COUNT | Configs: $PROXY_CONFIGS_COUNT"
         else
-            log_info "Configurações do proxy não serão restauradas (usando padrões do Coolify)"
+            log_error "❌ Falha ao preparar configurações do proxy"
         fi
     else
-        log_info "Nenhuma configuração personalizada de proxy detectada (usando padrões)"
+        log_info "Nenhuma configuração personalizada encontrada no backup"
     fi
+elif [ "$MIGRATE_PROXY" = "false" ]; then
+    log_info "Proxy não será migrado (instalação limpa conforme escolha anterior)"
 else
     log_info "Nenhum diretório proxy-config encontrado no backup"
 fi
 echo ""
 # ==============================================================================
-# FIM DA DETECÇÃO DO PROXY
+# FIM DA PREPARAÇÃO DO PROXY
 # ==============================================================================
 
 # Limpar diretório temporário
@@ -1404,7 +1472,7 @@ else
 fi
 
 ### ========== TRANSFER PROXY CONFIGS (AFTER FINAL INSTALL) ==========
-if [ -n "$PROXY_SOURCE" ] && [ -d "$PROXY_SOURCE" ]; then
+if [ "$MIGRATE_PROXY" = "true" ] && [ -n "$PROXY_SOURCE" ] && [ -d "$PROXY_SOURCE" ]; then
     log_section "Transfer Proxy Configurations"
 
     log_info "Transferindo configurações do proxy..."
@@ -1442,9 +1510,21 @@ if [ -n "$PROXY_SOURCE" ] && [ -d "$PROXY_SOURCE" ]; then
         log_warning "Certificados SSL e configs personalizadas podem não estar disponíveis"
     fi
     echo ""
+elif [ "$MIGRATE_PROXY" = "false" ]; then
+    log_section "Proxy Configuration"
+    log_info "⏭️  Proxy não migrado conforme escolha anterior"
+    echo ""
+    echo "  O proxy será instalado do zero no servidor novo."
+    echo "  Você precisará:"
+    echo "    • Reconfigurar certificados SSL (se necessário)"
+    echo "    • Reconfigurar Cloudflare Origin Certificates (se usado)"
+    echo "    • Reconfigurar middlewares personalizados (se houver)"
+    echo ""
+    log_info "Acesse o Coolify para configurar o proxy: http://$NEW_SERVER_IP:8000"
+    echo ""
 else
-    if [[ "$PROXY_RESTORE" =~ ^[Ss]$ ]]; then
-        log_warning "⚠️  Proxy deveria ser restaurado mas SOURCE não está disponível"
+    if [ "$MIGRATE_PROXY" = "true" ]; then
+        log_warning "⚠️  Proxy deveria ser migrado mas configurações não estão disponíveis"
     fi
 fi
 
@@ -1579,11 +1659,29 @@ echo "  📍 New server: http://$NEW_SERVER_IP:8000"
 echo "  📊 Container status: See $MIGRATION_LOG_DIR/docker-status.txt"
 echo "  📋 All logs: $MIGRATION_LOG_DIR/"
 echo ""
+echo "  📦 What was migrated:"
+echo "     ✅ Coolify database (applications, servers, settings)"
+echo "     ✅ SSH keys (for server connections)"
+echo "     ✅ APP_KEY (encryption keys)"
+if [ "$MIGRATE_PROXY" = "true" ]; then
+echo "     ✅ Proxy configurations ($PROXY_CERTS_COUNT certs, $PROXY_CONFIGS_COUNT configs)"
+else
+echo "     ⏭️  Proxy (skipped - clean install)"
+fi
+echo ""
 echo "  ⚠️  NEXT STEPS:"
+if [ "$MIGRATE_PROXY" = "false" ]; then
+echo "  1. Configure proxy and SSL certificates in Coolify"
+echo "  2. Update DNS records to point to $NEW_SERVER_IP"
+echo "  3. Test Coolify access: http://$NEW_SERVER_IP:8000"
+echo "  4. Verify all applications are running"
+echo "  5. Configure backup scripts on new server"
+else
 echo "  1. Update DNS records to point to $NEW_SERVER_IP"
 echo "  2. Test Coolify access: http://$NEW_SERVER_IP:8000"
 echo "  3. Verify all applications are running"
 echo "  4. Configure backup scripts on new server"
+fi
 echo ""
 
 ### ========== OFERECER MIGRAÇÃO DE VOLUMES/APPS ==========

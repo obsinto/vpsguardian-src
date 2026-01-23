@@ -39,6 +39,7 @@ nano /opt/vpsguardian/config/migration.conf
 # Conteúdo mínimo:
 # NEW_SERVER_IP="192.168.1.100"
 # SSH_PRIVATE_KEY_PATH="/root/.ssh/id_rsa"
+# MIGRATE_PROXY="true"  # ou "false" para instalar proxy do zero
 
 # 3. Executar migração automática
 sudo /opt/vpsguardian/migrar/migrar-coolify.sh --config=/opt/vpsguardian/config/migration.conf --auto
@@ -110,6 +111,29 @@ sudo /opt/vpsguardian/migrar/migrar-coolify.sh --auto
 sudo /opt/vpsguardian/migrar/migrar-coolify.sh \
   --config=/opt/vpsguardian/config/migration.conf \
   --auto
+```
+
+**Durante a Migração - Escolha do Proxy:**
+
+O script irá perguntar se você deseja migrar as configurações do proxy:
+
+- **COM Proxy (Recomendado):**
+  - ✅ Migra certificados SSL/TLS
+  - ✅ Preserva Cloudflare Origin Certificates
+  - ✅ Mantém configurações personalizadas
+  - ✅ Aplicações funcionam imediatamente com SSL
+
+- **SEM Proxy (Instalação Limpa):**
+  - ⚠️ Proxy instalado do zero
+  - ⚠️ Certificados precisam ser reconfigurados
+  - ⚠️ Útil para mudança de estratégia de proxy
+  - ⚠️ Aplicações podem precisar reconfigurar SSL
+
+Para modo automático, defina no arquivo de configuração:
+```bash
+MIGRATE_PROXY="true"   # Migrar com proxy
+# ou
+MIGRATE_PROXY="false"  # Proxy do zero
 ```
 
 ### Passo 4: Validar (Servidor Novo)

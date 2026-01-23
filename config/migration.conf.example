@@ -37,6 +37,20 @@ BACKUP_FILE=""
 # OU especifique um backup específico:
 # BACKUP_FILE="/var/backups/vpsguardian/coolify/20241209_153045.tar.gz"
 
+### ========== PROXY ==========
+# Migrar configurações do proxy (certificados SSL, configs personalizadas)?
+# true  = Migra certificados e configurações do proxy
+# false = Proxy será instalado do zero (sem certificados antigos)
+# Padrão: true (recomendado para preservar certificados SSL)
+MIGRATE_PROXY="true"
+
+### ========== CHAVES DE CRIPTOGRAFIA ==========
+# Estratégia para APP_KEY durante migração
+# 1 = Manter mesma chave (recomendado para migrações)
+# 2 = Gerar nova chave e rotacionar (segurança)
+# Padrão: 1
+KEY_ROTATION_MODE="1"
+
 ################################################################################
 # NOTAS IMPORTANTES:
 #

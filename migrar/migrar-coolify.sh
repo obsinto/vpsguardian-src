@@ -1269,25 +1269,29 @@ if [ "$KEY_STRATEGY" = "1" ]; then
     # Aplicar no servidor novo
     log_info "Aplicando chaves no servidor novo..."
 
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s" << EOF
+    # CORREÇÃO: Passar variáveis de forma segura via stdin
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_TO_SET") $(printf '%q' "$PREV_KEYS_TO_SET")" << 'EOF'
+        APP_KEY_TO_SET="$1"
+        PREV_KEYS_TO_SET="$2"
+
         mkdir -p /data/coolify/source
         ENV_FILE="/data/coolify/source/.env"
-        touch "\$ENV_FILE"
+        touch "$ENV_FILE"
 
         # Remover linhas antigas
-        sed -i '/^APP_KEY=/d' "\$ENV_FILE"
-        sed -i '/^APP_PREVIOUS_KEYS=/d' "\$ENV_FILE"
+        sed -i '/^APP_KEY=/d' "$ENV_FILE"
+        sed -i '/^APP_PREVIOUS_KEYS=/d' "$ENV_FILE"
 
-        # Aplicar APP_KEY do backup (mesma)
-        echo "APP_KEY=$APP_KEY_TO_SET" >> "\$ENV_FILE"
+        # Aplicar APP_KEY do backup (mesma) - usando printf para evitar problemas com caracteres especiais
+        printf 'APP_KEY=%s\n' "$APP_KEY_TO_SET" >> "$ENV_FILE"
 
         # Aplicar APP_PREVIOUS_KEYS se tiver
         if [ -n "$PREV_KEYS_TO_SET" ]; then
-            echo "APP_PREVIOUS_KEYS=$PREV_KEYS_TO_SET" >> "\$ENV_FILE"
+            printf 'APP_PREVIOUS_KEYS=%s\n' "$PREV_KEYS_TO_SET" >> "$ENV_FILE"
         fi
 
         # Limpeza
-        sed -i '/^$/d' "\$ENV_FILE"
+        sed -i '/^$/d' "$ENV_FILE"
 EOF
 
     check_success $? "Mesma chave aplicada com sucesso"
@@ -1330,19 +1334,22 @@ else
     # Aplicar no servidor novo
     log_info "Aplicando rotação de chaves..."
 
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s" << EOF
+    # CORREÇÃO: Passar variáveis de forma segura via stdin
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$KEYS_TO_MIGRATE")" << 'EOF'
+        KEYS_TO_MIGRATE="$1"
+
         mkdir -p /data/coolify/source
         ENV_FILE="/data/coolify/source/.env"
-        touch "\$ENV_FILE"
+        touch "$ENV_FILE"
 
         # Remover linha antiga de APP_PREVIOUS_KEYS
-        sed -i '/^APP_PREVIOUS_KEYS=/d' "\$ENV_FILE"
+        sed -i '/^APP_PREVIOUS_KEYS=/d' "$ENV_FILE"
 
-        # Adicionar todas as chaves (atual + antigas)
-        echo "APP_PREVIOUS_KEYS=$KEYS_TO_MIGRATE" >> "\$ENV_FILE"
+        # Adicionar todas as chaves (atual + antigas) - usando printf para evitar problemas com caracteres especiais
+        printf 'APP_PREVIOUS_KEYS=%s\n' "$KEYS_TO_MIGRATE" >> "$ENV_FILE"
 
         # Limpeza
-        sed -i '/^$/d' "\$ENV_FILE"
+        sed -i '/^$/d' "$ENV_FILE"
 
         # NOTA: APP_KEY será gerada pelo Coolify no Final Install
 EOF

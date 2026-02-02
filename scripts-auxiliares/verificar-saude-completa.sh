@@ -161,6 +161,25 @@ print_section "Load Average"
 LOAD=$(uptime | awk -F'load average:' '{print $2}' | xargs)
 echo -e "  ${WHITE}1min, 5min, 15min:${NC} $LOAD"
 
+print_section "Processos"
+TOTAL_PROCESSES=$(ps aux | wc -l)
+echo -e "  ${WHITE}Total de processos:${NC} $TOTAL_PROCESSES"
+
+# Verificar processos zombie
+ZOMBIE_COUNT=$(ps aux | awk '$8=="Z" || $8=="Z+" {print}' | wc -l)
+if [ "$ZOMBIE_COUNT" -eq 0 ]; then
+    echo -e "  $CHECK Processos zombie: ${GREEN}0${NC}"
+else
+    echo -e "  $WARN Processos zombie: ${YELLOW}$ZOMBIE_COUNT${NC}"
+    echo -e "  ${WHITE}Detalhes dos zombies:${NC}"
+    ps aux | awk '$8=="Z" || $8=="Z+" {printf "    • PID: %-6s PPID: %-6s CMD: %s\n", $2, $3, $11}' | head -5
+    if [ "$ZOMBIE_COUNT" -gt 5 ]; then
+        echo -e "    ${YELLOW}... e mais $((ZOMBIE_COUNT - 5)) zombie(s)${NC}"
+    fi
+    echo -e "  ${YELLOW}Nota:${NC} Processos zombie geralmente são inofensivos,"
+    echo -e "        mas muitos podem indicar problema com processo pai."
+fi
+
 ################################################################################
 # 3. FERRAMENTAS INSTALADAS
 ################################################################################
@@ -679,6 +698,12 @@ if [ "$SECURITY_UPDATES" -gt 0 ]; then
     ISSUES_FOUND=$((ISSUES_FOUND + 1))
 fi
 
+# Muitos processos zombie (-5)
+if [ "$ZOMBIE_COUNT" -gt 10 ]; then
+    HEALTH_SCORE=$((HEALTH_SCORE - 5))
+    ISSUES_FOUND=$((ISSUES_FOUND + 1))
+fi
+
 echo ""
 if [ "$HEALTH_SCORE" -ge 90 ]; then
     echo -e "  ${GREEN}🏆 SAÚDE DO SERVIDOR: EXCELENTE${NC}"
@@ -726,6 +751,11 @@ if [ "$ISSUES_FOUND" -gt 0 ]; then
 
     if [ "$SECURITY_UPDATES" -gt 0 ]; then
         echo -e "    • Atualizar sistema: ${CYAN}sudo apt update && sudo apt upgrade${NC}"
+    fi
+
+    if [ "$ZOMBIE_COUNT" -gt 10 ]; then
+        echo -e "    • Muitos processos zombie detectados: investigar processos pais"
+        echo -e "      Veja detalhes com: ${CYAN}ps aux | awk '\$8==\"Z\"'${NC}"
     fi
 fi
 

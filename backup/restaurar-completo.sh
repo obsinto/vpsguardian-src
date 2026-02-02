@@ -23,6 +23,7 @@ init_script
 MODE=""
 BACKUP_COOLIFY_DIR="${BACKUP_COOLIFY_DIR:-/var/backups/vpsguardian/coolify}"
 BACKUP_VOLUMES_DIR="${BACKUP_VOLUMES_DIR:-/var/backups/vpsguardian/volumes}"
+DRY_RUN=false
 
 # Configuração servidor remoto (se aplicável)
 REMOTE_IP=""
@@ -57,6 +58,18 @@ while [[ $# -gt 0 ]]; do
             SSH_KEY="${1#*=}"
             shift
             ;;
+        --coolify-dir=*)
+            BACKUP_COOLIFY_DIR="${1#*=}"
+            shift
+            ;;
+        --volumes-dir=*)
+            BACKUP_VOLUMES_DIR="${1#*=}"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         -h|--help)
             cat << EOF
 ╔════════════════════════════════════════════════════════════════╗
@@ -78,10 +91,13 @@ MODOS DE USO:
    ./restaurar-completo.sh --remote
 
    Opções adicionais:
-   --ip=X.X.X.X       IP do novo servidor
-   --user=root        Usuário SSH (padrão: root)
-   --port=22          Porta SSH (padrão: 22)
-   --key=/path        Caminho da chave SSH privada
+   --ip=X.X.X.X            IP do novo servidor
+   --user=root             Usuário SSH (padrão: root)
+   --port=22               Porta SSH (padrão: 22)
+   --key=/path             Caminho da chave SSH privada
+   --coolify-dir=/path     Diretório dos backups do Coolify
+   --volumes-dir=/path     Diretório dos backups de volumes
+   --dry-run               Simular sem executar (apenas mostrar o que seria feito)
 
 EXEMPLOS:
 
@@ -93,6 +109,14 @@ EXEMPLOS:
 
   # Migração automática (não-interativo)
   ./restaurar-completo.sh --remote --ip=192.168.1.100
+
+  # Restauração com backups em pasta customizada
+  ./restaurar-completo.sh --local \
+    --coolify-dir=/home/user/backups/coolify \
+    --volumes-dir=/home/user/backups/volumes
+
+  # Simular restauração (dry-run)
+  ./restaurar-completo.sh --local --dry-run
 
 PROCESSO:
   1. Verificar backups disponíveis
@@ -130,6 +154,9 @@ fi
 log_section "VPS Guardian - Restauração Completa v2.0"
 echo ""
 echo "Modo: $(echo $MODE | tr '[:lower:]' '[:upper:]')"
+if [ "$DRY_RUN" = true ]; then
+    log_warning "⚠️  DRY-RUN MODE (SIMULAÇÃO - Nada será modificado!)"
+fi
 echo ""
 
 if [ "$MODE" = "remote" ]; then
@@ -157,28 +184,108 @@ if [ "$MODE" = "local" ]; then
     ### STEP 1: Verificar backups disponíveis
     log_section "Step 1/4: Verificar Backups Disponíveis"
 
-    if [ ! -d "$BACKUP_COOLIFY_DIR" ]; then
-        log_error "Diretório de backups do Coolify não encontrado: $BACKUP_COOLIFY_DIR"
-        exit 1
-    fi
+    # Verificar se diretório existe e tem backups
+    while true; do
+        if [ ! -d "$BACKUP_COOLIFY_DIR" ]; then
+            log_warning "Diretório de backups do Coolify não encontrado: $BACKUP_COOLIFY_DIR"
+            echo ""
+            echo "Onde estão seus backups do Coolify?"
+            echo "  1. Em outra pasta (digite o caminho)"
+            echo "  2. Vou baixar do S3 agora"
+            echo "  3. Cancelar"
+            echo ""
+            read -p "Opção: " BACKUP_OPTION
 
-    COOLIFY_BACKUPS=($(ls -t "$BACKUP_COOLIFY_DIR"/*.tar.gz 2>/dev/null))
+            case $BACKUP_OPTION in
+                1)
+                    read -p "Digite o caminho completo: " BACKUP_COOLIFY_DIR
+                    if [ ! -d "$BACKUP_COOLIFY_DIR" ]; then
+                        log_error "Diretório não existe: $BACKUP_COOLIFY_DIR"
+                        continue
+                    fi
+                    ;;
+                2)
+                    log_info "Redirecionando para script de restauração do S3..."
+                    echo ""
+                    read -p "Nome do bucket S3: " S3_BUCKET
+                    if [ -z "$S3_BUCKET" ]; then
+                        log_error "Bucket não pode ser vazio"
+                        continue
+                    fi
+                    exec "$SCRIPT_DIR/restaurar-do-s3.sh" --bucket="$S3_BUCKET"
+                    exit 0
+                    ;;
+                3)
+                    log_info "Restauração cancelada pelo usuário"
+                    exit 0
+                    ;;
+                *)
+                    log_error "Opção inválida"
+                    continue
+                    ;;
+            esac
+        fi
 
-    if [ ${#COOLIFY_BACKUPS[@]} -eq 0 ]; then
-        log_error "Nenhum backup do Coolify encontrado"
-        exit 1
-    fi
+        # Verificar se tem backups
+        COOLIFY_BACKUPS=($(ls -t "$BACKUP_COOLIFY_DIR"/*.tar.gz 2>/dev/null))
+
+        if [ ${#COOLIFY_BACKUPS[@]} -eq 0 ]; then
+            log_warning "Nenhum backup do Coolify encontrado em: $BACKUP_COOLIFY_DIR"
+            echo ""
+            read -p "Tentar outro diretório? (s/N): " TRY_AGAIN
+            if [ "$TRY_AGAIN" != "s" ] && [ "$TRY_AGAIN" != "S" ]; then
+                log_error "Nenhum backup disponível para restaurar"
+                exit 1
+            fi
+            BACKUP_COOLIFY_DIR=""  # Reset para perguntar novamente
+            continue
+        fi
+
+        # Encontrou backups!
+        break
+    done
 
     log_success "${#COOLIFY_BACKUPS[@]} backup(s) do Coolify encontrados"
 
     # Verificar backups de volumes
-    if [ -d "$BACKUP_VOLUMES_DIR" ]; then
+    while true; do
+        if [ ! -d "$BACKUP_VOLUMES_DIR" ]; then
+            log_warning "Diretório de backups de volumes não encontrado: $BACKUP_VOLUMES_DIR"
+            echo ""
+            read -p "Onde estão os backups de volumes? (Enter = pular): " INPUT_VOLUMES_DIR
+
+            if [ -z "$INPUT_VOLUMES_DIR" ]; then
+                log_warning "Restauração de volumes será pulada"
+                VOLUME_BACKUPS=0
+                break
+            fi
+
+            BACKUP_VOLUMES_DIR="$INPUT_VOLUMES_DIR"
+
+            if [ ! -d "$BACKUP_VOLUMES_DIR" ]; then
+                log_error "Diretório não existe: $BACKUP_VOLUMES_DIR"
+                continue
+            fi
+        fi
+
         VOLUME_BACKUPS=$(find "$BACKUP_VOLUMES_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
+
+        if [ "$VOLUME_BACKUPS" -eq 0 ]; then
+            log_warning "Nenhum backup de volume encontrado em: $BACKUP_VOLUMES_DIR"
+            echo ""
+            read -p "Tentar outro diretório? (s/N): " TRY_AGAIN_VOL
+            if [ "$TRY_AGAIN_VOL" != "s" ] && [ "$TRY_AGAIN_VOL" != "S" ]; then
+                log_warning "Restauração de volumes será pulada"
+                VOLUME_BACKUPS=0
+                break
+            fi
+            BACKUP_VOLUMES_DIR=""  # Reset
+            continue
+        fi
+
         log_success "$VOLUME_BACKUPS backup(s) de volumes encontrados"
-    else
-        log_warning "Diretório de backups de volumes não encontrado: $BACKUP_VOLUMES_DIR"
-        VOLUME_BACKUPS=0
-    fi
+        break
+    done
 
     echo ""
 

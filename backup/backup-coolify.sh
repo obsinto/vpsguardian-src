@@ -16,6 +16,11 @@ init_script
 # Configurações (usa variáveis de config/default.conf)
 BACKUP_BASE_DIR="${COOLIFY_BACKUP_DIR:-/var/backups/vpsguardian/coolify}"
 BACKUP_DIR="$BACKUP_BASE_DIR/$(date +%Y%m%d_%H%M%S)"
+# Carregar biblioteca de retenção
+if [ -f "$SCRIPT_DIR/../lib/backup-retention.sh" ]; then
+    source "$SCRIPT_DIR/../lib/backup-retention.sh"
+fi
+
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 
 # Diretórios e arquivos do Coolify
@@ -279,12 +284,27 @@ fi
 
 log_section "Limpeza de Backups Antigos"
 
-BACKUPS_REMOVIDOS=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -mtime +$RETENTION_DAYS -delete -print | wc -l)
+if type apply_retention &>/dev/null; then
+    # Usar biblioteca de retenção (suporta GFS, simple, count)
+    BACKUPS_ANTES=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" 2>/dev/null | wc -l)
+    apply_retention "$BACKUP_BASE_DIR" "$DEFAULT_RETENTION_STRATEGY" true
+    BACKUPS_DEPOIS=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" 2>/dev/null | wc -l)
+    BACKUPS_REMOVIDOS=$((BACKUPS_ANTES - BACKUPS_DEPOIS))
 
-if [ "$BACKUPS_REMOVIDOS" -gt 0 ]; then
-    log_success "$BACKUPS_REMOVIDOS backups antigos removidos (>${RETENTION_DAYS} dias)"
+    if [ "$BACKUPS_REMOVIDOS" -gt 0 ]; then
+        log_success "$BACKUPS_REMOVIDOS backups antigos removidos (política: $DEFAULT_RETENTION_STRATEGY)"
+    else
+        log_info "Nenhum backup antigo para remover"
+    fi
 else
-    log_info "Nenhum backup antigo para remover"
+    # Fallback para limpeza simples (compatibilidade)
+    BACKUPS_REMOVIDOS=$(find "$BACKUP_BASE_DIR" -name "*.tar.gz" -mtime +$RETENTION_DAYS -delete -print | wc -l)
+
+    if [ "$BACKUPS_REMOVIDOS" -gt 0 ]; then
+        log_success "$BACKUPS_REMOVIDOS backups antigos removidos (>${RETENTION_DAYS} dias)"
+    else
+        log_info "Nenhum backup antigo para remover"
+    fi
 fi
 
 ################################################################################

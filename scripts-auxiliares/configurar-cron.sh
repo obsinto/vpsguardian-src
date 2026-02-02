@@ -33,10 +33,14 @@ echo "╚═══════════════════════�
 echo ""
 
 log "INFO" "Este script irá configurar cron jobs para:"
-echo "  • Backup semanal do Coolify"
-echo "  • Manutenção preventiva semanal"
-echo "  • Alerta de espaço em disco diário"
-echo "  • Rotação de logs mensal"
+echo "  • Backup automático do Coolify (configurações)"
+echo "  • Backup automático de volumes (dados das aplicações)"
+echo "  • Backup automático de bancos de dados"
+echo "  • Limpeza automática de backups antigos (GFS ou customizado)"
+echo "  • Manutenção preventiva do sistema"
+echo "  • Alertas de espaço em disco"
+echo "  • Upload automático para destinos remotos (opcional)"
+echo "  • Rotação de logs"
 echo ""
 
 # Verificar se scripts existem
@@ -109,8 +113,43 @@ BACKUP_MIN=$(echo $BACKUP_TIME | cut -d':' -f2)
 
 echo ""
 
+# Backup de volumes (dados das aplicações)
+echo "3️⃣  BACKUP DE VOLUMES DAS APLICAÇÕES (DADOS)"
+echo ""
+echo "⚠️  IMPORTANTE: O backup do Coolify (anterior) salva apenas CONFIGURAÇÕES."
+echo "    Para backup completo dos DADOS das aplicações (bancos, arquivos), habilite isto."
+echo ""
+read -p "$LOG_PREFIX [ INPUT ] Habilitar backup de volumes (dados das aplicações)? (Y/n): " ENABLE_VOLUMES_BACKUP
+ENABLE_VOLUMES_BACKUP=${ENABLE_VOLUMES_BACKUP:-y}
+
+VOLUMES_BACKUP_FREQ=""
+VOLUMES_BACKUP_DAY=""
+VOLUMES_BACKUP_TIME=""
+VOLUMES_BACKUP_HOUR=""
+VOLUMES_BACKUP_MIN=""
+
+if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    read -p "$LOG_PREFIX [ INPUT ] Frequência (daily/weekly, padrão: weekly): " VOLUMES_BACKUP_FREQ
+    VOLUMES_BACKUP_FREQ=${VOLUMES_BACKUP_FREQ:-weekly}
+
+    if [ "$VOLUMES_BACKUP_FREQ" = "weekly" ]; then
+        read -p "$LOG_PREFIX [ INPUT ] Dia da semana (0-6, 0=Domingo, padrão: 0): " VOLUMES_BACKUP_DAY
+        VOLUMES_BACKUP_DAY=${VOLUMES_BACKUP_DAY:-0}
+    fi
+
+    read -p "$LOG_PREFIX [ INPUT ] Horário (HH:MM formato 24h, padrão: 01:00): " VOLUMES_BACKUP_TIME
+    VOLUMES_BACKUP_TIME=${VOLUMES_BACKUP_TIME:-01:00}
+
+    VOLUMES_BACKUP_HOUR=$(echo $VOLUMES_BACKUP_TIME | cut -d':' -f1)
+    VOLUMES_BACKUP_MIN=$(echo $VOLUMES_BACKUP_TIME | cut -d':' -f2)
+
+    log "INFO" "Backup de volumes será executado ANTES do backup do Coolify"
+fi
+
+echo ""
+
 # Manutenção preventiva
-echo "3️⃣  MANUTENÇÃO PREVENTIVA"
+echo "4️⃣  MANUTENÇÃO PREVENTIVA"
 echo ""
 read -p "$LOG_PREFIX [ INPUT ] Dia da semana para manutenção (0-6, 1=Segunda): " MANUTENCAO_DAY
 MANUTENCAO_DAY=${MANUTENCAO_DAY:-1}
@@ -124,7 +163,7 @@ MANUTENCAO_MIN=$(echo $MANUTENCAO_TIME | cut -d':' -f2)
 echo ""
 
 # Alerta de disco
-echo "4️⃣  ALERTA DE ESPAÇO EM DISCO"
+echo "5️⃣  ALERTA DE ESPAÇO EM DISCO"
 echo ""
 read -p "$LOG_PREFIX [ INPUT ] Horário do alerta diário (HH:MM formato 24h, padrão: 09:00): " ALERTA_TIME
 ALERTA_TIME=${ALERTA_TIME:-09:00}
@@ -135,7 +174,7 @@ ALERTA_MIN=$(echo $ALERTA_TIME | cut -d':' -f2)
 echo ""
 
 # Upload automático de backups
-echo "5️⃣  UPLOAD AUTOMÁTICO DE BACKUPS (OPCIONAL)"
+echo "6️⃣  UPLOAD AUTOMÁTICO DE BACKUPS (OPCIONAL)"
 echo ""
 read -p "$LOG_PREFIX [ INPUT ] Enviar backups para destino remoto automaticamente? (y/N): " AUTO_UPLOAD
 AUTO_UPLOAD=${AUTO_UPLOAD:-n}
@@ -171,6 +210,76 @@ fi
 
 echo ""
 
+# Retenção de backups
+echo "7️⃣  RETENÇÃO DE BACKUPS (LIMPEZA AUTOMÁTICA)"
+echo ""
+read -p "$LOG_PREFIX [ INPUT ] Habilitar limpeza automática de backups antigos? (Y/n): " ENABLE_CLEANUP
+ENABLE_CLEANUP=${ENABLE_CLEANUP:-y}
+
+CLEANUP_STRATEGY=""
+CLEANUP_DAYS=""
+CLEANUP_COUNT=""
+
+if [ "$ENABLE_CLEANUP" = "y" ]; then
+    echo ""
+    echo "Estratégias de retenção disponíveis:"
+    echo "  [1] GFS (Grandfather-Father-Son) - Recomendado ⭐"
+    echo "      • 7 diários (todos dos últimos 7 dias)"
+    echo "      • 4 semanais (1 por semana - domingo)"
+    echo "      • 12 mensais (1 por mês - dia 1)"
+    echo ""
+    echo "  [2] Simple (Por idade)"
+    echo "      • Deleta backups mais antigos que X dias"
+    echo ""
+    echo "  [3] Count (Por quantidade)"
+    echo "      • Mantém últimos X backups"
+    echo ""
+    read -p "$LOG_PREFIX [ INPUT ] Escolha a estratégia (1-3, padrão: 1): " CLEANUP_CHOICE
+    CLEANUP_CHOICE=${CLEANUP_CHOICE:-1}
+
+    case $CLEANUP_CHOICE in
+        1)
+            CLEANUP_STRATEGY="gfs"
+            ;;
+        2)
+            CLEANUP_STRATEGY="simple"
+            echo ""
+            read -p "$LOG_PREFIX [ INPUT ] Deletar backups mais antigos que quantos dias? (padrão: 30): " CLEANUP_DAYS
+            CLEANUP_DAYS=${CLEANUP_DAYS:-30}
+            ;;
+        3)
+            CLEANUP_STRATEGY="count"
+            echo ""
+            read -p "$LOG_PREFIX [ INPUT ] Manter quantos backups? (padrão: 10): " CLEANUP_COUNT
+            CLEANUP_COUNT=${CLEANUP_COUNT:-10}
+            ;;
+        *)
+            log "WARN" "Opção inválida. Usando GFS (padrão)."
+            CLEANUP_STRATEGY="gfs"
+            ;;
+    esac
+
+    echo ""
+    read -p "$LOG_PREFIX [ INPUT ] Dia da semana para limpeza (0-6, 0=Domingo, padrão: 0): " CLEANUP_DAY
+    CLEANUP_DAY=${CLEANUP_DAY:-0}
+
+    # Calcular horário da limpeza (2h após o backup)
+    CLEANUP_HOUR=$((BACKUP_HOUR + 2))
+    if [ $CLEANUP_HOUR -ge 24 ]; then
+        CLEANUP_HOUR=$((CLEANUP_HOUR - 24))
+        CLEANUP_DAY=$((BACKUP_DAY + 1))
+        if [ $CLEANUP_DAY -gt 6 ]; then
+            CLEANUP_DAY=0
+        fi
+    fi
+
+    CLEANUP_MIN=$BACKUP_MIN
+
+    log "INFO" "Limpeza será executada 2h após o backup ($(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))"
+fi
+
+echo ""
+
 # Resumo das configurações
 log "INFO" "========== RESUMO DAS CONFIGURAÇÕES =========="
 echo ""
@@ -186,10 +295,23 @@ if [ "$ENABLE_DB_BACKUP" = "y" ]; then
     echo ""
 fi
 
-echo "📅 Backup do Coolify:"
+echo "📅 Backup do Coolify (Configurações):"
 echo "   • Dia: $(case $BACKUP_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 2) echo 'Terça';; 3) echo 'Quarta';; 4) echo 'Quinta';; 5) echo 'Sexta';; 6) echo 'Sábado';; esac)"
 echo "   • Horário: $BACKUP_TIME"
 echo ""
+
+if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    echo "📦 Backup de Volumes (Dados das Aplicações):"
+    if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
+        echo "   • Frequência: Diário"
+    else
+        echo "   • Frequência: Semanal ($(case $VOLUMES_BACKUP_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 2) echo 'Terça';; 3) echo 'Quarta';; 4) echo 'Quinta';; 5) echo 'Sexta';; 6) echo 'Sábado';; esac))"
+    fi
+    echo "   • Horário: $VOLUMES_BACKUP_TIME (antes do backup do Coolify)"
+    echo "   • Estratégia: Double-Check (SQL Dump + Volume Snapshot)"
+    echo ""
+fi
+
 echo "🔧 Manutenção Preventiva:"
 echo "   • Dia: $(case $MANUTENCAO_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 2) echo 'Terça';; 3) echo 'Quarta';; 4) echo 'Quinta';; 5) echo 'Sexta';; 6) echo 'Sábado';; esac)"
 echo "   • Horário: $MANUTENCAO_TIME"
@@ -206,6 +328,24 @@ if [ "$AUTO_UPLOAD" = "y" ]; then
     echo "☁️  Upload Automático:"
     echo "   • Destino: $UPLOAD_DEST"
     echo "   • Delay: $UPLOAD_DELAY hora(s) após o backup"
+    echo ""
+fi
+
+if [ "$ENABLE_CLEANUP" = "y" ]; then
+    echo "🗑️  Limpeza de Backups:"
+    case "$CLEANUP_STRATEGY" in
+        gfs)
+            echo "   • Estratégia: GFS (7 diários + 4 semanais + 12 mensais)"
+            ;;
+        simple)
+            echo "   • Estratégia: Simple (deletar backups >$CLEANUP_DAYS dias)"
+            ;;
+        count)
+            echo "   • Estratégia: Count (manter últimos $CLEANUP_COUNT backups)"
+            ;;
+    esac
+    echo "   • Dia: $(case $CLEANUP_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 2) echo 'Terça';; 3) echo 'Quarta';; 4) echo 'Quinta';; 5) echo 'Sexta';; 6) echo 'Sábado';; esac)"
+    echo "   • Horário: $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN)"
     echo ""
 fi
 
@@ -241,6 +381,7 @@ crontab -l 2>/dev/null | grep -v "/opt/vpsguardian/backup-coolify.sh" | \
     grep -v "/opt/vpsguardian/manutencao-completa.sh" | \
     grep -v "/opt/vpsguardian/alerta-disco.sh" | \
     grep -v "/opt/vpsguardian/backup-destinos.sh" | \
+    grep -v "/opt/vpsguardian/scripts-auxiliares/limpar-backups-antigos.sh" | \
     grep -v "logrotate" > "$TEMP_CRON" || true
 
 # Adicionar cabeçalho
@@ -275,9 +416,26 @@ EOF
     fi
 fi
 
+# Adicionar backup de volumes se habilitado
+if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
+        cat >> "$TEMP_CRON" << EOF
+# Backup de volumes das aplicações (diário às $VOLUMES_BACKUP_TIME)
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * * BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes /opt/vpsguardian/migrar/backup-database-volumes.sh >> /var/log/manutencao/cron-volumes-backup.log 2>&1
+
+EOF
+    else
+        cat >> "$TEMP_CRON" << EOF
+# Backup de volumes das aplicações (semanal ${VOLUMES_BACKUP_DAY}=Dia da semana, $VOLUMES_BACKUP_TIME)
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * $VOLUMES_BACKUP_DAY BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes /opt/vpsguardian/migrar/backup-database-volumes.sh >> /var/log/manutencao/cron-volumes-backup.log 2>&1
+
+EOF
+    fi
+fi
+
 # Adicionar backup do Coolify
 cat >> "$TEMP_CRON" << EOF
-# Backup completo do Coolify (${BACKUP_DAY}=Dia da semana, $BACKUP_TIME)
+# Backup completo do Coolify - Configurações (${BACKUP_DAY}=Dia da semana, $BACKUP_TIME)
 $BACKUP_MIN $BACKUP_HOUR * * $BACKUP_DAY /opt/vpsguardian/backup-coolify.sh >> /var/log/manutencao/cron-backup.log 2>&1
 
 EOF
@@ -319,6 +477,40 @@ $ALERTA_MIN $ALERTA_HOUR * * * /opt/vpsguardian/alerta-disco.sh >> /var/log/manu
 
 EOF
 
+# Adicionar limpeza de backups se habilitado
+if [ "$ENABLE_CLEANUP" = "y" ]; then
+    # Construir argumentos do comando
+    CLEANUP_ARGS="--strategy=$CLEANUP_STRATEGY --auto"
+
+    case "$CLEANUP_STRATEGY" in
+        simple)
+            CLEANUP_ARGS="$CLEANUP_ARGS --days=$CLEANUP_DAYS"
+            ;;
+        count)
+            CLEANUP_ARGS="$CLEANUP_ARGS --count=$CLEANUP_COUNT"
+            ;;
+    esac
+
+    # Diretórios a limpar
+    COOLIFY_BACKUP_DIR="/var/backups/vpsguardian/coolify"
+    VOLUMES_BACKUP_DIR="/var/backups/vpsguardian/volumes"
+
+    cat >> "$TEMP_CRON" << EOF
+# Limpeza automática de backups do Coolify (${CLEANUP_DAY}=Dia da semana, $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY /opt/vpsguardian/scripts-auxiliares/limpar-backups-antigos.sh --dir=$COOLIFY_BACKUP_DIR $CLEANUP_ARGS >> /var/log/manutencao/cron-cleanup-coolify.log 2>&1
+
+EOF
+
+    # Adicionar limpeza de volumes se backup de volumes estiver habilitado
+    if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+        cat >> "$TEMP_CRON" << EOF
+# Limpeza automática de backups de volumes (${CLEANUP_DAY}=Dia da semana, $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY /opt/vpsguardian/scripts-auxiliares/limpar-backups-antigos.sh --dir=$VOLUMES_BACKUP_DIR $CLEANUP_ARGS >> /var/log/manutencao/cron-cleanup-volumes.log 2>&1
+
+EOF
+    fi
+fi
+
 # Adicionar rotação de logs
 cat >> "$TEMP_CRON" << 'EOF'
 # Rotação de logs (mensalmente, dia 1 às 04:00)
@@ -341,7 +533,7 @@ log "INFO" "========== VERIFICANDO CONFIGURAÇÃO =========="
 echo ""
 
 log "INFO" "Cron jobs instalados:"
-crontab -l | grep -E "(backup-coolify|manutencao-completa|alerta-disco|backup-destinos|logrotate)" | while read line; do
+crontab -l | grep -E "(backup-coolify|backup-databases|backup-database-volumes|manutencao-completa|alerta-disco|backup-destinos|limpar-backups-antigos|logrotate)" | while read line; do
     echo "  ✓ $line"
 done
 
@@ -383,9 +575,25 @@ get_next_execution() {
     fi
 }
 
-echo "📅 Backup do Coolify:"
+echo "📅 Backup do Coolify (Configurações):"
 echo "   $(get_next_execution $BACKUP_MIN $BACKUP_HOUR $BACKUP_DAY)"
 echo ""
+
+if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    echo "📦 Backup de Volumes (Dados das Aplicações):"
+    if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
+        # Para diário, calcular próxima execução
+        TOMORROW=$(date -d "tomorrow" +%d/%m/%Y)
+        if [ $(date +%H) -lt $VOLUMES_BACKUP_HOUR ]; then
+            echo "   Hoje às $(printf "%02d:%02d" $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_MIN)"
+        else
+            echo "   $TOMORROW às $(printf "%02d:%02d" $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_MIN)"
+        fi
+    else
+        echo "   $(get_next_execution $VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_DAY)"
+    fi
+    echo ""
+fi
 
 echo "🔧 Manutenção Preventiva:"
 echo "   $(get_next_execution $MANUTENCAO_MIN $MANUTENCAO_HOUR $MANUTENCAO_DAY)"
@@ -411,6 +619,23 @@ if [ "$AUTO_UPLOAD" = "y" ]; then
     echo ""
 fi
 
+if [ "$ENABLE_CLEANUP" = "y" ]; then
+    echo "🗑️  Limpeza de Backups:"
+    echo "   $(get_next_execution $CLEANUP_MIN $CLEANUP_HOUR $CLEANUP_DAY)"
+    case "$CLEANUP_STRATEGY" in
+        gfs)
+            echo "   (Estratégia GFS: 7 diários + 4 semanais + 12 mensais)"
+            ;;
+        simple)
+            echo "   (Deletar backups >$CLEANUP_DAYS dias)"
+            ;;
+        count)
+            echo "   (Manter últimos $CLEANUP_COUNT backups)"
+            ;;
+    esac
+    echo ""
+fi
+
 # Informações adicionais
 log "INFO" "========== COMANDOS ÚTEIS =========="
 echo ""
@@ -422,8 +647,17 @@ echo "  sudo crontab -e"
 echo ""
 echo "  # Ver logs de execução"
 echo "  tail -f /var/log/manutencao/cron-backup.log"
+if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    echo "  tail -f /var/log/manutencao/cron-volumes-backup.log"
+fi
 echo "  tail -f /var/log/manutencao/cron-manutencao.log"
 echo "  tail -f /var/log/manutencao/cron-alerta.log"
+if [ "$ENABLE_CLEANUP" = "y" ]; then
+    echo "  tail -f /var/log/manutencao/cron-cleanup-coolify.log"
+    if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+        echo "  tail -f /var/log/manutencao/cron-cleanup-volumes.log"
+    fi
+fi
 echo ""
 echo "  # Verificar próximas execuções (aproximado)"
 echo "  grep CRON /var/log/syslog | tail -20"

@@ -153,22 +153,38 @@ fi
 
 log_success "Coolify backup: $(basename $BACKUP_FILE)"
 
-### ========== STEP 2: BACKUP VOLUMES ==========
+### ========== STEP 2: BACKUP VOLUMES (MODO ROBUSTO) ==========
 if [ "$SKIP_VOLUMES" = false ]; then
-    log_section "Step 2/5: Backup Docker Volumes"
+    log_section "Step 2/5: Backup Docker Volumes (Modo Robusto)"
 
     mkdir -p "$VOLUMES_BACKUP_DIR"
 
-    log_info "Backing up all Docker volumes to $VOLUMES_BACKUP_DIR..."
-    "$SCRIPT_DIR/backup-volumes.sh" --all --output="$VOLUMES_BACKUP_DIR" 2>&1 | grep -E "SUCCESS|ERROR|WARNING|Backing up"
+    log_info "Usando backup inteligente com detecção de bancos de dados..."
+    log_info "Estratégia: Double-Check (SQL Dump + Volume Snapshot)"
+    echo ""
 
-    # Verificar se backups foram criados
-    backup_count=$(find "$VOLUMES_BACKUP_DIR" -name "*-backup-*.tar.gz" -type f | wc -l)
+    # Usar novo script robusto
+    export BACKUP_OUTPUT_DIR="$VOLUMES_BACKUP_DIR"
+    "$SCRIPT_DIR/backup-database-volumes.sh"
+
+    if [ $? -ne 0 ]; then
+        log_error "Alguns volumes falharam no backup"
+        log_warning "Continuando mesmo assim..."
+    fi
+
+    # Contar backups criados (arquivos .meta são criados para cada volume)
+    backup_count=$(find "$VOLUMES_BACKUP_DIR" -name "*-backup-*.meta" -type f | wc -l)
 
     if [ "$backup_count" -eq 0 ]; then
         log_warning "No volume backups created (this is OK if no volumes exist)"
     else
         log_success "$backup_count volume backups created"
+
+        # Mostrar estatísticas
+        local db_backups=$(find "$VOLUMES_BACKUP_DIR" -name "*-dump-*.sql" -type f | wc -l)
+        if [ "$db_backups" -gt 0 ]; then
+            log_info "  📊 Dumps SQL criados: $db_backups"
+        fi
     fi
 else
     log_section "Step 2/5: SKIPPED (--skip-volumes)"
@@ -228,78 +244,83 @@ else
     log_section "Step 4/5: SKIPPED (no volumes to transfer)"
 fi
 
-### ========== STEP 5: RESTORE VOLUMES ==========
+### ========== STEP 5: RESTORE VOLUMES (MODO INTELIGENTE) ==========
 if [ "$SKIP_VOLUMES" = false ] && [ "$backup_count" -gt 0 ]; then
-    log_section "Step 5/5: Restore Volumes on New Server"
+    log_section "Step 5/5: Restore Volumes on New Server (Modo Inteligente)"
 
-    log_info "Restoring volumes on $NEW_SERVER_IP..."
+    log_info "Usando restore inteligente com fallback automático..."
+    log_info "Estratégia: Volume primeiro, SQL dump se crash loop detectado"
+    echo ""
 
-    # Executar restore remotamente
-    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" "$NEW_SERVER_USER@$NEW_SERVER_IP" bash <<EOF
-set -e
+    # Transferir script de restore inteligente para servidor remoto
+    log_info "Transferindo scripts de restore..."
+    scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
+        "$SCRIPT_DIR/restore-database-volumes.sh" \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/restore-database-volumes.sh" >/dev/null 2>&1
 
-# Baixar script de restore temporariamente
-cat > /tmp/restore-volumes-remote.sh <<'SCRIPT'
+    # Transferir lib/common.sh e dependências
+    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "mkdir -p /tmp/vpsguardian-lib" >/dev/null 2>&1
+
+    scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
+        "$SCRIPT_DIR/../lib/"*.sh \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/vpsguardian-lib/" >/dev/null 2>&1
+
+    log_info "Executando restore inteligente remotamente..."
+    echo ""
+
+    # Executar restore no servidor remoto
+    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" "$NEW_SERVER_USER@$NEW_SERVER_IP" bash <<'EOF'
 #!/bin/bash
 
-BACKUP_DIR="/root/coolify-volumes-backup"
+# Ajustar paths para ambiente remoto
+export SCRIPT_DIR="/tmp"
+export BACKUP_DIR="/root/coolify-volumes-backup"
 
-echo "[ INFO ] Restoring volumes from \$BACKUP_DIR..."
+# Criar common.sh temporário simplificado
+cat > /tmp/vpsguardian-lib/common.sh <<'COMMON'
+#!/bin/bash
 
-if [ ! -d "\$BACKUP_DIR" ]; then
-    echo "[ ERROR ] Backup directory not found: \$BACKUP_DIR"
-    exit 1
+# Funções de logging simplificadas
+log_info() { echo "[ INFO ] $*"; }
+log_success() { echo "[ SUCCESS ] $*"; }
+log_error() { echo "[ ERROR ] $*"; }
+log_warning() { echo "[ WARNING ] $*"; }
+log_section() { echo ""; echo "========== $* =========="; echo ""; }
+ensure_directory() { mkdir -p "$1" 2>/dev/null; }
+
+# Carregar bibliotecas de cores se existirem
+if [ -f "/tmp/vpsguardian-lib/colors.sh" ]; then
+    source /tmp/vpsguardian-lib/colors.sh
 fi
+if [ -f "/tmp/vpsguardian-lib/logging.sh" ]; then
+    source /tmp/vpsguardian-lib/logging.sh
+fi
+COMMON
 
-success=0
-failed=0
+# Executar restore
+chmod +x /tmp/restore-database-volumes.sh
+/tmp/restore-database-volumes.sh
 
-for backup_file in "\$BACKUP_DIR"/*-backup-*.tar.gz; do
-    if [ ! -f "\$backup_file" ]; then
-        continue
-    fi
+restore_result=$?
 
-    filename=\$(basename "\$backup_file")
-    volume=\$(echo "\$filename" | sed 's/-backup-[0-9_]*\.tar\.gz$//')
+# Cleanup
+rm -f /tmp/restore-database-volumes.sh
+rm -rf /tmp/vpsguardian-lib
 
-    echo "[ INFO ] Restoring: \$volume"
-
-    # Criar volume se não existir
-    docker volume create "\$volume" >/dev/null 2>&1 || true
-
-    # Restaurar
-    docker run --rm \\
-        -v "\$volume":/target \\
-        -v "\$BACKUP_DIR":/backup:ro \\
-        busybox \\
-        sh -c "rm -rf /target/* /target/..?* /target/.[!.]* 2>/dev/null; tar -xzf /backup/\$filename -C /target" \\
-        >/dev/null 2>&1
-
-    if [ \$? -eq 0 ]; then
-        echo "[ SUCCESS ] Volume restored: \$volume"
-        ((success++))
-    else
-        echo "[ ERROR ] Failed to restore: \$volume"
-        ((failed++))
-    fi
-done
-
-echo ""
-echo "[ SUMMARY ] Success: \$success | Failed: \$failed"
-
-rm -rf "\$BACKUP_DIR"
-SCRIPT
-
-chmod +x /tmp/restore-volumes-remote.sh
-/tmp/restore-volumes-remote.sh
-rm -f /tmp/restore-volumes-remote.sh
+exit $restore_result
 EOF
 
-    if [ $? -eq 0 ]; then
-        log_success "All volumes restored on new server"
+    restore_exit_code=$?
+
+    if [ $restore_exit_code -eq 0 ]; then
+        log_success "Todos os volumes restaurados com sucesso"
+    elif [ $restore_exit_code -eq 2 ]; then
+        log_warning "Volumes restaurados com avisos - verifique logs"
+        log_info "Alguns containers podem precisar de verificação manual"
     else
-        log_error "Some volumes failed to restore"
-        log_warning "Check logs on $NEW_SERVER_IP for details"
+        log_error "Alguns volumes falharam ao restaurar"
+        log_warning "Verifique logs em $NEW_SERVER_IP para detalhes"
     fi
 else
     log_section "Step 5/5: SKIPPED (no volumes to restore)"
@@ -319,6 +340,7 @@ echo "  📍 New server: http://$NEW_SERVER_IP:8000"
 echo "  📦 Coolify: ✅ Migrated (DB + SSH keys + config)"
 if [ "$SKIP_VOLUMES" = false ]; then
     echo "  📂 Volumes: ✅ $backup_count volumes migrated"
+    echo "  🔒 Strategy: Double-Check (SQL Dump + Volume Snapshot)"
 else
     echo "  📂 Volumes: ⏭️  SKIPPED"
 fi
@@ -327,15 +349,23 @@ echo "  ⚠️  IMPORTANT NEXT STEPS:"
 echo ""
 echo "  1. Access Coolify: http://$NEW_SERVER_IP:8000"
 echo "  2. Check all applications are listed"
-echo "  3. DEPLOY each application to start containers"
+echo "  3. Verify database containers are healthy:"
+echo "     docker ps | grep -E 'mysql|postgres|mongo|redis'"
+echo "  4. If any DB is in crash loop, restore was auto-fallback to SQL dump"
+echo "  5. DEPLOY each application to start containers"
 echo "     (volumes are restored but containers need to be recreated)"
-echo "  4. Update DNS records to point to $NEW_SERVER_IP"
-echo "  5. Test all applications thoroughly"
-echo "  6. Configure backups on new server"
+echo "  6. Update DNS records to point to $NEW_SERVER_IP"
+echo "  7. Test all applications thoroughly"
+echo "  8. Configure backups on new server"
 echo ""
-echo "  💡 TIP: Applications won't start automatically after volume restore."
-echo "          You MUST click 'Deploy' for each app in Coolify dashboard."
+echo "  💡 TIP: Restore inteligente detecta crash loops automaticamente!"
+echo "          Se volume corrompido → fallback para SQL dump"
+echo "          Bancos de dados têm dupla proteção (volume + SQL)"
+echo ""
+echo "  🔍 TROUBLESHOOTING:"
+echo "     Se algum DB não subir: docker logs <container_name>"
+echo "     Dumps SQL disponíveis em: /root/coolify-volumes-backup/"
 echo ""
 
-log_success "Migration completed successfully"
+log_success "Migration completed successfully with intelligent database handling"
 exit 0

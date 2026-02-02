@@ -1,0 +1,60 @@
+################################################################################
+# VPS Guardian - Configuração de Retenção de Backups
+#
+# Este arquivo define a política de retenção padrão para backups.
+# Copie para /etc/vpsguardian/retention.conf e ajuste conforme necessário.
+#
+# Uso: cp retention.conf.example /etc/vpsguardian/retention.conf
+################################################################################
+
+# Estratégia de retenção
+# Opções: gfs, simple, count
+#
+# - gfs (Grandfather-Father-Son) - Recomendado para produção
+#   Mantém: 7 diários + 4 semanais + 12 mensais
+#   Balanceamento entre proteção e uso de espaço
+#
+# - simple (Por idade)
+#   Deleta backups mais antigos que X dias
+#   Simples mas pode crescer indefinidamente
+#
+# - count (Por quantidade)
+#   Mantém últimos X backups
+#   Controle preciso do espaço usado
+#
+RETENTION_STRATEGY=gfs
+
+# Configurações para estratégia SIMPLE
+# Deletar backups mais antigos que X dias
+RETENTION_DAYS=30
+
+# Configurações para estratégia COUNT
+# Manter últimos X backups
+RETENTION_COUNT=10
+
+################################################################################
+# Diretórios de Backup (não modifique a menos que saiba o que está fazendo)
+################################################################################
+
+COOLIFY_BACKUP_DIR=/var/backups/vpsguardian/coolify
+VOLUMES_BACKUP_DIR=/var/backups/vpsguardian/volumes
+DATABASES_BACKUP_DIR=/var/backups/vpsguardian/databases
+
+################################################################################
+# Exemplos de Configuração
+################################################################################
+
+# Produção (recomendado)
+# RETENTION_STRATEGY=gfs
+
+# Desenvolvimento (espaço limitado)
+# RETENTION_STRATEGY=count
+# RETENTION_COUNT=5
+
+# Arquivamento de longo prazo
+# RETENTION_STRATEGY=simple
+# RETENTION_DAYS=365
+
+# Servidor com muito espaço
+# RETENTION_STRATEGY=simple
+# RETENTION_DAYS=90

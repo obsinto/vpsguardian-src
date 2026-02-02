@@ -539,7 +539,7 @@ if [ "$CONFIRM" != "yes" ]; then
     exit 0
 fi
 
-### ========== ESCOLHER MÉTODO DE AUTENTICAÇÃO SSH ==========
+### ========== DETECÇÃO AUTOMÁTICA DE CHAVE SSH ==========
 
 # Pular seleção de método SSH se vem do Coolify
 if [ "$COOLIFY_MIGRATION" = "true" ]; then
@@ -547,12 +547,65 @@ if [ "$COOLIFY_MIGRATION" = "true" ]; then
     log_success "✅ Reutilizando método de autenticação do Coolify (Chave SSH)"
     # SSH_AUTH_METHOD já foi exportado pelo migrar-coolify.sh
 else
-    log_section "MÉTODO DE AUTENTICAÇÃO SSH"
+    log_section "DETECÇÃO DE CHAVE SSH"
 
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║${NC}  Escolha o método de autenticação SSH para o servidor      ${CYAN}║${NC}"
-    echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    # Tentar detectar chave SSH automaticamente ANTES de pedir senha
+    SSH_KEY_DETECTED=false
+
+    # 1. Verificar chave SSH padrão
+    if [ -f "$SSH_PRIVATE_KEY_PATH" ]; then
+        log_info "Chave SSH encontrada: $SSH_PRIVATE_KEY_PATH"
+
+        # Testar se a chave funciona
+        log_info "Testando conexão SSH com chave..."
+        ssh -o BatchMode=yes -o ConnectTimeout=5 -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" \
+            "$NEW_SERVER_USER@$NEW_SERVER_IP" "exit" >/dev/null 2>&1
+
+        if [ $? -eq 0 ]; then
+            log_success "✅ Chave SSH funcionando! Usando autenticação por chave."
+            SSH_AUTH_METHOD="key"
+            SSH_KEY_DETECTED=true
+        else
+            log_warning "Chave SSH encontrada mas não está configurada no servidor remoto."
+        fi
+    else
+        log_info "Chave SSH padrão não encontrada em: $SSH_PRIVATE_KEY_PATH"
+    fi
+
+    # 2. Se não encontrou chave padrão, procurar chaves de migração anteriores
+    if [ "$SSH_KEY_DETECTED" = false ]; then
+        log_info "Procurando chaves de migração anteriores..."
+        MIGRATION_KEYS=($(ls -t /root/.ssh/id_ed25519_migration* 2>/dev/null | grep -v "\.pub$" | head -5))
+
+        if [ ${#MIGRATION_KEYS[@]} -gt 0 ]; then
+            LATEST_KEY="${MIGRATION_KEYS[0]}"
+            log_info "Encontrada chave de migração: $(basename $LATEST_KEY)"
+
+            # Testar chave de migração
+            ssh -o BatchMode=yes -o ConnectTimeout=5 -i "$LATEST_KEY" -p "$NEW_SERVER_PORT" \
+                "$NEW_SERVER_USER@$NEW_SERVER_IP" "exit" >/dev/null 2>&1
+
+            if [ $? -eq 0 ]; then
+                log_success "✅ Chave de migração funcionando! Usando autenticação por chave."
+                SSH_PRIVATE_KEY_PATH="$LATEST_KEY"
+                SSH_AUTH_METHOD="key"
+                SSH_KEY_DETECTED=true
+            else
+                log_warning "Chave de migração encontrada mas não está configurada no servidor remoto."
+            fi
+        fi
+    fi
+
     echo ""
+
+    # 3. Se não detectou chave SSH funcionando, oferecer opções
+    if [ "$SSH_KEY_DETECTED" = false ]; then
+        log_section "MÉTODO DE AUTENTICAÇÃO SSH"
+
+        echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║${NC}  Escolha o método de autenticação SSH para o servidor      ${CYAN}║${NC}"
+        echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
 echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "  ${GREEN}[1] Chave SSH (RECOMENDADO) 🔑${NC}"
 echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -582,76 +635,80 @@ echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-read -p "$LOG_PREFIX [ INPUT ] Selecione o método [1/2] (padrão: 1): " AUTH_CHOICE
-AUTH_CHOICE=${AUTH_CHOICE:-1}
+        read -p "$LOG_PREFIX [ INPUT ] Selecione o método [1/2] (padrão: 1): " AUTH_CHOICE
+        AUTH_CHOICE=${AUTH_CHOICE:-1}
 
-if [ "$AUTH_CHOICE" = "1" ]; then
-    SSH_AUTH_METHOD="key"
-    echo ""
-    log_success "Método de autenticação: Chave SSH 🔑"
-elif [ "$AUTH_CHOICE" = "2" ]; then
-    SSH_AUTH_METHOD="password"
-    echo ""
-    log_warning "Método de autenticação: Senha 🔓"
-    log_warning "ATENÇÃO: Este método é menos seguro. Considere usar chave SSH."
+        if [ "$AUTH_CHOICE" = "1" ]; then
+            SSH_AUTH_METHOD="key"
+            echo ""
+            log_success "Método de autenticação: Chave SSH 🔑"
+        elif [ "$AUTH_CHOICE" = "2" ]; then
+            SSH_AUTH_METHOD="password"
+            echo ""
+            log_warning "Método de autenticação: Senha 🔓"
+            log_warning "ATENÇÃO: Este método é menos seguro. Considere usar chave SSH."
 
-    # Verificar se sshpass está instalado
-    if ! command -v sshpass &> /dev/null; then
-        echo ""
-        log_error "O pacote 'sshpass' não está instalado."
-        log_error "Autenticação por senha requer o sshpass."
-        echo ""
-        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-        echo "  Para instalar o sshpass:"
-        echo ""
-        echo "    Ubuntu/Debian:  sudo apt-get install -y sshpass"
-        echo "    CentOS/RHEL:    sudo yum install -y sshpass"
-        echo "    Alpine:         apk add sshpass"
-        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-        echo ""
-        read -p "  Deseja instalar o sshpass agora? (yes/no): " INSTALL_SSHPASS
+            # Verificar se sshpass está instalado
+            if ! command -v sshpass &> /dev/null; then
+                echo ""
+                log_error "O pacote 'sshpass' não está instalado."
+                log_error "Autenticação por senha requer o sshpass."
+                echo ""
+                echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                echo "  Para instalar o sshpass:"
+                echo ""
+                echo "    Ubuntu/Debian:  sudo apt-get install -y sshpass"
+                echo "    CentOS/RHEL:    sudo yum install -y sshpass"
+                echo "    Alpine:         apk add sshpass"
+                echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                echo ""
+                read -p "  Deseja instalar o sshpass agora? (yes/no): " INSTALL_SSHPASS
 
-        if [ "$INSTALL_SSHPASS" = "yes" ]; then
-            log_info "Instalando sshpass..."
-            if command -v apt-get &> /dev/null; then
-                apt-get update -qq && apt-get install -y sshpass >/dev/null 2>&1
-            elif command -v yum &> /dev/null; then
-                yum install -y sshpass >/dev/null 2>&1
-            elif command -v apk &> /dev/null; then
-                apk add sshpass >/dev/null 2>&1
-            else
-                log_error "Não foi possível instalar automaticamente."
-                log_error "Por favor, instale o sshpass manualmente."
+                if [ "$INSTALL_SSHPASS" = "yes" ]; then
+                    log_info "Instalando sshpass..."
+                    if command -v apt-get &> /dev/null; then
+                        apt-get update -qq && apt-get install -y sshpass >/dev/null 2>&1
+                    elif command -v yum &> /dev/null; then
+                        yum install -y sshpass >/dev/null 2>&1
+                    elif command -v apk &> /dev/null; then
+                        apk add sshpass >/dev/null 2>&1
+                    else
+                        log_error "Não foi possível instalar automaticamente."
+                        log_error "Por favor, instale o sshpass manualmente."
+                        exit 1
+                    fi
+                    check_success $? "sshpass instalado com sucesso."
+                else
+                    log_error "Não é possível continuar sem o sshpass. Abortando."
+                    exit 1
+                fi
+            fi
+
+            # Solicitar senha
+            echo ""
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo -e "${YELLOW}  CONFIGURAÇÃO DE SENHA SSH${NC}"
+            echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo "  Servidor: $NEW_SERVER_USER@$NEW_SERVER_IP"
+            echo "  Porta:    $NEW_SERVER_PORT"
+            echo ""
+            read -sp "  Digite a senha SSH: " SSH_PASSWORD
+            echo ""
+
+            if [ -z "$SSH_PASSWORD" ]; then
+                log_error "A senha não pode estar vazia."
                 exit 1
             fi
-            check_success $? "sshpass instalado com sucesso."
+
+            log_success "Senha configurada com sucesso."
         else
-            log_error "Não é possível continuar sem o sshpass. Abortando."
+            log_error "Opção inválida. Abortando."
             exit 1
         fi
-    fi
-
-    # Solicitar senha
-    echo ""
-    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${YELLOW}  CONFIGURAÇÃO DE SENHA SSH${NC}"
-    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo "  Servidor: $NEW_SERVER_USER@$NEW_SERVER_IP"
-    echo "  Porta:    $NEW_SERVER_PORT"
-    echo ""
-    read -sp "  Digite a senha SSH: " SSH_PASSWORD
-    echo ""
-
-    if [ -z "$SSH_PASSWORD" ]; then
-        log_error "A senha não pode estar vazia."
-        exit 1
-    fi
-
-    log_success "Senha configurada com sucesso."
     else
-        log_error "Opção inválida. Abortando."
-        exit 1
+        # Chave SSH detectada automaticamente, pular menu de seleção
+        log_success "✅ Autenticação por chave SSH será usada (detectada automaticamente)"
     fi
 fi  # Fim do if COOLIFY_MIGRATION
 

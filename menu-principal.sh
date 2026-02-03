@@ -308,6 +308,16 @@ show_backup_menu() {
     echo -e "       ${GRAY}(Escolha backup e volume de destino)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
     echo ""
+    echo -e "  ${GREEN}7${NC} → 🗄️  Restaurar Banco de Dados Específico"
+    echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB)${NC}"
+    echo -e "       ${GRAY}(Restauração inteligente com fallback SQL)${NC}"
+    echo -e "       ${GRAY}(⚠️  Sobrescreve dados do banco)${NC}"
+    echo ""
+    echo -e "  ${MAGENTA}VALIDAÇÃO E DIAGNÓSTICO${NC}"
+    echo -e "  ${GREEN}8${NC} → 🏥 Validar Saúde dos Bancos de Dados"
+    echo -e "       ${GRAY}(Verificar integridade após restore)${NC}"
+    echo -e "       ${GRAY}(Teste de conectividade e queries)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -507,6 +517,45 @@ handle_backup_menu() {
                     "${YELLOW}⚠ OS DADOS ATUAIS DO VOLUME SERÃO PERDIDOS!${NC}\n\n  • ${RED}Dados do volume${NC} → SERÃO SOBRESCRITOS\n  • ${YELLOW}Aplicações afetadas${NC} → PODEM TER DOWNTIME\n  • ${YELLOW}Configurações no volume${NC} → SERÃO RESTAURADAS\n\n${WHITE}Impacto por tipo de volume:${NC}\n  • ${RED}Volume de banco de dados${NC} → DADOS SUBSTITUÍDOS\n  • ${YELLOW}Volume de aplicação${NC} → CÓDIGO/ARQUIVOS RESTAURADOS\n  • ${YELLOW}Volume de configuração${NC} → SETTINGS REVERTIDOS" \
                     "1. ${GREEN}Identifique qual volume${NC} precisa restaurar\n2. ${GREEN}Verifique se tem o backup${NC} deste volume\n3. ${GREEN}Pare aplicações críticas${NC} manualmente se necessário\n4. ${YELLOW}Considere fazer snapshot${NC} antes de restaurar"; then
                     run_script "$SCRIPT_DIR/backup/restaurar-volume-interativo.sh" "Restaurar Volume Interativo"
+                fi
+                ;;
+            7)
+                # Confirmação crítica para Restaurar Banco de Dados
+                if confirm_critical \
+                    "🗄️  RESTAURAR BANCO DE DADOS ESPECÍFICO" \
+                    "Este script irá restaurar bancos de dados usando estratégia inteligente.\n\n${WHITE}O que será feito:${NC}\n  • Listar backups de bancos disponíveis\n  • Você escolherá qual banco restaurar\n  • ${YELLOW}PARAR${NC} containers de banco de dados\n  • ${RED}SUBSTITUIR${NC} dados do banco\n  • Validar integridade pós-restore\n  • Reiniciar containers\n\n${WHITE}Estratégia de Restauração:${NC}\n  1. Tentar restaurar de ${GREEN}volume snapshot${NC} (rápido)\n  2. Validar se banco iniciou corretamente\n  3. Se detectar ${RED}crash loop${NC} → rollback automático\n  4. Fallback para ${YELLOW}SQL dump${NC} (mais confiável)" \
+                    "${RED}⚠ TODOS OS DADOS DO BANCO SERÃO PERDIDOS!${NC}\n\n  • ${RED}Tabelas e dados${NC} → SERÃO SOBRESCRITOS\n  • ${RED}Aplicações conectadas${NC} → TERÃO DOWNTIME\n  • ${RED}Transações em andamento${NC} → SERÃO PERDIDAS\n  • ${YELLOW}Índices e views${NC} → SERÃO RECRIADOS\n\n${WHITE}Bancos suportados:${NC}\n  • ${GREEN}PostgreSQL${NC} → pg_dump + volume\n  • ${GREEN}MySQL/MariaDB${NC} → mysqldump + volume\n  • ${GREEN}MongoDB${NC} → mongodump + volume\n  • ${GREEN}Redis${NC} → volume snapshot\n\n${YELLOW}Tempo estimado:${NC}\n  • Pequeno (<1GB): 2-5 min\n  • Médio (1-10GB): 5-15 min\n  • Grande (>10GB): 15-60 min" \
+                    "1. ${GREEN}FAÇA BACKUP${NC} dos dados atuais antes de restaurar\n2. ${GREEN}Avise usuários${NC} que haverá downtime do banco\n3. ${GREEN}Verifique se tem o backup correto${NC}\n4. ${YELLOW}Pare aplicações${NC} que usam o banco\n5. ${GREEN}O script detecta crash loop${NC} e faz fallback automático\n6. ${GREEN}Validação de saúde${NC} será executada automaticamente"; then
+                    run_script "$SCRIPT_DIR/migrar/restore-database-volumes.sh" "Restaurar Banco de Dados"
+                fi
+                ;;
+            8)
+                # Validar Saúde dos Bancos
+                if confirm "Verificar saúde de todos os bancos de dados?"; then
+                    clear_screen
+                    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                    echo -e "${WHITE}Executando: Validar Saúde dos Bancos${NC}"
+                    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                    echo ""
+
+                    log_execution "INÍCIO: Validar Saúde dos Bancos"
+
+                    # Executar com argumentos
+                    bash "$SCRIPT_DIR/scripts-auxiliares/validate-database-health.sh" --all
+                    local exit_code=$?
+
+                    echo ""
+                    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                    if [ $exit_code -eq 0 ]; then
+                        echo -e "${GREEN}✓ Validação concluída com sucesso!${NC}"
+                        log_execution "SUCESSO: Validar Saúde dos Bancos"
+                    else
+                        echo -e "${RED}✗ Validação encontrou problemas (código: $exit_code)${NC}"
+                        log_execution "AVISO: Validar Saúde dos Bancos (código: $exit_code)"
+                    fi
+                    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+
+                    pause
                 fi
                 ;;
             0)

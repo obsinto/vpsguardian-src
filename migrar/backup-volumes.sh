@@ -230,25 +230,42 @@ if [ $DB_COUNT -gt 0 ]; then
                     DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"
 
                     if [ -n "$DB_PASSWORD" ]; then
-                        # Tentar com senha
-                        docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SET GLOBAL innodb_fast_shutdown = 0;\"" 2>/dev/null
-                        if [ $? -eq 0 ]; then
-                            log_success "  innodb_fast_shutdown=0 configurado com sucesso"
+                        log_info "  ✓ Senha MySQL detectada (via MYSQL_ROOT_PASSWORD ou MARIADB_ROOT_PASSWORD)"
+
+                        # Tentar com senha e capturar erro
+                        DB_ERROR=$(docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SET GLOBAL innodb_fast_shutdown = 0;\"" 2>&1)
+                        DB_EXIT_CODE=$?
+
+                        if [ $DB_EXIT_CODE -eq 0 ]; then
+                            log_success "  ✅ innodb_fast_shutdown=0 configurado com sucesso"
+
+                            # Verificar se foi aplicado
+                            CURRENT_VALUE=$(docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SHOW VARIABLES LIKE 'innodb_fast_shutdown';\"" 2>/dev/null | grep innodb_fast_shutdown | awk '{print $2}')
+                            log_info "  Valor atual de innodb_fast_shutdown: $CURRENT_VALUE"
                         else
-                            log_warning "  Falha ao configurar innodb_fast_shutdown (senha pode estar incorreta)"
+                            log_warning "  ⚠️  Falha ao configurar innodb_fast_shutdown"
+                            log_warning "  Erro: $DB_ERROR"
+                            log_warning "  Continuando sem slow shutdown (backup pode ter redo logs inconsistentes)"
                         fi
                     else
+                        log_warning "  ⚠️  Senha MySQL não detectada nas variáveis de ambiente"
+                        log_info "  Tentando sem senha (caso raro)..."
+
                         # Tentar sem senha (caso raro)
-                        docker exec "$container" sh -c 'mysql -u root -e "SET GLOBAL innodb_fast_shutdown = 0;"' 2>/dev/null
-                        if [ $? -eq 0 ]; then
-                            log_success "  innodb_fast_shutdown=0 configurado sem senha"
+                        DB_ERROR=$(docker exec "$container" sh -c 'mysql -u root -e "SET GLOBAL innodb_fast_shutdown = 0;"' 2>&1)
+                        DB_EXIT_CODE=$?
+
+                        if [ $DB_EXIT_CODE -eq 0 ]; then
+                            log_success "  ✅ innodb_fast_shutdown=0 configurado sem senha"
                         else
-                            log_warning "  Senha MySQL não detectada e acesso sem senha falhou"
-                            log_warning "  Continuando sem slow shutdown (backup pode ter redo logs sujos)"
+                            log_error "  ❌ Não foi possível configurar innodb_fast_shutdown"
+                            log_error "  Erro: $DB_ERROR"
+                            log_error "  ATENÇÃO: Backup será feito SEM slow shutdown!"
+                            log_error "  Risco: Redo logs podem estar inconsistentes após migração"
                         fi
                     fi
 
-                    log_success "  MySQL/MariaDB preparado para slow shutdown"
+                    log_success "  MySQL/MariaDB preparado para shutdown"
                     ;;
 
                 postgres)
@@ -339,27 +356,85 @@ SUCCESSFUL_BACKUPS=0
 FAILED_BACKUPS=0
 
 for volume in "${VOLUMES_TO_BACKUP[@]}"; do
-    log_info "Fazendo backup: $volume"
+    echo ""
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "Fazendo backup do volume: $volume"
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Verificar se volume existe
+    if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+        log_error "  ❌ ERRO: Volume '$volume' não existe!"
+        ((FAILED_BACKUPS++))
+        continue
+    fi
+
+    # Obter informações do volume
+    VOLUME_DRIVER=$(docker volume inspect --format='{{.Driver}}' "$volume" 2>/dev/null)
+    VOLUME_MOUNTPOINT=$(docker volume inspect --format='{{.Mountpoint}}' "$volume" 2>/dev/null)
+    log_info "  Driver: $VOLUME_DRIVER"
+    log_info "  Mountpoint: $VOLUME_MOUNTPOINT"
+
+    # Verificar espaço em disco
+    AVAILABLE_SPACE=$(df -BG "$OUTPUT_DIR" | tail -1 | awk '{print $4}' | tr -d 'G')
+    log_info "  Espaço disponível: ${AVAILABLE_SPACE}GB"
+
+    if [ "$AVAILABLE_SPACE" -lt 1 ]; then
+        log_error "  ❌ ERRO: Espaço em disco insuficiente (< 1GB)!"
+        ((FAILED_BACKUPS++))
+        continue
+    fi
 
     BACKUP_FILE="${volume}-backup-${BATCH_ID}.tar.gz"
+    BACKUP_ERROR_FILE="/tmp/backup-error-$$.txt"
 
-    # Executar backup
+    log_info "  Iniciando compactação..."
+
+    # Executar backup com captura de erro
     docker run --rm \
         -v "$volume":/volume:ro \
         -v "$OUTPUT_DIR":/backup \
         busybox \
-        tar czf /backup/"$BACKUP_FILE" -C /volume . 2>/dev/null
+        tar czf /backup/"$BACKUP_FILE" -C /volume . 2>"$BACKUP_ERROR_FILE"
 
-    if [ $? -eq 0 ]; then
-        BACKUP_SIZE=$(du -h "$OUTPUT_DIR/$BACKUP_FILE" | cut -f1)
-        log_success "  Backup criado: $BACKUP_FILE ($BACKUP_SIZE)"
-        ((SUCCESSFUL_BACKUPS++))
+    BACKUP_EXIT_CODE=$?
+
+    if [ $BACKUP_EXIT_CODE -eq 0 ]; then
+        if [ -f "$OUTPUT_DIR/$BACKUP_FILE" ]; then
+            BACKUP_SIZE=$(du -h "$OUTPUT_DIR/$BACKUP_FILE" | cut -f1)
+            FILE_COUNT=$(tar -tzf "$OUTPUT_DIR/$BACKUP_FILE" 2>/dev/null | wc -l)
+            log_success "  ✅ Backup criado com sucesso!"
+            log_success "     Arquivo: $BACKUP_FILE"
+            log_success "     Tamanho: $BACKUP_SIZE"
+            log_success "     Arquivos: $FILE_COUNT"
+            ((SUCCESSFUL_BACKUPS++))
+        else
+            log_error "  ❌ ERRO: Arquivo de backup não foi criado!"
+            log_error "     Esperado: $OUTPUT_DIR/$BACKUP_FILE"
+            ((FAILED_BACKUPS++))
+        fi
     else
-        log_error "  Falha no backup de $volume"
+        log_error "  ❌ FALHA no backup de $volume (exit code: $BACKUP_EXIT_CODE)"
+
+        # Mostrar erro detalhado
+        if [ -f "$BACKUP_ERROR_FILE" ] && [ -s "$BACKUP_ERROR_FILE" ]; then
+            log_error "  Mensagem de erro:"
+            while IFS= read -r line; do
+                log_error "    $line"
+            done < "$BACKUP_ERROR_FILE"
+        fi
+
+        # Diagnosticar causa provável
+        log_error "  Possíveis causas:"
+        log_error "    1. Volume vazio ou sem permissão de leitura"
+        log_error "    2. Espaço em disco insuficiente"
+        log_error "    3. Volume corrompido ou em uso exclusivo"
+        log_error "    4. Problema com o Docker daemon"
+
         ((FAILED_BACKUPS++))
     fi
 
-    echo ""
+    # Limpar arquivo de erro temporário
+    rm -f "$BACKUP_ERROR_FILE"
 done
 
 ### ========== CRIAR METADATA DO LOTE ==========

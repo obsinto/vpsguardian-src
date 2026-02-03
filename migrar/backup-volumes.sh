@@ -222,10 +222,31 @@ if [ $DB_COUNT -gt 0 ]; then
                 mysql|mariadb)
                     log_info "  Configurando innodb_fast_shutdown=0 (flush completo)..."
 
-                    # Tentar via mysqladmin
-                    docker exec "$container" mysqladmin -u root variables 2>/dev/null | grep -q "innodb_fast_shutdown" && \
-                    docker exec "$container" sh -c 'mysql -u root -e "SET GLOBAL innodb_fast_shutdown = 0;"' 2>/dev/null || \
-                    log_warning "  Não foi possível configurar innodb_fast_shutdown (pode precisar de senha)"
+                    # Detectar senha do MySQL/MariaDB das variáveis de ambiente
+                    MYSQL_ROOT_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_ROOT_PASSWORD=' | cut -d'=' -f2-)
+                    MARIADB_ROOT_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MARIADB_ROOT_PASSWORD=' | cut -d'=' -f2-)
+
+                    # Usar a senha que foi encontrada
+                    DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"
+
+                    if [ -n "$DB_PASSWORD" ]; then
+                        # Tentar com senha
+                        docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SET GLOBAL innodb_fast_shutdown = 0;\"" 2>/dev/null
+                        if [ $? -eq 0 ]; then
+                            log_success "  innodb_fast_shutdown=0 configurado com sucesso"
+                        else
+                            log_warning "  Falha ao configurar innodb_fast_shutdown (senha pode estar incorreta)"
+                        fi
+                    else
+                        # Tentar sem senha (caso raro)
+                        docker exec "$container" sh -c 'mysql -u root -e "SET GLOBAL innodb_fast_shutdown = 0;"' 2>/dev/null
+                        if [ $? -eq 0 ]; then
+                            log_success "  innodb_fast_shutdown=0 configurado sem senha"
+                        else
+                            log_warning "  Senha MySQL não detectada e acesso sem senha falhou"
+                            log_warning "  Continuando sem slow shutdown (backup pode ter redo logs sujos)"
+                        fi
+                    fi
 
                     log_success "  MySQL/MariaDB preparado para slow shutdown"
                     ;;

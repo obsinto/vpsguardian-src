@@ -550,7 +550,8 @@ if [ "$PROXY_EXISTS" = true ]; then
     fi
 else
     log_info "ℹ️  Nenhuma configuração personalizada de proxy detectada no backup"
-    log_info "   Proxy será instalado do zero no servidor novo"
+    log_info "   Proxy será instalado automaticamente do zero no servidor novo"
+    log_info "   (Coolify gerará certificados SSL automaticamente via Let's Encrypt)"
     MIGRATE_PROXY="false"
 fi
 
@@ -1206,7 +1207,7 @@ if [ "$MIGRATE_PROXY" = "true" ] && [ -d "$TEMP_EXTRACT_DIR/proxy-config" ]; the
         log_info "Nenhuma configuração personalizada encontrada no backup"
     fi
 elif [ "$MIGRATE_PROXY" = "false" ]; then
-    log_info "Proxy não será migrado (instalação limpa conforme escolha anterior)"
+    log_info "Proxy não será migrado (instalação limpa - sem configs customizadas no backup)"
 else
     log_info "Nenhum diretório proxy-config encontrado no backup"
 fi

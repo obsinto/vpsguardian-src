@@ -344,12 +344,8 @@ else
     done
 fi
 
-# Contar volumes para backup (protegido contra array vazio)
-if [ ${#VOLUMES_TO_BACKUP[@]:-0} -gt 0 ]; then
-    BACKUP_COUNT=${#VOLUMES_TO_BACKUP[@]}
-else
-    BACKUP_COUNT=0
-fi
+# Contar volumes para backup (sempre funciona, mesmo se array vazio)
+BACKUP_COUNT=${#VOLUMES_TO_BACKUP[@]}
 log_info "Volumes selecionados para backup: $BACKUP_COUNT"
 
 if [ $BACKUP_COUNT -eq 0 ]; then

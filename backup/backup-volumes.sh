@@ -167,7 +167,12 @@ for container in $ALL_PG; do
     fi
 done
 
-DB_COUNT=${#DB_CONTAINERS[@]}
+# Contar bancos detectados (protegido contra array vazio)
+if [ -v DB_CONTAINERS ] && [ ${#DB_CONTAINERS[@]} -gt 0 ]; then
+    DB_COUNT=${#DB_CONTAINERS[@]}
+else
+    DB_COUNT=0
+fi
 log_info "Total de bancos de dados detectados: $DB_COUNT"
 echo ""
 
@@ -339,7 +344,12 @@ else
     done
 fi
 
-BACKUP_COUNT=${#VOLUMES_TO_BACKUP[@]}
+# Contar volumes para backup (protegido contra array vazio)
+if [ ${#VOLUMES_TO_BACKUP[@]:-0} -gt 0 ]; then
+    BACKUP_COUNT=${#VOLUMES_TO_BACKUP[@]}
+else
+    BACKUP_COUNT=0
+fi
 log_info "Volumes selecionados para backup: $BACKUP_COUNT"
 
 if [ $BACKUP_COUNT -eq 0 ]; then

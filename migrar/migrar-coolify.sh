@@ -966,12 +966,69 @@ echo ""
 ### ========== INSTALL COOLIFY ==========
 log_section "Install Coolify"
 log_info "Installing Coolify on new server (version: $COOLIFY_VERSION)..."
+log_info "This may take 3-10 minutes depending on internet speed..."
+echo ""
+
 ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash -s $COOLIFY_VERSION" \
     >"$INSTALL_LOG" 2>&1
 
-grep -q "Your instance is ready to use" "$INSTALL_LOG"
-check_success $? "Coolify install script completed."
+INSTALL_EXIT_CODE=$?
+
+echo ""
+log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+log_info "Verificando instalação do Coolify..."
+log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Verificar se instalação teve sucesso checando containers
+COOLIFY_CONTAINERS=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+    "docker ps --filter 'name=coolify' --format '{{.Names}}' 2>/dev/null")
+
+if [ -z "$COOLIFY_CONTAINERS" ]; then
+    log_error "❌ FALHA: Nenhum container do Coolify está rodando no servidor novo!"
+    echo ""
+    log_error "Últimas 30 linhas do log de instalação:"
+    echo ""
+    tail -30 "$INSTALL_LOG" | while IFS= read -r line; do
+        echo "  $line"
+    done
+    echo ""
+    log_error "Log completo salvo em: $INSTALL_LOG"
+    echo ""
+    log_error "Possíveis causas:"
+    log_error "  1. Servidor não atende requisitos mínimos (Docker, recursos)"
+    log_error "  2. Problema de rede ao baixar imagens Docker"
+    log_error "  3. Porta 8000 ou 6001 já em uso"
+    log_error "  4. Versão do Coolify especificada não existe"
+    echo ""
+    log_error "Para diagnosticar no servidor novo, execute:"
+    log_error "  ssh $NEW_SERVER_USER@$NEW_SERVER_IP"
+    log_error "  docker ps -a | grep coolify"
+    log_error "  docker logs coolify 2>&1 | tail -50"
+    echo ""
+    cleanup_and_exit 1
+else
+    log_success "✅ Coolify instalado com sucesso!"
+    log_info "Containers detectados:"
+    echo "$COOLIFY_CONTAINERS" | while IFS= read -r container; do
+        log_info "  - $container"
+    done
+    echo ""
+
+    # Verificar se está acessível
+    log_info "Verificando se Coolify está acessível..."
+    COOLIFY_STATUS=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "curl -s -o /dev/null -w '%{http_code}' http://localhost:8000 2>/dev/null || echo 'unreachable'")
+
+    if [ "$COOLIFY_STATUS" = "200" ] || [ "$COOLIFY_STATUS" = "302" ]; then
+        log_success "✅ Coolify respondendo na porta 8000 (HTTP $COOLIFY_STATUS)"
+    else
+        log_warning "⚠️  Coolify ainda não está respondendo (pode levar mais alguns segundos)"
+        log_info "Status HTTP: $COOLIFY_STATUS"
+    fi
+fi
+
+log_success "Instalação do Coolify concluída."
 
 ### ========== PREPARE AND TRANSFER FILES ==========
 log_section "Transfer Files"

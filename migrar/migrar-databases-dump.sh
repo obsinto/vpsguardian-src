@@ -157,24 +157,33 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    # Lendo linha por linha com segurança absoluta
     local user=$(echo "$credentials" | sed -n '1p')
     local password=$(echo "$credentials" | sed -n '2p')
     local database=$(echo "$credentials" | sed -n '3p')
 
     if [ -z "$password" ]; then
-        log_error "Senha MySQL não encontrada para $container"
+        log_error "Senha MySQL/MariaDB não encontrada para $container"
         return 1
     fi
 
     log_info "  Executando mysqldump..."
 
+    # Modificado: Tira o 2>/dev/null e salva o erro num arquivo temporário
     if [ "$database" = "all" ]; then
-        docker exec "$container" mysqldump -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
+        docker exec "$container" mysqldump -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers > "$output_file" 2> "/tmp/erro-dump.log"
     else
-        docker exec "$container" mysqldump -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
+        docker exec "$container" mysqldump -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" > "$output_file" 2> "/tmp/erro-dump.log"
     fi
-    return $?
+    
+    local status=$?
+    
+    # Se falhar, cospe o erro na tela para a gente ler!
+    if [ $status -ne 0 ]; then
+        echo "  🚨 ERRO CAPTURADO DO MARIADB:"
+        cat "/tmp/erro-dump.log"
+    fi
+    
+    return $status
 }
 
 dump_postgres() {

@@ -435,10 +435,38 @@ if [ -z "$BACKUP_APP_KEY" ]; then
     fi
 fi
 
+# 4. VALIDAÇÃO DE FORMATO DA APP_KEY
+log_info "🔍 Validando formato da APP_KEY..."
+
+# Laravel APP_KEY deve começar com "base64:" e ter tamanho adequado
+if [[ "$BACKUP_APP_KEY" == base64:* ]]; then
+    # Remover prefixo "base64:" e verificar tamanho
+    KEY_VALUE="${BACKUP_APP_KEY#base64:}"
+    KEY_LENGTH=${#KEY_VALUE}
+
+    if [ "$KEY_LENGTH" -ge 32 ]; then
+        log_success "✅ APP_KEY tem formato válido (base64:... com $KEY_LENGTH caracteres)"
+    else
+        log_warning "⚠️  APP_KEY parece muito curta ($KEY_LENGTH caracteres)"
+        log_warning "   Isso pode causar problemas de segurança"
+    fi
+else
+    log_warning "⚠️  APP_KEY não tem prefixo 'base64:'"
+    log_warning "   Formato esperado: base64:... (Laravel padrão)"
+    log_warning "   Formato atual: ${BACKUP_APP_KEY:0:20}..."
+    echo ""
+    log_info "ℹ️  Continuando mesmo assim (pode ser formato antigo do Coolify)"
+fi
+
 # Para compatibilidade com resto do script
 APP_KEY="$BACKUP_APP_KEY"
 
 log_success "✅ Chaves de criptografia preparadas para migração"
+log_info "   APP_KEY: ${APP_KEY:0:30}..."
+if [ -n "$BACKUP_PREV_KEYS" ]; then
+    PREV_KEY_COUNT=$(echo "$BACKUP_PREV_KEYS" | tr ',' '\n' | wc -l)
+    log_info "   APP_PREVIOUS_KEYS: $PREV_KEY_COUNT chaves"
+fi
 echo ""
 # ==============================================================================
 # FIM DA EXTRAÇÃO DE CHAVES
@@ -1425,6 +1453,12 @@ echo ""
 ### ========== FINAL INSTALL ==========
 log_section "Final Install"
 log_info "DEBUG: APP_KEY configurado: ${APP_KEY:0:20}..."
+
+# CRÍTICO: Salvar APP_KEY ANTES do Final Install
+log_info "🔒 Salvando APP_KEY para proteção..."
+APP_KEY_BACKUP="$APP_KEY_TO_SET"
+PREV_KEYS_BACKUP="$PREV_KEYS_TO_SET"
+
 log_info "Running final Coolify install to apply all changes..."
 ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash -s $COOLIFY_VERSION" \
@@ -1438,6 +1472,118 @@ for i in {1..30}; do
         break
     fi
 done
+
+### ========== CRITICAL: RE-APPLY APP_KEY AFTER FINAL INSTALL ==========
+log_section "Verify and Protect APP_KEY"
+log_warning "🔍 CRÍTICO: Verificando se APP_KEY foi preservada após Final Install..."
+echo ""
+
+# Verificar APP_KEY atual no servidor novo
+CURRENT_APP_KEY=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+    "grep '^APP_KEY=' /data/coolify/source/.env 2>/dev/null | cut -d'=' -f2-")
+
+if [ -z "$CURRENT_APP_KEY" ]; then
+    log_error "❌ APP_KEY DESAPARECEU após Final Install!"
+    log_warning "⚠️  Forçando re-aplicação da chave do backup..."
+
+    # Forçar re-aplicação
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_BACKUP") $(printf '%q' "$PREV_KEYS_BACKUP")" << 'EOF_REAPPLY'
+        APP_KEY_TO_SET="$1"
+        PREV_KEYS_TO_SET="$2"
+
+        ENV_FILE="/data/coolify/source/.env"
+
+        # Remover linhas antigas
+        sed -i '/^APP_KEY=/d' "$ENV_FILE"
+        sed -i '/^APP_PREVIOUS_KEYS=/d' "$ENV_FILE"
+
+        # Re-aplicar APP_KEY do backup
+        printf 'APP_KEY=%s\n' "$APP_KEY_TO_SET" >> "$ENV_FILE"
+
+        if [ -n "$PREV_KEYS_TO_SET" ]; then
+            printf 'APP_PREVIOUS_KEYS=%s\n' "$PREV_KEYS_TO_SET" >> "$ENV_FILE"
+        fi
+
+        sed -i '/^$/d' "$ENV_FILE"
+EOF_REAPPLY
+
+    log_success "✅ APP_KEY restaurada com sucesso!"
+
+elif [ "$CURRENT_APP_KEY" != "$APP_KEY_BACKUP" ]; then
+    log_error "❌ APP_KEY FOI ALTERADA pelo Final Install!"
+    log_error "   Esperada: ${APP_KEY_BACKUP:0:30}..."
+    log_error "   Atual:    ${CURRENT_APP_KEY:0:30}..."
+    echo ""
+    log_warning "⚠️  PROBLEMA: Dados criptografados não poderão ser descriptografados!"
+    log_warning "⚠️  Forçando restauração da chave original..."
+    echo ""
+
+    # Forçar restauração da chave original
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_BACKUP") $(printf '%q' "$PREV_KEYS_BACKUP")" << 'EOF_RESTORE'
+        APP_KEY_TO_SET="$1"
+        PREV_KEYS_TO_SET="$2"
+
+        ENV_FILE="/data/coolify/source/.env"
+
+        # Backup do .env antes de modificar
+        cp "$ENV_FILE" "${ENV_FILE}.before_key_restore"
+
+        # Remover linhas antigas
+        sed -i '/^APP_KEY=/d' "$ENV_FILE"
+        sed -i '/^APP_PREVIOUS_KEYS=/d' "$ENV_FILE"
+
+        # Restaurar APP_KEY original do backup
+        printf 'APP_KEY=%s\n' "$APP_KEY_TO_SET" >> "$ENV_FILE"
+
+        if [ -n "$PREV_KEYS_TO_SET" ]; then
+            printf 'APP_PREVIOUS_KEYS=%s\n' "$PREV_KEYS_TO_SET" >> "$ENV_FILE"
+        fi
+
+        sed -i '/^$/d' "$ENV_FILE"
+EOF_RESTORE
+
+    log_success "✅ APP_KEY original RESTAURADA!"
+    log_info "   Backup do .env anterior salvo em: /data/coolify/source/.env.before_key_restore"
+
+    # CRÍTICO: Reiniciar todos os containers para aplicar a mudança
+    log_warning "🔄 Reiniciando containers para aplicar mudança de chave..."
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "docker restart coolify coolify-db coolify-redis coolify-realtime 2>/dev/null"
+
+    sleep 10
+    log_success "✅ Containers reiniciados!"
+
+else
+    log_success "✅ APP_KEY PRESERVADA corretamente!"
+    log_success "   APP_KEY: ${CURRENT_APP_KEY:0:30}..."
+    log_success "   Status: Idêntica ao backup original"
+fi
+
+echo ""
+log_info "📊 Verificação final de integridade:"
+
+# Verificar se APP_KEY e APP_PREVIOUS_KEYS estão corretas
+FINAL_APP_KEY=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+    "grep '^APP_KEY=' /data/coolify/source/.env 2>/dev/null | cut -d'=' -f2-")
+FINAL_PREV_KEYS=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+    "grep '^APP_PREVIOUS_KEYS=' /data/coolify/source/.env 2>/dev/null | cut -d'=' -f2-")
+
+if [ "$FINAL_APP_KEY" = "$APP_KEY_BACKUP" ]; then
+    log_success "   ✅ APP_KEY: Verificada e correta"
+else
+    log_error "   ❌ APP_KEY: AINDA INCORRETA!"
+    log_error "      Erro crítico - dados criptografados serão inacessíveis"
+fi
+
+if [ -n "$PREV_KEYS_BACKUP" ]; then
+    if [ "$FINAL_PREV_KEYS" = "$PREV_KEYS_BACKUP" ]; then
+        log_success "   ✅ APP_PREVIOUS_KEYS: Verificadas e corretas"
+    else
+        log_warning "   ⚠️  APP_PREVIOUS_KEYS: Diferentes (pode ser normal)"
+    fi
+fi
+
+echo ""
 
 ### ========== TRANSFER SSH KEYS (AFTER FINAL INSTALL) ==========
 log_section "Transfer SSH Keys"
@@ -1637,12 +1783,40 @@ ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
      find /data/coolify/ssh/keys -type f -exec chmod 600 {} \; 2>/dev/null"
 log_success "SSH keys permissions re-configured."
 
-# Reiniciar Coolify para forçar re-validação das chaves SSH
-log_info "Restarting Coolify to reload SSH keys..."
-ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-    "docker restart coolify 2>/dev/null || true"
-sleep 10  # Aguardar Coolify reiniciar
-log_success "Coolify restarted."
+# Verificar e iniciar containers essenciais do Coolify
+log_info "Ensuring all Coolify containers are running..."
+ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" bash <<'CONTAINERS_CHECK'
+#!/bin/bash
+
+# Ordem correta de inicialização
+CONTAINERS=("coolify-db" "coolify-redis" "coolify-realtime" "coolify")
+
+for container in "${CONTAINERS[@]}"; do
+    # Verificar se container existe
+    if docker ps -a --format "{{.Names}}" | grep -q "^${container}$"; then
+        STATUS=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null)
+
+        # Iniciar se estiver parado
+        if [ "$STATUS" = "exited" ] || [ "$STATUS" = "created" ]; then
+            echo "Starting $container..."
+            docker start "$container" >/dev/null 2>&1
+            sleep 2
+        elif [ "$STATUS" = "running" ]; then
+            # Se for o coolify principal, reiniciar para recarregar chaves SSH
+            if [ "$container" = "coolify" ]; then
+                echo "Restarting $container to reload SSH keys..."
+                docker restart "$container" >/dev/null 2>&1
+                sleep 5
+            fi
+        fi
+    fi
+done
+
+# Aguardar containers ficarem healthy
+sleep 10
+CONTAINERS_CHECK
+
+log_success "All Coolify containers verified and started."
 
 # VERIFICAÇÃO CRÍTICA: Confirmar que chaves SSH ainda existem após restart
 log_info "Verificando se chaves SSH persistiram após restart do Coolify..."
@@ -1691,23 +1865,66 @@ else
     fi
 fi
 
-# Verificar status dos containers
+# Verificar status dos containers ESSENCIAIS
+log_section "Container Health Check"
+log_info "Verifying all essential Coolify containers..."
+
 ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "docker ps --filter name=coolify --format '{{.Names}} {{.Status}}'" \
     > "$MIGRATION_LOG_DIR/docker-status.txt"
 
-if grep -q "coolify" "$MIGRATION_LOG_DIR/docker-status.txt" && grep -q "healthy" "$MIGRATION_LOG_DIR/docker-status.txt"; then
-    log_success "Coolify containers are running and healthy."
-elif grep -q "coolify" "$MIGRATION_LOG_DIR/docker-status.txt"; then
-    log_success "Coolify containers are running."
-    cat "$MIGRATION_LOG_DIR/docker-status.txt" | while read line; do
-        log_info "Container: $line"
+# Lista de containers ESSENCIAIS
+ESSENTIAL_CONTAINERS=("coolify" "coolify-db" "coolify-redis" "coolify-realtime")
+MISSING_CONTAINERS=()
+RUNNING_COUNT=0
+
+# Verificar cada container essencial
+for container in "${ESSENTIAL_CONTAINERS[@]}"; do
+    if grep -q "^${container} " "$MIGRATION_LOG_DIR/docker-status.txt"; then
+        STATUS=$(grep "^${container} " "$MIGRATION_LOG_DIR/docker-status.txt" | awk '{print $2, $3, $4, $5}')
+        log_success "✅ $container: $STATUS"
+        RUNNING_COUNT=$((RUNNING_COUNT + 1))
+    else
+        log_error "❌ $container: NOT RUNNING"
+        MISSING_CONTAINERS+=("$container")
+    fi
+done
+
+echo ""
+
+# Resultado final
+if [ $RUNNING_COUNT -eq ${#ESSENTIAL_CONTAINERS[@]} ]; then
+    log_success "🎉 All ${#ESSENTIAL_CONTAINERS[@]} essential containers are running!"
+elif [ $RUNNING_COUNT -gt 0 ]; then
+    log_warning "⚠️  Only $RUNNING_COUNT/${#ESSENTIAL_CONTAINERS[@]} containers are running"
+    log_error "Missing containers: ${MISSING_CONTAINERS[*]}"
+    echo ""
+    log_info "Attempting to start missing containers..."
+
+    # Tentar iniciar containers faltantes
+    for container in "${MISSING_CONTAINERS[@]}"; do
+        log_info "Starting $container..."
+        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+            "docker start $container 2>/dev/null || true"
+        sleep 2
     done
+
+    echo ""
+    log_warning "Migration completed but some containers needed manual start"
+    log_info "Verify all containers with: docker ps --filter name=coolify"
 else
-    log_error "Coolify containers are not running properly."
+    log_error "❌ NO Coolify containers are running!"
     log_info "Check logs in $MIGRATION_LOG_DIR for details."
+    log_info "Try manually: docker start coolify-db coolify-redis coolify-realtime coolify"
     cleanup_and_exit 1
 fi
+
+echo ""
+log_info "Final container status:"
+cat "$MIGRATION_LOG_DIR/docker-status.txt" | while read line; do
+    log_info "  $line"
+done
+echo ""
 
 ### ========== CLEANUP ==========
 log_info "Cleaning up temporary files on remote server..."

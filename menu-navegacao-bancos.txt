@@ -1,0 +1,218 @@
+╔═══════════════════════════════════════════════════════════════╗
+║         🎯 NAVEGAÇÃO RÁPIDA - MENU DE BANCOS DE DADOS        ║
+╚═══════════════════════════════════════════════════════════════╝
+
+📍 COMO ACESSAR:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+sudo /opt/vpsguardian/menu-principal.sh
+
+
+┌─────────────────────────────────────────────────────────────┐
+│                    MENU PRINCIPAL                           │
+│                                                             │
+│  1 → Status e Diagnóstico                                   │
+│  2 → 💾 Backups ◄━━━━ ESCOLHA ESTA OPÇÃO                   │
+│  3 → Manutenção                                             │
+│  4 → Migração                                               │
+│  5 → Configuração                                           │
+│  6 → Documentação                                           │
+│  7 → Obsidian                                               │
+│  8 → Ver Logs                                               │
+│  0 → Sair                                                   │
+└─────────────────────────────────────────────────────────────┘
+                            ▼
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    💾 MENU DE BACKUPS                       │
+│                                                             │
+│  CRIAR BACKUPS                                              │
+│  1 → Backup Completo Coolify                                │
+│  2 → Backup de Bancos de Dados                              │
+│  3 → Backup de Volume Específico                            │
+│  4 → Enviar para Destinos Remotos                           │
+│                                                             │
+│  RESTAURAR BACKUPS                                          │
+│  5 → Restaurar Coolify Remoto                               │
+│  6 → Restaurar Volume Específico                            │
+│  7 → 🗄️  Restaurar Banco Específico ⭐ NOVO!               │
+│       │                                                     │
+│       └─► PostgreSQL, MySQL, MongoDB                        │
+│           Restauração inteligente com fallback              │
+│           ⚠️  Operação CRÍTICA                              │
+│                                                             │
+│  VALIDAÇÃO E DIAGNÓSTICO                                    │
+│  8 → 🏥 Validar Saúde dos Bancos ⭐ NOVO!                   │
+│       │                                                     │
+│       └─► Verifica todos os bancos                          │
+│           Testes de conectividade                           │
+│           Relatório de integridade                          │
+│                                                             │
+│  0 → Voltar                                                 │
+└─────────────────────────────────────────────────────────────┘
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                  🎬 FLUXOS DE USO COMUNS                     ║
+╚═══════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────┐
+│  CENÁRIO 1: Backup Diário de Bancos                        │
+└─────────────────────────────────────────────────────────────┘
+
+Menu → 2 → 2
+         ▲
+         └─ Backup de Bancos de Dados
+
+Resultado:
+✅ Backups SQL comprimidos (gzip)
+✅ Tarball consolidado
+✅ Retenção automática (30 dias)
+📁 /root/database-backups/databases-backup-TIMESTAMP.tar.gz
+
+
+┌─────────────────────────────────────────────────────────────┐
+│  CENÁRIO 2: Restaurar Banco Após Problema                  │
+└─────────────────────────────────────────────────────────────┘
+
+Menu → 2 → 7
+         ▲
+         └─ Restaurar Banco Específico
+
+Fluxo:
+1. Confirmar operação crítica (digitar "SIM")
+2. Listar backups disponíveis
+3. Escolher banco para restaurar
+4. Restauração inteligente:
+   ├─► Tentar volume snapshot (rápido)
+   ├─► Validar se funcionou
+   ├─► Se crash loop → Rollback
+   └─► Fallback para SQL dump
+5. Validação automática de saúde
+
+Resultado:
+✅ Banco restaurado
+✅ Container rodando
+✅ Integridade validada
+
+
+┌─────────────────────────────────────────────────────────────┐
+│  CENÁRIO 3: Validação Pós-Migração                         │
+└─────────────────────────────────────────────────────────────┘
+
+Menu → 2 → 8
+         ▲
+         └─ Validar Saúde dos Bancos
+
+Testes executados:
+✓ PostgreSQL: pg_isready + query test
+✓ MySQL: mysqladmin ping + mysqlcheck
+✓ MongoDB: ping + listDatabases
+✓ Redis: PING + DBSIZE
+
+Resultado:
+✅ Relatório de saúde
+✅ Problemas detectados (se houver)
+✅ Recomendações de correção
+
+
+┌─────────────────────────────────────────────────────────────┐
+│  CENÁRIO 4: Fluxo Completo - Migração Segura               │
+└─────────────────────────────────────────────────────────────┘
+
+SERVIDOR ORIGEM:
+Menu → 2 → 2 (Backup de Bancos)
+
+TRANSFERIR:
+rsync/scp para servidor destino
+
+SERVIDOR DESTINO:
+Menu → 2 → 7 (Restaurar Banco)
+Menu → 2 → 8 (Validar Saúde)
+
+Resultado:
+✅ Bancos migrados com segurança
+✅ Integridade garantida
+✅ Aplicações funcionando
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                    ⚠️  AVISOS IMPORTANTES                     ║
+╚═══════════════════════════════════════════════════════════════╝
+
+🔴 RESTAURAR BANCO (Opção 7):
+   • OPERAÇÃO DESTRUTIVA - Dados atuais serão perdidos
+   • Requer confirmação crítica (digitar "SIM")
+   • Causa downtime das aplicações
+   • Sempre faça backup antes de restaurar
+
+🟢 VALIDAR SAÚDE (Opção 8):
+   • OPERAÇÃO SEGURA - Apenas leitura
+   • Não altera dados
+   • Pode ser executado a qualquer momento
+   • Útil para diagnóstico
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                     📊 BANCOS SUPORTADOS                      ║
+╚═══════════════════════════════════════════════════════════════╝
+
+✅ PostgreSQL    → pg_dump + volume snapshot
+✅ MySQL/MariaDB → mysqldump + volume snapshot
+✅ MongoDB       → mongodump + volume snapshot
+✅ Redis         → volume snapshot (RDB/AOF)
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                    🔧 SOLUÇÃO DE PROBLEMAS                    ║
+╚═══════════════════════════════════════════════════════════════╝
+
+❓ "Script não encontrado"
+   → Verifique se os scripts estão em:
+     /opt/vpsguardian/migrar/restore-database-volumes.sh
+     /opt/vpsguardian/scripts-auxiliares/validate-database-health.sh
+
+❓ "Permission denied"
+   → Execute com sudo:
+     sudo /opt/vpsguardian/menu-principal.sh
+
+❓ "Banco não está saudável após restore"
+   → Execute validação:
+     Menu → 2 → 8
+   → Verifique logs:
+     docker logs CONTAINER_NAME
+
+❓ "Crash loop detectado"
+   → Script fará rollback automático para SQL dump
+   → Aguarde conclusão
+   → Verifique logs em /var/log/manutencao/
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                      📝 LOGS E HISTÓRICO                      ║
+╚═══════════════════════════════════════════════════════════════╝
+
+📁 Arquivo de logs:
+   /var/log/manutencao/menu-execucoes.log
+
+🔍 Ver últimas operações:
+   tail -30 /var/log/manutencao/menu-execucoes.log
+
+🔍 Buscar operações de banco:
+   grep "Banco" /var/log/manutencao/menu-execucoes.log
+
+
+╔═══════════════════════════════════════════════════════════════╗
+║                    ✅ STATUS DA IMPLEMENTAÇÃO                 ║
+╚═══════════════════════════════════════════════════════════════╝
+
+✅ Menu atualizado
+✅ Opção 7 (Restaurar Banco) adicionada
+✅ Opção 8 (Validar Saúde) adicionada
+✅ Confirmações críticas configuradas
+✅ Logging integrado
+✅ Sintaxe validada
+✅ Documentação criada
+
+🚀 PRONTO PARA USO!
+

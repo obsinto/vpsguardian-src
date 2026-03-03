@@ -95,7 +95,7 @@ detect_app_databases() {
     done
 }
 
-# Detectar TODOS os bancos de aplicações por imagem (exceto Coolify)
+# Detectar TODOS os bancos de aplicações por LABELS + IMAGEM (exceto Coolify)
 detect_all_app_databases() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         # Ignorar bancos do próprio Coolify
@@ -103,9 +103,25 @@ detect_all_app_databases() {
             continue
         fi
 
-        # Detectar por imagem
+        local is_database=false
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        if [[ "$image" =~ mysql|mariadb|postgres|redis|mongo|mongodb ]]; then
+        local coolify_type=$(docker inspect --format='{{index .Config.Labels "coolify.type"}}' "$name" 2>/dev/null)
+
+        # Critério 1: Tem label coolify.type = database ou service
+        if [ "$coolify_type" = "database" ] || [ "$coolify_type" = "service" ]; then
+            # Verificar se é realmente um banco (service pode ser nginx, etc)
+            if [[ "$image" =~ mysql|mariadb|postgres|redis|mongo|mongodb|esus_database ]]; then
+                is_database=true
+            fi
+        fi
+
+        # Critério 2: Detectar por imagem conhecida (mesmo sem label)
+        if [[ "$image" =~ mysql|mariadb|postgres|redis|mongo|mongodb|esus_database ]]; then
+            is_database=true
+        fi
+
+        # Retornar se for banco
+        if [ "$is_database" = true ]; then
             echo "$name"
         fi
     done
@@ -139,6 +155,37 @@ get_postgres_credentials() {
     local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
     local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
     echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+}
+
+# Detectar tipo de banco baseado em variáveis de ambiente
+detect_database_type() {
+    local container="$1"
+    local image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+
+    # Primeiro tentar pela imagem
+    if [[ "$image" =~ mysql|mariadb ]]; then
+        echo "mysql"
+        return
+    elif [[ "$image" =~ postgres|esus_database ]]; then
+        echo "postgres"
+        return
+    elif [[ "$image" =~ redis ]]; then
+        echo "redis"
+        return
+    fi
+
+    # Se não detectou pela imagem, tentar pelas variáveis de ambiente
+    local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null)
+
+    if echo "$env_vars" | grep -q '^MYSQL_ROOT_PASSWORD='; then
+        echo "mysql"
+    elif echo "$env_vars" | grep -q '^POSTGRES_PASSWORD='; then
+        echo "postgres"
+    elif echo "$env_vars" | grep -q '^REDIS_PASSWORD='; then
+        echo "redis"
+    else
+        echo "unknown"
+    fi
 }
 
 ### ========== FUNÇÕES DE DUMP ==========

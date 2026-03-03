@@ -16,6 +16,16 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
+# Carregar configurações do VPS Guardian
+if [ -f "/opt/vpsguardian/config/config.env" ]; then
+    source "/opt/vpsguardian/config/config.env" 2>/dev/null
+fi
+if [ -f "/opt/vpsguardian/config/default.conf" ]; then
+    source "/opt/vpsguardian/config/default.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
+    source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
+fi
+
 ### ========== CONFIGURAÇÃO ==========
 TARGET_SERVER="${TARGET_SERVER:-}"
 TARGET_USER="${TARGET_USER:-root}"
@@ -130,6 +140,16 @@ get_postgres_credentials() {
     echo "${pg_db:-postgres}"
 }
 
+get_mongodb_credentials() {
+    local container="$1"
+    local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
+    local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
+    
+    echo "${mongo_user:-root}"
+    echo "$mongo_pass"
+    echo "admin"
+}
+
 # Detecção INTELIGENTE de tipo de banco (Imagem + Env Vars + Portas)
 detect_database_type() {
     local container="$1"
@@ -155,23 +175,38 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | sed -n '1p')
-    local password=$(echo "$credentials" | sed -n '2p')
-    local database=$(echo "$credentials" | sed -n '3p')
+    # Vacina contra caracteres invisíveis: o comando "tr -d '\r\n'" mata qualquer quebra de linha escondida
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then
         log_error "Senha MySQL/MariaDB não encontrada para $container"
         return 1
     fi
 
-    log_info "  Executando mysqldump..."
+    log_info "  Executando dump de dados..."
 
-    if [ "$database" = "all" ]; then
-        docker exec "$container" mysqldump -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
-    else
-        docker exec "$container" mysqldump -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
+    # Detecta de forma inteligente se é MariaDB 11+ para usar o binário correto
+    local dump_cmd="mysqldump"
+    if docker exec "$container" which mariadb-dump >/dev/null 2>&1; then
+        dump_cmd="mariadb-dump"
     fi
-    return $?
+
+    # Executa o dump usando as variáveis higienizadas
+    if [ "$database" = "all" ]; then
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
+    else
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
+    fi
+    
+    # Verificação de segurança: se gerou um arquivo com 0 bytes, algo deu errado
+    if [ $? -ne 0 ] || [ ! -s "$output_file" ]; then
+        rm -f "$output_file"
+        return 1
+    fi
+
+    return 0
 }
 
 dump_postgres() {
@@ -179,9 +214,9 @@ dump_postgres() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | sed -n '1p')
-    local password=$(echo "$credentials" | sed -n '2p')
-    local database=$(echo "$credentials" | sed -n '3p')
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then
         log_error "Senha PostgreSQL não encontrada para $container"
@@ -190,7 +225,13 @@ dump_postgres() {
 
     log_info "  Executando pg_dump..."
     docker exec -e PGPASSWORD="$password" "$container" pg_dump -U "$user" -d "$database" --clean --if-exists 2>/dev/null > "$output_file"
-    return $?
+    
+    if [ $? -ne 0 ] || [ ! -s "$output_file" ]; then
+        rm -f "$output_file"
+        return 1
+    fi
+
+    return 0
 }
 
 dump_redis() {
@@ -201,6 +242,26 @@ dump_redis() {
     docker exec "$container" redis-cli SAVE >/dev/null 2>&1 || { log_error "Falha ao executar SAVE no Redis"; return 1; }
     docker exec "$container" cat /data/dump.rdb > "$output_file" 2>/dev/null || { log_error "Falha ao copiar dump.rdb"; return 1; }
     return 0
+}
+
+dump_mongodb() {
+    local container="$1"
+    local output_dir="$2"
+    local credentials="$3"
+
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+
+    log_info "  Executando mongodump..."
+
+    docker exec "$container" mongodump --username="$user" --password="$password" --authenticationDatabase=admin --out=/tmp/mongodump >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        docker cp "$container:/tmp/mongodump/." "$output_dir/" >/dev/null 2>&1
+        docker exec "$container" rm -rf /tmp/mongodump >/dev/null 2>&1
+        return 0
+    fi
+    return 1
 }
 
 ### ========== APRESENTAÇÃO ==========
@@ -268,6 +329,26 @@ case "$MIGRATION_MODE" in
     all) DATABASES_TO_MIGRATE=("${ALL_APP_DATABASES[@]}"); [ -n "$COOLIFY_DATABASE" ] && DATABASES_TO_MIGRATE+=("$COOLIFY_DATABASE") ;;
 esac
 
+# Perguntar especificamente sobre coolify-db se não for modo coolify-only
+if [ "$MIGRATION_MODE" != "coolify-only" ] && [ -n "$COOLIFY_DATABASE" ]; then
+    echo ""
+    log_warning "Detecção: O banco de dados do Coolify (coolify-db) foi encontrado."
+    echo ""
+    read -p "Deseja incluir o backup do coolify-db? (s/N): " include_coolify
+    include_coolify=${include_coolify,,}  # Converter para minúsculas
+
+    if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
+        if [ "$MIGRATION_MODE" != "all" ]; then
+            DATABASES_TO_MIGRATE+=("$COOLIFY_DATABASE")
+            log_info "coolify-db será incluído no backup."
+        fi
+    else
+        # Remover coolify-db da lista se estiver presente
+        DATABASES_TO_MIGRATE=("${DATABASES_TO_MIGRATE[@]/$COOLIFY_DATABASE}")
+        log_info "coolify-db NÃO será incluído no backup."
+    fi
+fi
+
 if [ ${#DATABASES_TO_MIGRATE[@]} -eq 0 ]; then log_warning "Nenhum banco para migrar"; exit 0; fi
 
 ### ========== DESTINO ==========
@@ -320,14 +401,21 @@ for container in "${DATABASES_TO_MIGRATE[@]}"; do
     echo ""
 done
 
-### ========== FINALIZAÇÃO ==========
+### ========== FINALIZAÇÃO (Com Lotes) ==========
 if [ "$TARGET_SERVER" != "local" ]; then
-    REMOTE_DIR="/root/database-dumps-migration-${MIGRATION_MODE}"
+    REMOTE_DIR="/root/database-dumps-migration/lote-${TIMESTAMP}"
     ssh -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "mkdir -p $REMOTE_DIR"
     rsync -avz --progress -e "ssh -p $TARGET_PORT" "$DUMP_DIR/" "$TARGET_USER@$TARGET_SERVER:$REMOTE_DIR/" 2>/dev/null
+    
+    if [ "$MIGRATION_MODE" != "interactive" ]; then
+        ssh -t -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "/tmp/restore-databases-dump.sh --dir=$REMOTE_DIR" 2>/dev/null
+    fi
     rm -rf "$DUMP_DIR"
 else
-    FINAL_DIR="/var/backups/vpsguardian/database-dumps"
+    # Mover para pasta local definitiva e organizada
+    # Usar DATABASE_BACKUP_DIR da configuração ou padrão
+    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}"
+    FINAL_DIR="$BASE_BACKUP_DIR/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
     rm -rf "$DUMP_DIR"

@@ -21,8 +21,19 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
+# Carregar configurações do VPS Guardian
+if [ -f "/opt/vpsguardian/config/config.env" ]; then
+    source "/opt/vpsguardian/config/config.env" 2>/dev/null
+fi
+if [ -f "/opt/vpsguardian/config/default.conf" ]; then
+    source "/opt/vpsguardian/config/default.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
+    source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
+fi
+
 ### ========== CONFIGURAÇÃO ==========
-DUMP_DIR="${DUMP_DIR:-/var/backups/vpsguardian/database-dumps}"
+# Usar DATABASE_BACKUP_DIR da configuração ou padrão
+DUMP_DIR="${DUMP_DIR:-${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}}"
 AUTO_MODE=false
 SELECTED_DUMPS=()
 
@@ -37,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             echo "Restaurar bancos de dados de dumps SQL"
             echo ""
             echo "Options:"
-            echo "  --dir=PATH       Diretório base (default: /var/backups/vpsguardian/database-dumps)"
+            echo "  --dir=PATH       Diretório base (default: ${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps})"
             echo "  --auto           Modo automático (restaurar todos)"
             echo "  -h, --help       Mostrar esta ajuda"
             echo ""
@@ -68,52 +79,38 @@ extract_container_name() {
     echo "$filename" | sed -E 's/-(mysql|postgres|mongodb)-[0-9_]+\.(sql\.gz|sql|tar\.gz)$//'
 }
 
-# Tripla Checagem e Filtro Anti-Impostor
+# Lógica ESTREITA e SEGURA: Só retorna se o container original estiver ONLINE
+# Aguarda até 30 segundos se o container estiver reiniciando
 find_matching_container() {
     local original_name="$1"
-    local db_type="$2"
-    local containers=""
+    local max_wait=30
+    local waited=0
 
-    containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        
-        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
-        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
-            continue
+    while [ $waited -lt $max_wait ]; do
+        # Verifica se está rodando
+        if docker ps --format '{{.Names}}' | grep -q "^${original_name}$"; then
+            echo "$original_name"
+            return 0
         fi
 
-        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
-        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-
-        case "$db_type" in
-            mysql)
-                if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
-                    echo "$name"
-                fi
-                ;;
-            postgres)
-                if [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
-                    echo "$name"
-                fi
-                ;;
-            mongodb)
-                if [[ "$image" =~ mongo ]] || echo "$env_vars" | grep -qEi 'MONGO_INITDB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 27017 ]]; then
-                    echo "$name"
-                fi
-                ;;
-        esac
-    done)
-
-    # Tentar encontrar container com nome igual
-    for container in $containers; do
-        if [ "$container" = "$original_name" ]; then
-            echo "$container"
-            return 0
+        # Verifica se está reiniciando
+        local status=$(docker inspect --format='{{.State.Status}}' "$original_name" 2>/dev/null)
+        if [ "$status" = "restarting" ]; then
+            if [ $waited -eq 0 ]; then
+                log_warning "  Container '$original_name' está reiniciando, aguardando..."
+            fi
+            sleep 2
+            waited=$((waited + 2))
+        else
+            # Container não existe ou está parado
+            echo ""
+            return 1
         fi
     done
 
-    # Retorna todos os compatíveis se não achar o exato
-    echo "$containers"
+    log_error "  Timeout aguardando container '$original_name' ficar pronto"
+    echo ""
+    return 1
 }
 
 # Credenciais lidas linha por linha para proteção contra caracteres especiais
@@ -147,7 +144,7 @@ get_container_credentials() {
     esac
 }
 
-### ========== FUNÇÕES DE RESTORE (Higienizadas) ==========
+### ========== FUNÇÕES DE RESTORE (Higienizadas e Falantes) ==========
 
 restore_mysql() {
     local container="$1"
@@ -157,26 +154,48 @@ restore_mysql() {
     # Higienização contra Enter invisível
     local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
     local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
-    if [ -z "$password" ]; then log_error "Senha MySQL não encontrada"; return 1; fi
+    if [ -z "$password" ]; then log_error "  Senha MySQL/MariaDB não encontrada"; return 1; fi
+    if [ -z "$database" ]; then log_error "  Nome do banco de dados não encontrado"; return 1; fi
 
-    log_info "  Aguardando MariaDB/MySQL aceitar conexões..."
-    local retries=0
-    while [ $retries -lt 30 ]; do
-        if docker exec "$container" mysqladmin ping -u "$user" -p"$password" >/dev/null 2>&1; then break; fi
-        sleep 2
-        ((retries++))
-    done
+    local cmd="mysql"
+    if docker exec "$container" which mariadb >/dev/null 2>&1; then cmd="mariadb"; fi
 
-    if [ $retries -ge 30 ]; then log_error "  Timeout: Banco não respondeu"; return 1; fi
+    log_info "  Credenciais: user=$user, database=$database"
 
-    log_info "  Restaurando dump..."
-    if [[ "$dump_file" =~ \.gz$ ]]; then
-        gunzip -c "$dump_file" | docker exec -i "$container" mysql -u "$user" -p"$password" 2>/dev/null
+    # Para MySQL, dumps criados com mysqldump de um único banco geralmente
+    # NÃO incluem CREATE DATABASE ou USE, então precisamos especificar o banco
+    # Apenas no caso de --all-databases o dump tem tudo interno
+
+    if [ "$database" = "all" ]; then
+        log_info "  Restaurando todos os bancos de dados..."
+        # Executa e joga qualquer erro para um arquivo de log temporário
+        if [[ "$dump_file" =~ \.gz$ ]]; then
+            gunzip -c "$dump_file" | docker exec -i "$container" $cmd -u "$user" -p"$password" 2> /tmp/erro-restore.log
+        else
+            cat "$dump_file" | docker exec -i "$container" $cmd -u "$user" -p"$password" 2> /tmp/erro-restore.log
+        fi
     else
-        cat "$dump_file" | docker exec -i "$container" mysql -u "$user" -p"$password" 2>/dev/null
+        log_info "  Restaurando banco de dados: $database"
+        # Para banco específico, SEMPRE especifica o nome do banco
+        if [[ "$dump_file" =~ \.gz$ ]]; then
+            gunzip -c "$dump_file" | docker exec -i "$container" $cmd -u "$user" -p"$password" "$database" 2> /tmp/erro-restore.log
+        else
+            cat "$dump_file" | docker exec -i "$container" $cmd -u "$user" -p"$password" "$database" 2> /tmp/erro-restore.log
+        fi
     fi
-    return $?
+
+    local status=$?
+    if [ $status -ne 0 ]; then
+        echo "  🚨 ERRO DO MYSQL/MARIADB:"
+        cat /tmp/erro-restore.log
+        echo ""
+        log_info "  Tentativa de diagnóstico:"
+        log_info "    - Verificar se o banco '$database' existe no container"
+        docker exec "$container" $cmd -u "$user" -p"$password" -e "SHOW DATABASES LIKE '$database';" 2>/dev/null | grep -v "^Database$" || echo "    ⚠️  Banco '$database' não encontrado!"
+    fi
+    return $status
 }
 
 restore_postgres() {
@@ -189,25 +208,29 @@ restore_postgres() {
     local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
     local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
-    if [ -z "$password" ]; then log_error "Senha PostgreSQL não encontrada"; return 1; fi
+    if [ -z "$password" ]; then log_error "  Senha PostgreSQL não encontrada"; return 1; fi
+    if [ -z "$database" ]; then database="postgres"; log_warning "  Nome do banco não especificado, usando 'postgres'"; fi
 
-    log_info "  Aguardando PostgreSQL aceitar conexões..."
-    local retries=0
-    while [ $retries -lt 30 ]; do
-        if docker exec -e PGPASSWORD="$password" "$container" pg_isready -U "$user" >/dev/null 2>&1; then break; fi
-        sleep 2
-        ((retries++))
-    done
+    log_info "  Credenciais: user=$user, database=$database"
+    log_info "  Restaurando banco de dados PostgreSQL..."
 
-    if [ $retries -ge 30 ]; then log_error "  Timeout: Banco não respondeu"; return 1; fi
-
-    log_info "  Restaurando dump..."
+    # Executa e joga qualquer erro para um arquivo de log temporário
     if [[ "$dump_file" =~ \.gz$ ]]; then
-        gunzip -c "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2>/dev/null
+        gunzip -c "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2> /tmp/erro-restore.log
     else
-        cat "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2>/dev/null
+        cat "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2> /tmp/erro-restore.log
     fi
-    return $?
+
+    local status=$?
+    if [ $status -ne 0 ]; then
+        echo "  🚨 ERRO DO POSTGRESQL:"
+        cat /tmp/erro-restore.log
+        echo ""
+        log_info "  Tentativa de diagnóstico:"
+        log_info "    - Verificar se o banco '$database' existe no container"
+        docker exec -e PGPASSWORD="$password" "$container" psql -U "$user" -d postgres -c "\l" 2>/dev/null | grep "$database" || echo "    ⚠️  Banco '$database' não encontrado!"
+    fi
+    return $status
 }
 
 restore_mongodb() {
@@ -265,7 +288,7 @@ if [ ${#LOTES[@]} -gt 0 ] && [ "$AUTO_MODE" = false ]; then
     for i in "${!LOTES[@]}"; do
         nome_lote=$(basename "${LOTES[$i]}")
         qtd_arquivos=$(ls -1 "${LOTES[$i]}"/*.gz 2>/dev/null | wc -l)
-        echo "  [$i] $nome_lote ($qtd_arquivos arquivos)"
+        echo "  [$i] $nome_lote ($qtd_arquivos arquivos compactados)"
     done
     
     echo ""
@@ -355,71 +378,230 @@ log_section "Restaurando Dumps"
 
 SUCCESS_COUNT=0
 FAIL_COUNT=0
+OFFLINE_CONTAINERS=()
+FAILED_CONTAINERS=()
+OFFLINE_DUMPS=()
 
 for idx in "${SELECTED_DUMPS[@]}"; do
     dump_file="${DUMP_INFO["$idx,file"]}"
     db_type="${DUMP_INFO["$idx,type"]}"
-    original_container="${DUMP_INFO["$idx,container"]}"
+    target_container="${DUMP_INFO["$idx,container"]}"
     filename=$(basename "$dump_file")
 
     echo ""
     log_info "Processando: $filename"
-    
-    # Encontrar container de destino
-    available_containers=$(find_matching_container "$original_container" "$db_type")
 
-    if [ -z "$available_containers" ]; then
-        log_error "  Nenhum container $db_type compatível encontrado!"
+    # Validação Severa: O container está online?
+    if [ -z "$(find_matching_container "$target_container")" ]; then
+        log_error "  O container original '$target_container' está OFFLINE ou não existe mais."
+        log_info "  Pulando restauração para evitar corromper outros bancos."
+        OFFLINE_CONTAINERS+=("$target_container")
+        OFFLINE_DUMPS+=("$idx")
         ((FAIL_COUNT++))
         continue
     fi
 
-    # Lógica de seleção de container de destino
-    container_count=$(echo "$available_containers" | wc -w)
-    if [ $container_count -eq 1 ]; then
-        target_container="$available_containers"
-    else
-        echo "  Containers $db_type disponíveis:"
-        local ci=0
-        for c in $available_containers; do
-            echo "    [$ci] $c"
-            ((ci++))
-        done
-        read -p "  Selecione o container de destino (0-$((ci-1))): " container_sel
-        target_container=$(echo "$available_containers" | tr ' ' '\n' | sed -n "$((container_sel+1))p")
-        
-        if [ -z "$target_container" ]; then
-            log_error "  Seleção inválida"
-            ((FAIL_COUNT++))
-            continue
-        fi
-    fi
-
     log_info "  Container destino: $target_container"
+    log_info "  Tipo de banco: $db_type"
     credentials=$(get_container_credentials "$target_container" "$db_type")
+
+    if [ -z "$credentials" ]; then
+        log_error "  Não foi possível obter credenciais do container"
+        FAILED_CONTAINERS+=("$target_container (sem credenciais)")
+        ((FAIL_COUNT++))
+        continue
+    fi
 
     case "$db_type" in
         mysql)
-            if restore_mysql "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
+            if restore_mysql "$target_container" "$dump_file" "$credentials"; then
+                log_success "  Restaurado com sucesso!"
+                ((SUCCESS_COUNT++))
+            else
+                log_error "  Falha na restauração."
+                FAILED_CONTAINERS+=("$target_container (erro MySQL)")
+                ((FAIL_COUNT++))
+            fi
+            ;;
         postgres)
-            if restore_postgres "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
+            if restore_postgres "$target_container" "$dump_file" "$credentials"; then
+                log_success "  Restaurado com sucesso!"
+                ((SUCCESS_COUNT++))
+            else
+                log_error "  Falha na restauração."
+                FAILED_CONTAINERS+=("$target_container (erro PostgreSQL)")
+                ((FAIL_COUNT++))
+            fi
+            ;;
         mongodb)
-            if restore_mongodb "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
-        *) log_error "  Tipo desconhecido"; ((FAIL_COUNT++)) ;;
+            if restore_mongodb "$target_container" "$dump_file" "$credentials"; then
+                log_success "  Restaurado com sucesso!"
+                ((SUCCESS_COUNT++))
+            else
+                log_error "  Falha na restauração."
+                FAILED_CONTAINERS+=("$target_container (erro MongoDB)")
+                ((FAIL_COUNT++))
+            fi
+            ;;
+        *)
+            log_error "  Tipo de banco desconhecido"
+            FAILED_CONTAINERS+=("$target_container (tipo desconhecido)")
+            ((FAIL_COUNT++))
+            ;;
     esac
 done
 
 ### ========== RESUMO FINAL ==========
 echo ""
 log_section "RESUMO DO RESTORE"
-echo "  Sucesso: $SUCCESS_COUNT"
-if [ $FAIL_COUNT -gt 0 ]; then echo "  Falhas: $FAIL_COUNT"; fi
+echo ""
+echo "  ✅ Restaurados com sucesso: $SUCCESS_COUNT"
+
+if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
+    echo "  ⏭️  Pulados (offline): ${#OFFLINE_CONTAINERS[@]}"
+fi
+
+if [ ${#FAILED_CONTAINERS[@]} -gt 0 ]; then
+    echo "  ❌ Falhas (erros): ${#FAILED_CONTAINERS[@]}"
+fi
+
 echo ""
 
+# Se todos foram restaurados com sucesso
 if [ $FAIL_COUNT -eq 0 ]; then
-    log_success "Todos os dumps foram restaurados com sucesso!"
-else
-    log_warning "Alguns dumps falharam - verifique os logs."
+    log_success "Todos os dumps foram processados perfeitamente!"
+    exit 0
+fi
+
+# Se tem containers offline
+if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
+    echo "════════════════════════════════════════════════════════════"
+    echo "  ⚠️  CONTAINERS OFFLINE QUE PRECISAM SER INICIADOS"
+    echo "════════════════════════════════════════════════════════════"
+    echo ""
+
+    # Remover duplicatas
+    UNIQUE_OFFLINE=($(printf '%s\n' "${OFFLINE_CONTAINERS[@]}" | sort -u))
+
+    for container in "${UNIQUE_OFFLINE[@]}"; do
+        echo "  📦 $container"
+    done
+
+    echo ""
+    echo "⚠️  Para restaurar estes bancos de dados:"
+    echo "  1. Acesse o painel do Coolify (https://seu-servidor)"
+    echo "  2. Vá em 'Resources' ou 'Services'"
+    echo "  3. Encontre e inicie os containers/aplicações correspondentes"
+    echo "  4. Aguarde os containers ficarem 'healthy' (verde)"
+    echo "  5. Execute novamente este script"
+    echo ""
+    echo "💡 Dica: Use 'docker ps -a | grep <nome-container>' para verificar o status"
+    echo ""
+fi
+
+# Se tem containers com erro
+if [ ${#FAILED_CONTAINERS[@]} -gt 0 ]; then
+    echo "════════════════════════════════════════════════════════════"
+    echo "  ❌ CONTAINERS COM ERRO NA RESTAURAÇÃO"
+    echo "════════════════════════════════════════════════════════════"
+    echo ""
+
+    for container in "${FAILED_CONTAINERS[@]}"; do
+        echo "  🔴 $container"
+    done
+
+    echo ""
+    echo "⚠️  Estes containers apresentaram erros durante a restauração:"
+    echo "  - Revise os logs acima para detalhes do erro"
+    echo "  - Verifique credenciais do banco de dados"
+    echo "  - Verifique se o banco de dados existe no container"
+    echo "  - Verifique logs do container: docker logs <nome-container>"
+    echo ""
+fi
+
+# Oferecer retry apenas se tem containers offline
+if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
+    read -p "Deseja tentar restaurar os dumps pendentes agora? (s/N): " retry
+    retry=${retry,,}  # Converter para minúsculas
+
+    if [ "$retry" = "s" ] || [ "$retry" = "sim" ] || [ "$retry" = "y" ] || [ "$retry" = "yes" ]; then
+        echo ""
+        log_info "Tentando novamente apenas os dumps que falharam..."
+        echo ""
+
+        # Resetar contadores
+        RETRY_SUCCESS=0
+        RETRY_FAIL=0
+
+        for idx in "${OFFLINE_DUMPS[@]}"; do
+            dump_file="${DUMP_INFO["$idx,file"]}"
+            db_type="${DUMP_INFO["$idx,type"]}"
+            target_container="${DUMP_INFO["$idx,container"]}"
+            filename=$(basename "$dump_file")
+
+            echo ""
+            log_info "Processando: $filename"
+
+            # Verificar se container está online agora
+            if [ -z "$(find_matching_container "$target_container")" ]; then
+                log_error "  Container '$target_container' ainda está offline"
+                ((RETRY_FAIL++))
+                continue
+            fi
+
+            log_info "  Container destino: $target_container (ONLINE!)"
+            log_info "  Tipo de banco: $db_type"
+            credentials=$(get_container_credentials "$target_container" "$db_type")
+
+            if [ -z "$credentials" ]; then
+                log_error "  Não foi possível obter credenciais"
+                ((RETRY_FAIL++))
+                continue
+            fi
+
+            case "$db_type" in
+                mysql)
+                    if restore_mysql "$target_container" "$dump_file" "$credentials"; then
+                        log_success "  Restaurado com sucesso!"
+                        ((RETRY_SUCCESS++))
+                    else
+                        log_error "  Falha na restauração."
+                        ((RETRY_FAIL++))
+                    fi
+                    ;;
+                postgres)
+                    if restore_postgres "$target_container" "$dump_file" "$credentials"; then
+                        log_success "  Restaurado com sucesso!"
+                        ((RETRY_SUCCESS++))
+                    else
+                        log_error "  Falha na restauração."
+                        ((RETRY_FAIL++))
+                    fi
+                    ;;
+                mongodb)
+                    if restore_mongodb "$target_container" "$dump_file" "$credentials"; then
+                        log_success "  Restaurado com sucesso!"
+                        ((RETRY_SUCCESS++))
+                    else
+                        log_error "  Falha na restauração."
+                        ((RETRY_FAIL++))
+                    fi
+                    ;;
+            esac
+        done
+
+        echo ""
+        log_section "RESULTADO DO RETRY"
+        echo "  ✅ Restaurados: $RETRY_SUCCESS"
+        echo "  ❌ Ainda pendentes: $RETRY_FAIL"
+        echo ""
+
+        if [ $RETRY_FAIL -eq 0 ]; then
+            log_success "Todos os dumps pendentes foram restaurados!"
+        else
+            log_warning "Ainda existem $RETRY_FAIL dump(s) que não puderam ser restaurados."
+        fi
+    fi
 fi
 
 exit 0

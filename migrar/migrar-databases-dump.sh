@@ -34,26 +34,11 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 ### ========== PARSE ARGUMENTOS ==========
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --target=*)
-            TARGET_SERVER="${1#*=}"
-            shift
-            ;;
-        --user=*)
-            TARGET_USER="${1#*=}"
-            shift
-            ;;
-        --port=*)
-            TARGET_PORT="${1#*=}"
-            shift
-            ;;
-        --key=*)
-            SSH_KEY="${1#*=}"
-            shift
-            ;;
-        --auto)
-            AUTO_MODE=true
-            shift
-            ;;
+        --target=*) TARGET_SERVER="${1#*=}"; shift ;;
+        --user=*) TARGET_USER="${1#*=}"; shift ;;
+        --port=*) TARGET_PORT="${1#*=}"; shift ;;
+        --key=*) SSH_KEY="${1#*=}"; shift ;;
+        --auto) AUTO_MODE=true; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -72,19 +57,19 @@ while [[ $# -gt 0 ]]; do
             echo ""
             exit 0
             ;;
-        *)
-            log_error "Opção desconhecida: $1"
-            exit 1
-            ;;
+        *) log_error "Opção desconhecida: $1"; exit 1 ;;
     esac
 done
 
-### ========== FUNÇÕES DE DETECÇÃO ==========
+### ========== FUNÇÕES DE DETECÇÃO (Tripla Checagem) ==========
 
 detect_mysql_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        if [[ "$image" =~ mysql|mariadb ]]; then
+        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
+        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
+        
+        if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
             echo "$name"
         fi
     done
@@ -93,7 +78,10 @@ detect_mysql_containers() {
 detect_postgres_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        if [[ "$image" =~ postgres ]]; then
+        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
+        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
+        
+        if [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
             echo "$name"
         fi
     done
@@ -102,7 +90,10 @@ detect_postgres_containers() {
 detect_mongodb_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        if [[ "$image" =~ mongo ]]; then
+        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
+        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
+        
+        if [[ "$image" =~ mongo ]] || echo "$env_vars" | grep -qEi 'MONGO_INITDB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 27017 ]]; then
             echo "$name"
         fi
     done
@@ -110,23 +101,23 @@ detect_mongodb_containers() {
 
 get_mysql_credentials() {
     local container="$1"
-    local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_ROOT_PASSWORD=' | cut -d'=' -f2)
-    local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_DATABASE=' | cut -d'=' -f2)
+    local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
+    local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
     echo "root:${root_pass}:${db_name:-all}"
 }
 
 get_postgres_credentials() {
     local container="$1"
-    local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2)
-    local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
-    local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
+    local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
+    local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
+    local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
     echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
 }
 
 get_mongodb_credentials() {
     local container="$1"
-    local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2)
-    local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2)
+    local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
+    local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
     echo "${mongo_user:-root}:${mongo_pass}:admin"
 }
 
@@ -149,29 +140,10 @@ dump_mysql() {
     log_info "  Executando mysqldump..."
 
     if [ "$database" = "all" ]; then
-        docker exec "$container" mysqldump \
-            -u "$user" \
-            -p"$password" \
-            --all-databases \
-            --single-transaction \
-            --quick \
-            --lock-tables=false \
-            --routines \
-            --triggers \
-            2>/dev/null > "$output_file"
+        docker exec "$container" mysqldump -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
     else
-        docker exec "$container" mysqldump \
-            -u "$user" \
-            -p"$password" \
-            --single-transaction \
-            --quick \
-            --lock-tables=false \
-            --routines \
-            --triggers \
-            "$database" \
-            2>/dev/null > "$output_file"
+        docker exec "$container" mysqldump -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
     fi
-
     return $?
 }
 
@@ -190,14 +162,7 @@ dump_postgres() {
     fi
 
     log_info "  Executando pg_dump..."
-
-    docker exec -e PGPASSWORD="$password" "$container" pg_dump \
-        -U "$user" \
-        -d "$database" \
-        --clean \
-        --if-exists \
-        2>/dev/null > "$output_file"
-
+    docker exec -e PGPASSWORD="$password" "$container" pg_dump -U "$user" -d "$database" --clean --if-exists 2>/dev/null > "$output_file"
     return $?
 }
 
@@ -211,20 +176,13 @@ dump_mongodb() {
 
     log_info "  Executando mongodump..."
 
-    # MongoDB dump para diretório temporário no container
-    docker exec "$container" mongodump \
-        --username="$user" \
-        --password="$password" \
-        --authenticationDatabase=admin \
-        --out=/tmp/mongodump \
-        >/dev/null 2>&1
+    docker exec "$container" mongodump --username="$user" --password="$password" --authenticationDatabase=admin --out=/tmp/mongodump >/dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         docker cp "$container:/tmp/mongodump/." "$output_dir/" >/dev/null 2>&1
         docker exec "$container" rm -rf /tmp/mongodump >/dev/null 2>&1
         return 0
     fi
-
     return 1
 }
 
@@ -232,14 +190,13 @@ dump_mongodb() {
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
 echo "║                                                                ║"
-echo "║       MIGRAÇÃO DE BANCOS DE DADOS VIA DUMP SQL                ║"
+echo "║        MIGRAÇÃO DE BANCOS DE DADOS VIA DUMP SQL                ║"
 echo "║                                                                ║"
-echo "║   Método mais leve e seguro - sem problemas de redo logs      ║"
+echo "║   Método mais leve e seguro - sem problemas de redo logs       ║"
 echo "║                                                                ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-### ========== VERIFICAR DOCKER ==========
 if ! docker ps >/dev/null 2>&1; then
     log_error "Docker não está rodando"
     exit 1
@@ -336,18 +293,14 @@ declare -A DUMP_FILES
 # MySQL/MariaDB
 for container in "${MYSQL_CONTAINERS[@]}"; do
     log_info "MySQL: $container"
-
     credentials=$(get_mysql_credentials "$container")
     output_file="$DUMP_DIR/${container}-mysql-${TIMESTAMP}.sql"
 
     if dump_mysql "$container" "$output_file" "$credentials"; then
-        # Comprimir
         gzip "$output_file"
         output_file="${output_file}.gz"
-
         size=$(du -h "$output_file" | cut -f1)
         log_success "  Dump criado: $size"
-
         DUMP_FILES["$container"]="$output_file"
         ((SUCCESS_COUNT++))
     else
@@ -360,18 +313,14 @@ done
 # PostgreSQL
 for container in "${POSTGRES_CONTAINERS[@]}"; do
     log_info "PostgreSQL: $container"
-
     credentials=$(get_postgres_credentials "$container")
     output_file="$DUMP_DIR/${container}-postgres-${TIMESTAMP}.sql"
 
     if dump_postgres "$container" "$output_file" "$credentials"; then
-        # Comprimir
         gzip "$output_file"
         output_file="${output_file}.gz"
-
         size=$(du -h "$output_file" | cut -f1)
         log_success "  Dump criado: $size"
-
         DUMP_FILES["$container"]="$output_file"
         ((SUCCESS_COUNT++))
     else
@@ -384,20 +333,16 @@ done
 # MongoDB
 for container in "${MONGODB_CONTAINERS[@]}"; do
     log_info "MongoDB: $container"
-
     credentials=$(get_mongodb_credentials "$container")
     output_dir="$DUMP_DIR/${container}-mongodb-${TIMESTAMP}"
 
     mkdir -p "$output_dir"
 
     if dump_mongodb "$container" "$output_dir" "$credentials"; then
-        # Comprimir
         tar -czf "${output_dir}.tar.gz" -C "$DUMP_DIR" "$(basename "$output_dir")" 2>/dev/null
         rm -rf "$output_dir"
-
         size=$(du -h "${output_dir}.tar.gz" | cut -f1)
         log_success "  Dump criado: $size"
-
         DUMP_FILES["$container"]="${output_dir}.tar.gz"
         ((SUCCESS_COUNT++))
     else
@@ -449,30 +394,20 @@ EOF
 if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
     log_section "Transferindo para $TARGET_SERVER"
 
-    # Verificar conectividade SSH
     if ! ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "echo ok" >/dev/null 2>&1; then
         log_error "Não foi possível conectar ao servidor destino"
         log_info "Dumps ficaram salvos em: $DUMP_DIR"
         exit 1
     fi
 
-    # Criar diretório no destino
     REMOTE_DIR="/root/database-dumps-migration"
     ssh -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "mkdir -p $REMOTE_DIR"
 
-    # Transferir arquivos
     log_info "Transferindo dumps..."
-
-    rsync -avz --progress \
-        -e "ssh -p $TARGET_PORT" \
-        "$DUMP_DIR/" \
-        "$TARGET_USER@$TARGET_SERVER:$REMOTE_DIR/" \
-        2>/dev/null
+    rsync -avz --progress -e "ssh -p $TARGET_PORT" "$DUMP_DIR/" "$TARGET_USER@$TARGET_SERVER:$REMOTE_DIR/" 2>/dev/null
 
     if [ $? -eq 0 ]; then
         log_success "Transferência concluída"
-
-        # Calcular tamanho total
         TOTAL_SIZE=$(du -sh "$DUMP_DIR" | cut -f1)
         log_info "Tamanho total transferido: $TOTAL_SIZE"
     else
@@ -481,43 +416,27 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
         exit 1
     fi
 
-    ### ========== RESTAURAR NO DESTINO (OPCIONAL) ==========
     if [ "$AUTO_MODE" = false ]; then
         echo ""
         read -p "Deseja restaurar os dumps no servidor destino agora? (s/N): " restore_now
-
         if [[ "$restore_now" =~ ^[Ss]$ ]]; then
             log_section "Restaurando no Servidor Destino"
-
-            # Transferir script de restore
-            scp -P "$TARGET_PORT" "$SCRIPT_DIR/restore-databases-dump.sh" \
-                "$TARGET_USER@$TARGET_SERVER:/tmp/" 2>/dev/null
-
-            # Executar restore remotamente
-            ssh -t -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" \
-                "chmod +x /tmp/restore-databases-dump.sh && /tmp/restore-databases-dump.sh --dir=$REMOTE_DIR"
+            scp -P "$TARGET_PORT" "$SCRIPT_DIR/restore-databases-dump.sh" "$TARGET_USER@$TARGET_SERVER:/tmp/" 2>/dev/null
+            ssh -t -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "chmod +x /tmp/restore-databases-dump.sh && /tmp/restore-databases-dump.sh --dir=$REMOTE_DIR"
         else
             log_info "Dumps disponíveis em $TARGET_SERVER:$REMOTE_DIR"
             log_info "Para restaurar depois, execute no servidor destino:"
-            echo ""
             echo "  ./restore-databases-dump.sh --dir=$REMOTE_DIR"
-            echo ""
         fi
     fi
 
-    # Limpeza local
     rm -rf "$DUMP_DIR"
-
 else
-    # Modo local - apenas criar dumps
     log_section "Dumps Criados Localmente"
-
-    # Mover para local permanente
     FINAL_DIR="/var/backups/vpsguardian/database-dumps"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
     rm -rf "$DUMP_DIR"
-
     log_info "Dumps salvos em: $FINAL_DIR"
     echo ""
     ls -lh "$FINAL_DIR"/*${TIMESTAMP}* 2>/dev/null

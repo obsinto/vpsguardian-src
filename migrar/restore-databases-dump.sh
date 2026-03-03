@@ -29,14 +29,8 @@ SELECTED_DUMPS=()
 ### ========== PARSE ARGUMENTOS ==========
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --dir=*)
-            DUMP_DIR="${1#*=}"
-            shift
-            ;;
-        --auto)
-            AUTO_MODE=true
-            shift
-            ;;
+        --dir=*) DUMP_DIR="${1#*=}"; shift ;;
+        --auto) AUTO_MODE=true; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -54,10 +48,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             exit 0
             ;;
-        *)
-            log_error "Opção desconhecida: $1"
-            exit 1
-            ;;
+        *) log_error "Opção desconhecida: $1"; exit 1 ;;
     esac
 done
 
@@ -65,58 +56,47 @@ done
 
 detect_dump_type() {
     local filename="$1"
-
-    if [[ "$filename" =~ -mysql- ]]; then
-        echo "mysql"
-    elif [[ "$filename" =~ -postgres- ]]; then
-        echo "postgres"
-    elif [[ "$filename" =~ -mongodb- ]]; then
-        echo "mongodb"
-    else
-        echo "unknown"
+    if [[ "$filename" =~ -mysql- ]]; then echo "mysql"
+    elif [[ "$filename" =~ -postgres- ]]; then echo "postgres"
+    elif [[ "$filename" =~ -mongodb- ]]; then echo "mongodb"
+    else echo "unknown"
     fi
 }
 
 extract_container_name() {
     local filename="$1"
-    # Formato: container-type-timestamp.sql.gz
-    # Extrair primeira parte antes do tipo
     echo "$filename" | sed -E 's/-(mysql|postgres|mongodb)-[0-9_]+\.(sql\.gz|sql|tar\.gz)$//'
 }
 
+# Modificado para usar a Tripla Checagem (Imagem, Env Vars e Portas)
 find_matching_container() {
     local original_name="$1"
     local db_type="$2"
-
-    # Procurar container com nome similar
     local containers=""
 
-    case "$db_type" in
-        mysql)
-            containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-                local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-                if [[ "$image" =~ mysql|mariadb ]]; then
+    containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
+        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
+        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
+
+        case "$db_type" in
+            mysql)
+                if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
                     echo "$name"
                 fi
-            done)
-            ;;
-        postgres)
-            containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-                local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-                if [[ "$image" =~ postgres ]]; then
+                ;;
+            postgres)
+                if [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
                     echo "$name"
                 fi
-            done)
-            ;;
-        mongodb)
-            containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-                local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-                if [[ "$image" =~ mongo ]]; then
+                ;;
+            mongodb)
+                if [[ "$image" =~ mongo ]] || echo "$env_vars" | grep -qEi 'MONGO_INITDB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 27017 ]]; then
                     echo "$name"
                 fi
-            done)
-            ;;
-    esac
+                ;;
+        esac
+    done)
 
     # Tentar encontrar container com nome igual
     for container in $containers; do
@@ -126,29 +106,30 @@ find_matching_container() {
         fi
     done
 
-    # Se não encontrou exato, retornar lista de containers disponíveis
+    # Retorna todos os compatíveis se não achar o exato
     echo "$containers"
 }
 
+# Melhorada a extração de credenciais (suporte a MariaDB e limitador head -n1)
 get_container_credentials() {
     local container="$1"
     local db_type="$2"
 
     case "$db_type" in
         mysql)
-            local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_ROOT_PASSWORD=' | cut -d'=' -f2)
-            local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_DATABASE=' | cut -d'=' -f2)
+            local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
+            local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
             echo "root:${root_pass}:${db_name:-}"
             ;;
         postgres)
-            local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2)
-            local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
-            local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
+            local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
+            local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
+            local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
             echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
             ;;
         mongodb)
-            local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2)
-            local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2)
+            local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
+            local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
             echo "${mongo_user:-root}:${mongo_pass}:admin"
             ;;
     esac
@@ -164,39 +145,24 @@ restore_mysql() {
     local user=$(echo "$credentials" | cut -d':' -f1)
     local password=$(echo "$credentials" | cut -d':' -f2)
 
-    if [ -z "$password" ]; then
-        log_error "Senha MySQL não encontrada"
-        return 1
-    fi
+    if [ -z "$password" ]; then log_error "Senha MySQL não encontrada"; return 1; fi
 
     log_info "  Aguardando MySQL aceitar conexões..."
-
     local retries=0
     while [ $retries -lt 30 ]; do
-        if docker exec "$container" mysqladmin ping -u "$user" -p"$password" >/dev/null 2>&1; then
-            break
-        fi
+        if docker exec "$container" mysqladmin ping -u "$user" -p"$password" >/dev/null 2>&1; then break; fi
         sleep 2
         ((retries++))
     done
 
-    if [ $retries -ge 30 ]; then
-        log_error "  Timeout: MySQL não respondeu"
-        return 1
-    fi
+    if [ $retries -ge 30 ]; then log_error "  Timeout: MySQL não respondeu"; return 1; fi
 
     log_info "  Restaurando dump..."
-
-    # Descomprimir se necessário
-    local sql_content
     if [[ "$dump_file" =~ \.gz$ ]]; then
-        sql_content=$(gunzip -c "$dump_file")
+        gunzip -c "$dump_file" | docker exec -i "$container" mysql -u "$user" -p"$password" 2>/dev/null
     else
-        sql_content=$(cat "$dump_file")
+        cat "$dump_file" | docker exec -i "$container" mysql -u "$user" -p"$password" 2>/dev/null
     fi
-
-    echo "$sql_content" | docker exec -i "$container" mysql -u "$user" -p"$password" 2>/dev/null
-
     return $?
 }
 
@@ -209,36 +175,24 @@ restore_postgres() {
     local password=$(echo "$credentials" | cut -d':' -f2)
     local database=$(echo "$credentials" | cut -d':' -f3)
 
-    if [ -z "$password" ]; then
-        log_error "Senha PostgreSQL não encontrada"
-        return 1
-    fi
+    if [ -z "$password" ]; then log_error "Senha PostgreSQL não encontrada"; return 1; fi
 
     log_info "  Aguardando PostgreSQL aceitar conexões..."
-
     local retries=0
     while [ $retries -lt 30 ]; do
-        if docker exec -e PGPASSWORD="$password" "$container" pg_isready -U "$user" >/dev/null 2>&1; then
-            break
-        fi
+        if docker exec -e PGPASSWORD="$password" "$container" pg_isready -U "$user" >/dev/null 2>&1; then break; fi
         sleep 2
         ((retries++))
     done
 
-    if [ $retries -ge 30 ]; then
-        log_error "  Timeout: PostgreSQL não respondeu"
-        return 1
-    fi
+    if [ $retries -ge 30 ]; then log_error "  Timeout: PostgreSQL não respondeu"; return 1; fi
 
     log_info "  Restaurando dump..."
-
-    # Descomprimir se necessário
     if [[ "$dump_file" =~ \.gz$ ]]; then
         gunzip -c "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2>/dev/null
     else
         cat "$dump_file" | docker exec -i -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" 2>/dev/null
     fi
-
     return $?
 }
 
@@ -251,69 +205,47 @@ restore_mongodb() {
     local password=$(echo "$credentials" | cut -d':' -f2)
 
     log_info "  Extraindo dump MongoDB..."
-
     local temp_dir="/tmp/mongorestore-$$"
     mkdir -p "$temp_dir"
     tar -xzf "$dump_archive" -C "$temp_dir" 2>/dev/null
 
-    # Encontrar diretório do dump
     local dump_dir=$(find "$temp_dir" -type d -name "*mongodb*" | head -1)
-    if [ -z "$dump_dir" ]; then
-        dump_dir="$temp_dir"
-    fi
+    if [ -z "$dump_dir" ]; then dump_dir="$temp_dir"; fi
 
     log_info "  Copiando para container..."
     docker exec "$container" rm -rf /tmp/mongorestore 2>/dev/null
     docker cp "$dump_dir/." "$container:/tmp/mongorestore/" >/dev/null 2>&1
 
     log_info "  Restaurando..."
-
     if [ -n "$password" ]; then
-        docker exec "$container" mongorestore \
-            --username="$user" \
-            --password="$password" \
-            --authenticationDatabase=admin \
-            --drop \
-            /tmp/mongorestore/ \
-            >/dev/null 2>&1
+        docker exec "$container" mongorestore --username="$user" --password="$password" --authenticationDatabase=admin --drop /tmp/mongorestore/ >/dev/null 2>&1
     else
-        docker exec "$container" mongorestore \
-            --drop \
-            /tmp/mongorestore/ \
-            >/dev/null 2>&1
+        docker exec "$container" mongorestore --drop /tmp/mongorestore/ >/dev/null 2>&1
     fi
-
     local result=$?
 
-    # Limpeza
     docker exec "$container" rm -rf /tmp/mongorestore 2>/dev/null
     rm -rf "$temp_dir"
-
     return $result
 }
 
 ### ========== APRESENTAÇÃO ==========
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║                                                                ║"
-echo "║         RESTAURAR BANCOS DE DADOS DE DUMPS SQL                ║"
-echo "║                                                                ║"
+echo "║         RESTAURAR BANCOS DE DADOS DE DUMPS SQL                 ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
 ### ========== VERIFICAR DIRETÓRIO ==========
 if [ ! -d "$DUMP_DIR" ]; then
     log_error "Diretório não encontrado: $DUMP_DIR"
-    echo ""
     echo "  Use --dir=PATH para especificar o diretório com os dumps"
-    echo ""
     exit 1
 fi
 
 ### ========== LISTAR DUMPS DISPONÍVEIS ==========
 log_section "Dumps Disponíveis"
 
-# Encontrar arquivos de dump
 DUMP_FILES=()
 while IFS= read -r -d '' file; do
     DUMP_FILES+=("$file")
@@ -321,16 +253,9 @@ done < <(find "$DUMP_DIR" -type f \( -name "*-mysql-*.sql*" -o -name "*-postgres
 
 if [ ${#DUMP_FILES[@]} -eq 0 ]; then
     log_warning "Nenhum dump encontrado em $DUMP_DIR"
-    echo ""
-    echo "  Formatos esperados:"
-    echo "    - *-mysql-*.sql.gz"
-    echo "    - *-postgres-*.sql.gz"
-    echo "    - *-mongodb-*.tar.gz"
-    echo ""
     exit 0
 fi
 
-# Mostrar dumps disponíveis
 declare -A DUMP_INFO
 INDEX=0
 
@@ -342,8 +267,8 @@ for dump_file in "${DUMP_FILES[@]}"; do
     date_modified=$(stat -c %y "$dump_file" 2>/dev/null | cut -d'.' -f1)
 
     echo "  [$INDEX] $filename"
-    echo "       Tipo: $db_type | Container: $container_name | Tamanho: $size"
-    echo "       Data: $date_modified"
+    echo "         Tipo: $db_type | Container: $container_name | Tamanho: $size"
+    echo "         Data: $date_modified"
     echo ""
 
     DUMP_INFO["$INDEX,file"]="$dump_file"
@@ -355,14 +280,12 @@ done
 
 log_info "Total: ${#DUMP_FILES[@]} dump(s) encontrado(s)"
 
-### ========== SELECIONAR DUMPS ==========
+### ========== SELECIONAR DUMPS (Correção da Lógica) ==========
 if [ "$AUTO_MODE" = true ]; then
-    # Modo automático: restaurar todos
     for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
         SELECTED_DUMPS+=($i)
     done
 else
-    echo ""
     echo "Opções:"
     echo "  - Digite os números separados por espaço (ex: 0 2 3)"
     echo "  - Digite 'all' para restaurar todos"
@@ -386,10 +309,7 @@ else
     fi
 fi
 
-if [ ${#SELECTED_DUMPS[@]} -eq 0 ]; then
-    log_warning "Nenhum dump selecionado"
-    exit 0
-fi
+if [ ${#SELECTED_DUMPS[@]} -eq 0 ]; then log_warning "Nenhum dump válido selecionado"; exit 0; fi
 
 ### ========== RESTAURAR DUMPS ==========
 log_section "Restaurando Dumps"
@@ -405,37 +325,30 @@ for idx in "${SELECTED_DUMPS[@]}"; do
 
     echo ""
     log_info "Processando: $filename"
-    log_info "  Tipo: $db_type"
-    log_info "  Container original: $original_container"
-
+    
     # Encontrar container de destino
     available_containers=$(find_matching_container "$original_container" "$db_type")
 
     if [ -z "$available_containers" ]; then
-        log_error "  Nenhum container $db_type encontrado!"
-        log_warning "  Inicie o container primeiro e tente novamente"
+        log_error "  Nenhum container $db_type compatível encontrado!"
         ((FAIL_COUNT++))
         continue
     fi
 
-    # Se há múltiplos containers, deixar usuário escolher
+    # Lógica de seleção de container de destino
     container_count=$(echo "$available_containers" | wc -w)
-
     if [ $container_count -eq 1 ]; then
         target_container="$available_containers"
     else
-        echo ""
         echo "  Containers $db_type disponíveis:"
         local ci=0
         for c in $available_containers; do
             echo "    [$ci] $c"
             ((ci++))
         done
-
         read -p "  Selecione o container de destino (0-$((ci-1))): " container_sel
-
         target_container=$(echo "$available_containers" | tr ' ' '\n' | sed -n "$((container_sel+1))p")
-
+        
         if [ -z "$target_container" ]; then
             log_error "  Seleção inválida"
             ((FAIL_COUNT++))
@@ -444,60 +357,30 @@ for idx in "${SELECTED_DUMPS[@]}"; do
     fi
 
     log_info "  Container destino: $target_container"
-
-    # Obter credenciais
     credentials=$(get_container_credentials "$target_container" "$db_type")
 
-    # Restaurar
     case "$db_type" in
         mysql)
-            if restore_mysql "$target_container" "$dump_file" "$credentials"; then
-                log_success "  Dump restaurado com sucesso!"
-                ((SUCCESS_COUNT++))
-            else
-                log_error "  Falha ao restaurar dump"
-                ((FAIL_COUNT++))
-            fi
-            ;;
+            if restore_mysql "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
         postgres)
-            if restore_postgres "$target_container" "$dump_file" "$credentials"; then
-                log_success "  Dump restaurado com sucesso!"
-                ((SUCCESS_COUNT++))
-            else
-                log_error "  Falha ao restaurar dump"
-                ((FAIL_COUNT++))
-            fi
-            ;;
+            if restore_postgres "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
         mongodb)
-            if restore_mongodb "$target_container" "$dump_file" "$credentials"; then
-                log_success "  Dump restaurado com sucesso!"
-                ((SUCCESS_COUNT++))
-            else
-                log_error "  Falha ao restaurar dump"
-                ((FAIL_COUNT++))
-            fi
-            ;;
-        *)
-            log_error "  Tipo de banco desconhecido: $db_type"
-            ((FAIL_COUNT++))
-            ;;
+            if restore_mongodb "$target_container" "$dump_file" "$credentials"; then log_success "  Restaurado!"; ((SUCCESS_COUNT++)); else log_error "  Falha"; ((FAIL_COUNT++)); fi ;;
+        *) log_error "  Tipo desconhecido"; ((FAIL_COUNT++)) ;;
     esac
 done
 
 ### ========== RESUMO FINAL ==========
 echo ""
 log_section "RESUMO DO RESTORE"
-echo ""
-echo "  Dumps restaurados com sucesso: $SUCCESS_COUNT"
-if [ $FAIL_COUNT -gt 0 ]; then
-    echo "  Dumps com falha: $FAIL_COUNT"
-fi
+echo "  Sucesso: $SUCCESS_COUNT"
+if [ $FAIL_COUNT -gt 0 ]; then echo "  Falhas: $FAIL_COUNT"; fi
 echo ""
 
 if [ $FAIL_COUNT -eq 0 ]; then
     log_success "Todos os dumps foram restaurados com sucesso!"
 else
-    log_warning "Alguns dumps falharam - verifique os logs acima"
+    log_warning "Alguns dumps falharam - verifique os logs."
 fi
 
 exit 0

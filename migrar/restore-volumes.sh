@@ -59,6 +59,7 @@ done
 restore_volume() {
     local volume_name="$1"
     local backup_file="$2"
+    local force_clean="${3:-false}"
 
     # Verificar se backup existe
     if [ ! -f "$backup_file" ]; then
@@ -68,17 +69,39 @@ restore_volume() {
 
     log_info "Restoring volume: $volume_name from $(basename $backup_file)"
 
-    # Criar volume se não existir
+    # Verificar se volume já existe
+    if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+        log_warning "Volume already exists: $volume_name"
+
+        # Parar containers que usam este volume para permitir remoção limpa
+        local containers_using=$(docker ps -a --filter "volume=$volume_name" --format '{{.Names}}' 2>/dev/null)
+        if [ -n "$containers_using" ]; then
+            log_info "Stopping containers using this volume..."
+            for container in $containers_using; do
+                docker stop "$container" >/dev/null 2>&1 || true
+            done
+        fi
+
+        # CORREÇÃO: Remover volume completamente para evitar mistura de arquivos
+        # Isso resolve o problema de redo logs corrompidos no MySQL
+        log_info "Removing existing volume completely (clean restore)..."
+        if ! docker volume rm "$volume_name" >/dev/null 2>&1; then
+            log_warning "Could not remove volume (may be in use). Trying force clean..."
+            # Fallback: limpar conteúdo se não conseguir remover
+            docker run --rm -v "$volume_name":/target busybox \
+                sh -c "rm -rf /target/* /target/..?* /target/.[!.]* 2>/dev/null" >/dev/null 2>&1
+        fi
+    fi
+
+    # Criar volume limpo
     if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
-        log_info "Creating new volume: $volume_name"
+        log_info "Creating clean volume: $volume_name"
         docker volume create "$volume_name" >/dev/null 2>&1
 
         if [ $? -ne 0 ]; then
             log_error "Failed to create volume: $volume_name"
             return 1
         fi
-    else
-        log_warning "Volume already exists: $volume_name (will overwrite)"
     fi
 
     # Restaurar usando container temporário
@@ -86,7 +109,7 @@ restore_volume() {
         -v "$volume_name":/target \
         -v "$(dirname $backup_file)":/backup:ro \
         busybox \
-        sh -c "rm -rf /target/* /target/..?* /target/.[!.]* 2>/dev/null; tar -xzf /backup/$(basename $backup_file) -C /target" \
+        sh -c "tar -xzf /backup/$(basename $backup_file) -C /target" \
         >/dev/null 2>&1
 
     if [ $? -eq 0 ]; then

@@ -118,19 +118,41 @@ restore_volume_from_snapshot() {
 
     log_info "  📦 Restaurando volume de snapshot..."
 
-    # Criar volume se não existir
+    # CORREÇÃO: Se volume já existe, remover completamente para evitar mistura de arquivos
+    # Isso resolve o problema de redo logs corrompidos no MySQL após migração
+    if docker volume inspect "$volume_name" >/dev/null 2>&1; then
+        log_info "  🧹 Volume existente detectado, removendo para restore limpo..."
+
+        # Parar containers que usam este volume
+        local containers_using=$(docker ps -a --filter "volume=$volume_name" --format '{{.Names}}' 2>/dev/null)
+        if [ -n "$containers_using" ]; then
+            log_info "  ⏸️  Parando containers que usam o volume..."
+            for container in $containers_using; do
+                docker stop "$container" >/dev/null 2>&1 || true
+            done
+        fi
+
+        # Remover volume completamente
+        if ! docker volume rm "$volume_name" >/dev/null 2>&1; then
+            log_warning "  ⚠️  Não foi possível remover volume, limpando conteúdo..."
+            docker run --rm -v "$volume_name":/target busybox \
+                sh -c "rm -rf /target/* /target/..?* /target/.[!.]* 2>/dev/null" >/dev/null 2>&1
+        fi
+    fi
+
+    # Criar volume limpo
     docker volume create "$volume_name" >/dev/null 2>&1 || true
 
-    # Restaurar dados
+    # Restaurar dados em volume limpo
     docker run --rm \
         -v "$volume_name":/target \
         -v "$(dirname "$backup_file")":/backup:ro \
         busybox \
-        sh -c "rm -rf /target/* /target/..?* /target/.[!.]* 2>/dev/null; tar -xzf /backup/$(basename "$backup_file") -C /target" \
+        sh -c "tar -xzf /backup/$(basename "$backup_file") -C /target" \
         >/dev/null 2>&1
 
     if [ $? -eq 0 ]; then
-        log_success "  ✅ Volume restaurado de snapshot"
+        log_success "  ✅ Volume restaurado de snapshot (restore limpo)"
         return 0
     else
         log_error "  ❌ Falha ao restaurar volume"

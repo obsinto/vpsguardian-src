@@ -370,7 +370,7 @@ for volume in "${VOLUMES_TO_BACKUP[@]}"; do
     # Verificar se volume existe
     if ! docker volume inspect "$volume" >/dev/null 2>&1; then
         log_error "  ❌ ERRO: Volume '$volume' não existe!"
-        ((FAILED_BACKUPS++))
+        ((FAILED_BACKUPS++)) || true
         continue
     fi
 
@@ -386,7 +386,7 @@ for volume in "${VOLUMES_TO_BACKUP[@]}"; do
 
     if [ "$AVAILABLE_SPACE" -lt 1 ]; then
         log_error "  ❌ ERRO: Espaço em disco insuficiente (< 1GB)!"
-        ((FAILED_BACKUPS++))
+        ((FAILED_BACKUPS++)) || true
         continue
     fi
 
@@ -412,11 +412,11 @@ for volume in "${VOLUMES_TO_BACKUP[@]}"; do
             log_success "     Arquivo: $BACKUP_FILE"
             log_success "     Tamanho: $BACKUP_SIZE"
             log_success "     Arquivos: $FILE_COUNT"
-            ((SUCCESSFUL_BACKUPS++))
+            ((SUCCESSFUL_BACKUPS++)) || true
         else
             log_error "  ❌ ERRO: Arquivo de backup não foi criado!"
             log_error "     Esperado: $OUTPUT_DIR/$BACKUP_FILE"
-            ((FAILED_BACKUPS++))
+            ((FAILED_BACKUPS++)) || true
         fi
     else
         log_error "  ❌ FALHA no backup de $volume (exit code: $BACKUP_EXIT_CODE)"
@@ -436,7 +436,7 @@ for volume in "${VOLUMES_TO_BACKUP[@]}"; do
         log_error "    3. Volume corrompido ou em uso exclusivo"
         log_error "    4. Problema com o Docker daemon"
 
-        ((FAILED_BACKUPS++))
+        ((FAILED_BACKUPS++)) || true
     fi
 
     # Limpar arquivo de erro temporário

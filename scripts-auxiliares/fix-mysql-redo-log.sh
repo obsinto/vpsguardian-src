@@ -203,9 +203,10 @@ if [ -z "$VOLUME_NAME" ]; then
         log_info "Bind mount detectado: $VOLUME_PATH"
 
         log_info "Removendo redo logs corrompidos..."
-        rm -rf "$VOLUME_PATH/#innodb_redo" 2>/dev/null
-        rm -f "$VOLUME_PATH/ib_logfile"* 2>/dev/null
-        rm -f "$VOLUME_PATH/#ib_"* 2>/dev/null
+        # Escapar # corretamente para evitar problemas de interpretação do shell
+        rm -rf "${VOLUME_PATH}/#innodb_redo" 2>/dev/null
+        rm -f "${VOLUME_PATH}"/ib_logfile* 2>/dev/null
+        rm -f "${VOLUME_PATH}"/'#ib_'* 2>/dev/null
 
         log_success "Redo logs removidos do bind mount"
     else
@@ -214,7 +215,7 @@ if [ -z "$VOLUME_NAME" ]; then
 
         # Método alternativo: usar docker run com volume do container
         log_info "Usando container temporário para limpar redo logs..."
-        docker run --rm -v "$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$CONTAINER_NAME"):/mysql" busybox sh -c "rm -rf /mysql/#innodb_redo /mysql/ib_logfile* /mysql/#ib_*" 2>/dev/null
+        docker run --rm -v "$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/var/lib/mysql"}}{{.Name}}{{end}}{{end}}' "$CONTAINER_NAME"):/mysql" busybox sh -c 'rm -rf /mysql/#innodb_redo /mysql/ib_logfile* /mysql/#ib_*' 2>/dev/null
 
         if [ $? -eq 0 ]; then
             log_success "Redo logs removidos via container temporário"
@@ -233,7 +234,8 @@ else
     log_info "Volume Docker detectado: $VOLUME_NAME"
 
     log_info "Removendo redo logs corrompidos..."
-    docker run --rm -v "$VOLUME_NAME:/mysql" busybox sh -c "rm -rf /mysql/#innodb_redo /mysql/ib_logfile* /mysql/#ib_*" 2>/dev/null
+    # Usar aspas simples dentro do sh -c para evitar expansão de # pelo shell
+    docker run --rm -v "$VOLUME_NAME:/mysql" busybox sh -c 'rm -rf /mysql/#innodb_redo /mysql/ib_logfile* /mysql/#ib_*' 2>/dev/null
 
     if [ $? -eq 0 ]; then
         log_success "Redo logs removidos com sucesso"

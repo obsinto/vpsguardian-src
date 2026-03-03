@@ -117,7 +117,7 @@ detect_mongodb_containers() {
     done
 }
 
-### ========== FUNÇÕES DE CREDENCIAIS ==========
+### ========== FUNÇÕES DE CREDENCIAIS (Linha por Linha) ==========
 
 get_mysql_credentials() {
     local container="$1"
@@ -150,7 +150,7 @@ get_mongodb_credentials() {
     echo "admin"
 }
 
-### ========== FUNÇÕES DE DUMP ==========
+### ========== FUNÇÕES DE DUMP (Higienizadas) ==========
 
 dump_mysql() {
     local container="$1"
@@ -196,9 +196,9 @@ dump_postgres() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | sed -n '1p')
-    local password=$(echo "$credentials" | sed -n '2p')
-    local database=$(echo "$credentials" | sed -n '3p')
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then
         log_error "Senha PostgreSQL não encontrada para $container"
@@ -207,7 +207,13 @@ dump_postgres() {
 
     log_info "  Executando pg_dump..."
     docker exec -e PGPASSWORD="$password" "$container" pg_dump -U "$user" -d "$database" --clean --if-exists 2>/dev/null > "$output_file"
-    return $?
+    
+    if [ $? -ne 0 ] || [ ! -s "$output_file" ]; then
+        rm -f "$output_file"
+        return 1
+    fi
+
+    return 0
 }
 
 dump_mongodb() {
@@ -215,8 +221,8 @@ dump_mongodb() {
     local output_dir="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | sed -n '1p')
-    local password=$(echo "$credentials" | sed -n '2p')
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
 
     log_info "  Executando mongodump..."
 
@@ -224,7 +230,7 @@ dump_mongodb() {
 
     if [ $? -eq 0 ]; then
         docker cp "$container:/tmp/mongodump/." "$output_dir/" >/dev/null 2>&1
-        docker exec "$container" rm -rf /tmp/mongorestore >/dev/null 2>&1
+        docker exec "$container" rm -rf /tmp/mongodump >/dev/null 2>&1
         return 0
     fi
     return 1
@@ -310,8 +316,7 @@ if [ "$AUTO_MODE" = false ]; then
     echo ""
     echo "  Bancos a migrar: $TOTAL_DBS"
     if [ "$TARGET_SERVER" = "local" ]; then
-        echo "  Destino: Apenas criar dumps locais"
-        echo "  Diretório: $DUMP_DIR"
+        echo "  Destino: Apenas criar dumps locais (Organizado por Lotes)"
     else
         echo "  Destino: $TARGET_USER@$TARGET_SERVER:$TARGET_PORT"
     fi
@@ -444,7 +449,7 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
         exit 1
     fi
 
-    REMOTE_DIR="/root/database-dumps-migration"
+    REMOTE_DIR="/root/database-dumps-migration/lote-${TIMESTAMP}"
     ssh -p "$TARGET_PORT" "$TARGET_USER@$TARGET_SERVER" "mkdir -p $REMOTE_DIR"
 
     log_info "Transferindo dumps..."
@@ -477,11 +482,12 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
     rm -rf "$DUMP_DIR"
 else
     log_section "Dumps Criados Localmente"
-    FINAL_DIR="/var/backups/vpsguardian/database-dumps"
+    # Salvando em lotes organizados!
+    FINAL_DIR="/var/backups/vpsguardian/database-dumps/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
     rm -rf "$DUMP_DIR"
-    log_info "Dumps salvos em: $FINAL_DIR"
+    log_info "Dumps salvos e organizados em: $FINAL_DIR"
     echo ""
     ls -lh "$FINAL_DIR"/*${TIMESTAMP}* 2>/dev/null
 fi
@@ -508,5 +514,5 @@ echo "    - Sem problemas de redo logs"
 echo "    - Portável entre versões"
 echo ""
 
-log_success "Migração via dump concluída!"
+log_success "Migração via dump concluída com sucesso!"
 exit 0

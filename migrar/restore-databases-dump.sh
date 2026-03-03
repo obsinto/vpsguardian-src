@@ -1,7 +1,7 @@
 #!/bin/bash
 ################################################################################
 # Script: restore-databases-dump.sh
-# Propósito: Restaurar bancos de dados de dumps SQL
+# Propósito: Restaurar bancos de dados de dumps SQL organizados em lotes
 # Uso: ./restore-databases-dump.sh [--dir=PATH] [--auto]
 #
 # Suporta:
@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
             echo "Restaurar bancos de dados de dumps SQL"
             echo ""
             echo "Options:"
-            echo "  --dir=PATH       Diretório com dumps (default: /var/backups/vpsguardian/database-dumps)"
+            echo "  --dir=PATH       Diretório base (default: /var/backups/vpsguardian/database-dumps)"
             echo "  --auto           Modo automático (restaurar todos)"
             echo "  -h, --help       Mostrar esta ajuda"
             echo ""
@@ -68,8 +68,7 @@ extract_container_name() {
     echo "$filename" | sed -E 's/-(mysql|postgres|mongodb)-[0-9_]+\.(sql\.gz|sql|tar\.gz)$//'
 }
 
-# Modificado para usar a Tripla Checagem (Imagem, Env Vars e Portas)
-# Modificado para usar a Tripla Checagem e Filtro Anti-Impostor
+# Tripla Checagem e Filtro Anti-Impostor
 find_matching_container() {
     local original_name="$1"
     local db_type="$2"
@@ -117,7 +116,7 @@ find_matching_container() {
     echo "$containers"
 }
 
-# Melhorada a extração de credenciais (suporte a MariaDB e limitador head -n1)
+# Credenciais lidas linha por linha para proteção contra caracteres especiais
 get_container_credentials() {
     local container="$1"
     local db_type="$2"
@@ -126,35 +125,42 @@ get_container_credentials() {
         mysql)
             local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
             local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
-            echo "root:${root_pass}:${db_name:-}"
+            echo "root"
+            echo "$root_pass"
+            echo "${db_name:-all}"
             ;;
         postgres)
             local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
             local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
             local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
-            echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+            echo "${pg_user:-postgres}"
+            echo "$pg_pass"
+            echo "${pg_db:-postgres}"
             ;;
         mongodb)
             local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
             local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
-            echo "${mongo_user:-root}:${mongo_pass}:admin"
+            echo "${mongo_user:-root}"
+            echo "$mongo_pass"
+            echo "admin"
             ;;
     esac
 }
 
-### ========== FUNÇÕES DE RESTORE ==========
+### ========== FUNÇÕES DE RESTORE (Higienizadas) ==========
 
 restore_mysql() {
     local container="$1"
     local dump_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
+    # Higienização contra Enter invisível
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then log_error "Senha MySQL não encontrada"; return 1; fi
 
-    log_info "  Aguardando MySQL aceitar conexões..."
+    log_info "  Aguardando MariaDB/MySQL aceitar conexões..."
     local retries=0
     while [ $retries -lt 30 ]; do
         if docker exec "$container" mysqladmin ping -u "$user" -p"$password" >/dev/null 2>&1; then break; fi
@@ -162,7 +168,7 @@ restore_mysql() {
         ((retries++))
     done
 
-    if [ $retries -ge 30 ]; then log_error "  Timeout: MySQL não respondeu"; return 1; fi
+    if [ $retries -ge 30 ]; then log_error "  Timeout: Banco não respondeu"; return 1; fi
 
     log_info "  Restaurando dump..."
     if [[ "$dump_file" =~ \.gz$ ]]; then
@@ -178,9 +184,10 @@ restore_postgres() {
     local dump_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    # Higienização contra Enter invisível
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then log_error "Senha PostgreSQL não encontrada"; return 1; fi
 
@@ -192,7 +199,7 @@ restore_postgres() {
         ((retries++))
     done
 
-    if [ $retries -ge 30 ]; then log_error "  Timeout: PostgreSQL não respondeu"; return 1; fi
+    if [ $retries -ge 30 ]; then log_error "  Timeout: Banco não respondeu"; return 1; fi
 
     log_info "  Restaurando dump..."
     if [[ "$dump_file" =~ \.gz$ ]]; then
@@ -208,8 +215,8 @@ restore_mongodb() {
     local dump_archive="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
 
     log_info "  Extraindo dump MongoDB..."
     local temp_dir="/tmp/mongorestore-$$"
@@ -243,15 +250,40 @@ echo "║         RESTAURAR BANCOS DE DADOS DE DUMPS SQL                 ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-### ========== VERIFICAR DIRETÓRIO ==========
+### ========== MENU DE LOTES ==========
 if [ ! -d "$DUMP_DIR" ]; then
-    log_error "Diretório não encontrado: $DUMP_DIR"
-    echo "  Use --dir=PATH para especificar o diretório com os dumps"
+    log_error "Diretório base não encontrado: $DUMP_DIR"
     exit 1
 fi
 
+# Detectar subdiretórios de lotes
+LOTES=($(find "$DUMP_DIR" -mindepth 1 -maxdepth 1 -type d | sort -r))
+
+if [ ${#LOTES[@]} -gt 0 ] && [ "$AUTO_MODE" = false ]; then
+    log_section "Lotes de Backup Disponíveis"
+    
+    for i in "${!LOTES[@]}"; do
+        nome_lote=$(basename "${LOTES[$i]}")
+        qtd_arquivos=$(ls -1 "${LOTES[$i]}"/*.gz 2>/dev/null | wc -l)
+        echo "  [$i] $nome_lote ($qtd_arquivos arquivos)"
+    done
+    
+    echo ""
+    read -p "Selecione o número do lote para abrir (ou 'q' para sair): " sel_lote
+    
+    if [ "$sel_lote" = "q" ]; then exit 0; fi
+    
+    if [[ "$sel_lote" =~ ^[0-9]+$ ]] && [ "$sel_lote" -lt "${#LOTES[@]}" ]; then
+        DUMP_DIR="${LOTES[$sel_lote]}"
+        log_info "Lote selecionado: $(basename "$DUMP_DIR")"
+    else
+        log_error "Seleção inválida!"
+        exit 1
+    fi
+fi
+
 ### ========== LISTAR DUMPS DISPONÍVEIS ==========
-log_section "Dumps Disponíveis"
+log_section "Dumps no Lote Selecionado"
 
 DUMP_FILES=()
 while IFS= read -r -d '' file; do
@@ -287,7 +319,7 @@ done
 
 log_info "Total: ${#DUMP_FILES[@]} dump(s) encontrado(s)"
 
-### ========== SELECIONAR DUMPS (Correção da Lógica) ==========
+### ========== SELECIONAR DUMPS ==========
 if [ "$AUTO_MODE" = true ]; then
     for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
         SELECTED_DUMPS+=($i)
@@ -295,7 +327,7 @@ if [ "$AUTO_MODE" = true ]; then
 else
     echo "Opções:"
     echo "  - Digite os números separados por espaço (ex: 0 2 3)"
-    echo "  - Digite 'all' para restaurar todos"
+    echo "  - Digite 'all' para restaurar todos desta lista"
     echo "  - Digite 'q' para cancelar"
     echo ""
     read -p "Selecione os dumps para restaurar: " selection

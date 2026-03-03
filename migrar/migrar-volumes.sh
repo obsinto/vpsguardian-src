@@ -901,13 +901,33 @@ for i in "${!SELECTED_BACKUPS[@]}"; do
     fi
     log_success "Backup transferred."
 
-    # 2. Criar volume no servidor remoto (se não existir)
-    log_info "Creating volume '$VOLUME_NAME' on remote server..."
-    ssh_exec "docker volume create $VOLUME_NAME" >/dev/null 2>&1
-    log_success "Volume created or already exists."
+    # 2. Verificar se volume já existe e preparar para restore limpo
+    log_info "Checking if volume '$VOLUME_NAME' exists on remote server..."
+    VOLUME_EXISTS=$(ssh_exec "docker volume inspect $VOLUME_NAME >/dev/null 2>&1 && echo 'yes' || echo 'no'")
 
-    # 3. Restaurar volume
-    log_info "Restoring volume data..."
+    if [ "$VOLUME_EXISTS" = "yes" ]; then
+        log_warning "Volume '$VOLUME_NAME' already exists - preparing clean restore..."
+
+        # Parar containers que usam este volume
+        log_info "Stopping containers using this volume..."
+        ssh_exec "docker ps -a --filter volume=$VOLUME_NAME --format '{{.Names}}' | xargs -r docker stop" 2>/dev/null || true
+
+        # CORREÇÃO: Remover volume existente para evitar mistura de arquivos
+        # Isso resolve problemas de redo logs corrompidos no MySQL
+        log_info "Removing existing volume for clean restore..."
+        if ! ssh_exec "docker volume rm $VOLUME_NAME" 2>/dev/null; then
+            log_warning "Could not remove volume, cleaning contents instead..."
+            ssh_exec "docker run --rm -v $VOLUME_NAME:/volume busybox sh -c 'rm -rf /volume/* /volume/..?* /volume/.[!.]*'" 2>/dev/null || true
+        fi
+    fi
+
+    # Criar volume limpo
+    log_info "Creating clean volume '$VOLUME_NAME' on remote server..."
+    ssh_exec "docker volume create $VOLUME_NAME" >/dev/null 2>&1
+    log_success "Clean volume created."
+
+    # 3. Restaurar volume em volume limpo
+    log_info "Restoring volume data (clean restore)..."
     ssh_exec "docker run --rm -v $VOLUME_NAME:/volume -v $REMOTE_BACKUP_DIR:/backup busybox sh -c 'cd /volume && tar xzf /backup/$BACKUP_FILENAME'" 2>/dev/null
 
     if [ $? -eq 0 ]; then

@@ -226,6 +226,25 @@ if [ "$REMOTE_MODE" = true ]; then
         exit 1
     fi
 
+    # CORREÇÃO: Parar containers e limpar volume antes do restore
+    # Isso evita problemas de redo logs corrompidos no MySQL
+    log_info "Preparing volume for clean restore..."
+
+    # Parar containers que usam o volume
+    ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" \
+        "docker ps -a --filter volume='$VOLUME_NAME' --format '{{.Names}}' | xargs -r docker stop" 2>/dev/null || true
+
+    # Tentar remover e recriar volume para garantir restore limpo
+    log_info "Cleaning volume for restore..."
+    if ! ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "docker volume rm '$VOLUME_NAME'" 2>/dev/null; then
+        # Se não conseguir remover, limpar conteúdo
+        ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" \
+            "docker run --rm -v '$VOLUME_NAME':/volume busybox sh -c 'rm -rf /volume/* /volume/..?* /volume/.[!.]*'" 2>/dev/null || true
+    else
+        # Recriar volume limpo
+        ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "docker volume create '$VOLUME_NAME'" >/dev/null 2>&1
+    fi
+
     log_info "Executing restore on remote server..."
 
     if ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" \
@@ -233,7 +252,7 @@ if [ "$REMOTE_MODE" = true ]; then
             -v '$VOLUME_NAME':/volume \
             -v '$REMOTE_BACKUP_DIR':/backup \
             busybox \
-            sh -c 'cd /volume && tar xzf /backup/$BACKUP_FILENAME'"; then
+            sh -c 'tar xzf /backup/$BACKUP_FILENAME -C /volume'"; then
 
         log_success "Restore completed on remote server!"
 
@@ -265,11 +284,30 @@ else
 
     BACKUP_DIR_ABS=$(cd "$(dirname "$BACKUP_FILE")" && pwd)
 
+    # CORREÇÃO: Parar containers e limpar volume antes do restore
+    # Isso evita problemas de redo logs corrompidos no MySQL
+    log_info "Preparing volume for clean restore..."
+
+    # Parar containers que usam o volume
+    docker ps -a --filter "volume=$VOLUME_NAME" --format '{{.Names}}' | xargs -r docker stop 2>/dev/null || true
+
+    # Tentar remover e recriar volume para garantir restore limpo
+    log_info "Cleaning volume for restore..."
+    if ! docker volume rm "$VOLUME_NAME" 2>/dev/null; then
+        # Se não conseguir remover, limpar conteúdo
+        docker run --rm -v "$VOLUME_NAME":/volume busybox \
+            sh -c 'rm -rf /volume/* /volume/..?* /volume/.[!.]*' 2>/dev/null || true
+    else
+        # Recriar volume limpo
+        docker volume create "$VOLUME_NAME" >/dev/null 2>&1
+    fi
+
+    log_info "Executing restore..."
     docker run --rm \
         -v "$VOLUME_NAME":/volume \
         -v "$BACKUP_DIR_ABS":/backup \
         busybox \
-        sh -c "cd /volume && tar xzf /backup/$BACKUP_FILENAME" || {
+        sh -c "tar xzf /backup/$BACKUP_FILENAME -C /volume" || {
         log_error "Docker restore process failed, aborting."
         log_error "Restore Failed!"
         exit 1

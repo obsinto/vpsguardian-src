@@ -54,7 +54,6 @@ detect_app_databases() {
 }
 
 # Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
-# Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
 detect_all_app_databases() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         if [ "$name" = "coolify-db" ] || [ "$name" = "coolify-redis" ]; then
@@ -108,19 +107,27 @@ get_container_info() {
     echo "$image|$project"
 }
 
+### ========== FUNÇÕES DE CREDENCIAIS (Linha por linha) ==========
+
 get_mysql_credentials() {
     local container="$1"
     local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
-    echo "root:${root_pass}:${db_name:-all}"
+    
+    echo "root"
+    echo "$root_pass"
+    echo "${db_name:-all}"
 }
 
 get_postgres_credentials() {
     local container="$1"
-    local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2)
-    local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
-    local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
-    echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+    local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
+    local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
+    local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
+    
+    echo "${pg_user:-postgres}"
+    echo "$pg_pass"
+    echo "${pg_db:-postgres}"
 }
 
 # Detecção INTELIGENTE de tipo de banco (Imagem + Env Vars + Portas)
@@ -148,9 +155,9 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    local user=$(echo "$credentials" | sed -n '1p')
+    local password=$(echo "$credentials" | sed -n '2p')
+    local database=$(echo "$credentials" | sed -n '3p')
 
     if [ -z "$password" ]; then
         log_error "Senha MySQL/MariaDB não encontrada para $container"
@@ -172,9 +179,9 @@ dump_postgres() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    local user=$(echo "$credentials" | sed -n '1p')
+    local password=$(echo "$credentials" | sed -n '2p')
+    local database=$(echo "$credentials" | sed -n '3p')
 
     if [ -z "$password" ]; then
         log_error "Senha PostgreSQL não encontrada para $container"

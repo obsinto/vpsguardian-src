@@ -117,11 +117,16 @@ detect_mongodb_containers() {
     done
 }
 
+### ========== FUNÇÕES DE CREDENCIAIS ==========
+
 get_mysql_credentials() {
     local container="$1"
     local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
-    echo "root:${root_pass}:${db_name:-all}"
+    
+    echo "root"
+    echo "$root_pass"
+    echo "${db_name:-all}"
 }
 
 get_postgres_credentials() {
@@ -129,14 +134,20 @@ get_postgres_credentials() {
     local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
     local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
-    echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+    
+    echo "${pg_user:-postgres}"
+    echo "$pg_pass"
+    echo "${pg_db:-postgres}"
 }
 
 get_mongodb_credentials() {
     local container="$1"
     local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
-    echo "${mongo_user:-root}:${mongo_pass}:admin"
+    
+    echo "${mongo_user:-root}"
+    echo "$mongo_pass"
+    echo "admin"
 }
 
 ### ========== FUNÇÕES DE DUMP ==========
@@ -146,9 +157,10 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    # Lendo linha por linha com segurança absoluta
+    local user=$(echo "$credentials" | sed -n '1p')
+    local password=$(echo "$credentials" | sed -n '2p')
+    local database=$(echo "$credentials" | sed -n '3p')
 
     if [ -z "$password" ]; then
         log_error "Senha MySQL não encontrada para $container"
@@ -170,9 +182,9 @@ dump_postgres() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    local user=$(echo "$credentials" | sed -n '1p')
+    local password=$(echo "$credentials" | sed -n '2p')
+    local database=$(echo "$credentials" | sed -n '3p')
 
     if [ -z "$password" ]; then
         log_error "Senha PostgreSQL não encontrada para $container"
@@ -189,8 +201,8 @@ dump_mongodb() {
     local output_dir="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
+    local user=$(echo "$credentials" | sed -n '1p')
+    local password=$(echo "$credentials" | sed -n '2p')
 
     log_info "  Executando mongodump..."
 
@@ -198,7 +210,7 @@ dump_mongodb() {
 
     if [ $? -eq 0 ]; then
         docker cp "$container:/tmp/mongodump/." "$output_dir/" >/dev/null 2>&1
-        docker exec "$container" rm -rf /tmp/mongodump >/dev/null 2>&1
+        docker exec "$container" rm -rf /tmp/mongorestore >/dev/null 2>&1
         return 0
     fi
     return 1

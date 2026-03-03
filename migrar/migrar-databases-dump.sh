@@ -157,33 +157,38 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | sed -n '1p')
-    local password=$(echo "$credentials" | sed -n '2p')
-    local database=$(echo "$credentials" | sed -n '3p')
+    # Vacina contra caracteres invisíveis: o comando "tr -d '\r\n'" mata qualquer quebra de linha escondida
+    local user=$(echo "$credentials" | sed -n '1p' | tr -d '\r\n')
+    local password=$(echo "$credentials" | sed -n '2p' | tr -d '\r\n')
+    local database=$(echo "$credentials" | sed -n '3p' | tr -d '\r\n')
 
     if [ -z "$password" ]; then
         log_error "Senha MySQL/MariaDB não encontrada para $container"
         return 1
     fi
 
-    log_info "  Executando mysqldump..."
+    log_info "  Executando dump de dados..."
 
-    # Modificado: Tira o 2>/dev/null e salva o erro num arquivo temporário
+    # Detecta de forma inteligente se é MariaDB 11+ para usar o binário correto
+    local dump_cmd="mysqldump"
+    if docker exec "$container" which mariadb-dump >/dev/null 2>&1; then
+        dump_cmd="mariadb-dump"
+    fi
+
+    # Executa o dump usando as variáveis higienizadas
     if [ "$database" = "all" ]; then
-        docker exec "$container" mysqldump -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers > "$output_file" 2> "/tmp/erro-dump.log"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
     else
-        docker exec "$container" mysqldump -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" > "$output_file" 2> "/tmp/erro-dump.log"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
     fi
     
-    local status=$?
-    
-    # Se falhar, cospe o erro na tela para a gente ler!
-    if [ $status -ne 0 ]; then
-        echo "  🚨 ERRO CAPTURADO DO MARIADB:"
-        cat "/tmp/erro-dump.log"
+    # Verificação de segurança: se gerou um arquivo com 0 bytes, algo deu errado
+    if [ $? -ne 0 ] || [ ! -s "$output_file" ]; then
+        rm -f "$output_file"
+        return 1
     fi
-    
-    return $status
+
+    return 0
 }
 
 dump_postgres() {

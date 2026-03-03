@@ -22,6 +22,16 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
+# Carregar configurações do VPS Guardian
+if [ -f "/opt/vpsguardian/config/config.env" ]; then
+    source "/opt/vpsguardian/config/config.env" 2>/dev/null
+fi
+if [ -f "/opt/vpsguardian/config/default.conf" ]; then
+    source "/opt/vpsguardian/config/default.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
+    source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
+fi
+
 ### ========== CONFIGURAÇÃO ==========
 TARGET_SERVER="${TARGET_SERVER:-}"
 TARGET_USER="${TARGET_USER:-root}"
@@ -293,6 +303,39 @@ fi
 echo ""
 log_info "Total: $TOTAL_DBS banco(s) de dados detectado(s)"
 
+### ========== PERGUNTAR SOBRE COOLIFY-DB ==========
+# Verificar se coolify-db está na lista
+COOLIFY_DB_FOUND=false
+for container in "${POSTGRES_CONTAINERS[@]}"; do
+    if [ "$container" = "coolify-db" ]; then
+        COOLIFY_DB_FOUND=true
+        break
+    fi
+done
+
+if [ "$COOLIFY_DB_FOUND" = true ] && [ "$AUTO_MODE" = false ]; then
+    echo ""
+    log_warning "⚠️  Detecção: O banco de dados do Coolify (coolify-db) foi encontrado."
+    echo ""
+    read -p "Deseja incluir o backup do coolify-db? (s/N): " include_coolify
+    include_coolify=${include_coolify,,}  # Converter para minúsculas
+
+    if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
+        log_info "✓ coolify-db será incluído no backup."
+    else
+        # Remover coolify-db da lista de PostgreSQL
+        NEW_POSTGRES_CONTAINERS=()
+        for container in "${POSTGRES_CONTAINERS[@]}"; do
+            if [ "$container" != "coolify-db" ]; then
+                NEW_POSTGRES_CONTAINERS+=("$container")
+            fi
+        done
+        POSTGRES_CONTAINERS=("${NEW_POSTGRES_CONTAINERS[@]}")
+        ((TOTAL_DBS--))
+        log_info "✓ coolify-db NÃO será incluído no backup."
+    fi
+fi
+
 ### ========== SOLICITAR DESTINO ==========
 if [ -z "$TARGET_SERVER" ]; then
     echo ""
@@ -482,8 +525,9 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
     rm -rf "$DUMP_DIR"
 else
     log_section "Dumps Criados Localmente"
-    # Salvando em lotes organizados!
-    FINAL_DIR="/var/backups/vpsguardian/database-dumps/lote-${TIMESTAMP}"
+    # Salvando em lotes organizados usando diretório configurado
+    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}"
+    FINAL_DIR="$BASE_BACKUP_DIR/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
     rm -rf "$DUMP_DIR"

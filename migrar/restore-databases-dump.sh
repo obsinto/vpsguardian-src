@@ -69,6 +69,7 @@ extract_container_name() {
 }
 
 # Modificado para usar a Tripla Checagem (Imagem, Env Vars e Portas)
+# Modificado para usar a Tripla Checagem e Filtro Anti-Impostor
 find_matching_container() {
     local original_name="$1"
     local db_type="$2"
@@ -76,6 +77,12 @@ find_matching_container() {
 
     containers=$(docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        
+        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
+        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
+            continue
+        fi
+
         local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
         local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
 

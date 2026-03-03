@@ -54,6 +54,7 @@ detect_app_databases() {
 }
 
 # Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
+# Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
 detect_all_app_databases() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         if [ "$name" = "coolify-db" ] || [ "$name" = "coolify-redis" ]; then
@@ -62,6 +63,12 @@ detect_all_app_databases() {
 
         local is_database=false
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        
+        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
+        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
+            continue
+        fi
+
         local coolify_type=$(docker inspect --format='{{index .Config.Labels "coolify.type"}}' "$name" 2>/dev/null)
         local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
 
@@ -77,7 +84,7 @@ detect_all_app_databases() {
             is_database=true
         fi
 
-        # Critério 3: Detectar por portas expostas clássicas (resolve o problema das imagens sem nome)
+        # Critério 3: Detectar por portas expostas clássicas
         if [[ "$exposed_ports" =~ 3306|5432|6379|27017 ]]; then
             is_database=true
         fi

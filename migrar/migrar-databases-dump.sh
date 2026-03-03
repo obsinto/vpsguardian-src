@@ -76,7 +76,7 @@ done
 detect_mysql_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        
+
         # Filtro Anti-Impostor: Ignorar proxies e aplicações web
         if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
             continue
@@ -84,7 +84,7 @@ detect_mysql_containers() {
 
         local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
         local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-        
+
         if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
             echo "$name"
         fi
@@ -94,7 +94,7 @@ detect_mysql_containers() {
 detect_postgres_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        
+
         # Filtro Anti-Impostor: Ignorar proxies e aplicações web
         if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
             continue
@@ -102,7 +102,7 @@ detect_postgres_containers() {
 
         local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
         local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-        
+
         if [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
             echo "$name"
         fi
@@ -112,7 +112,7 @@ detect_postgres_containers() {
 detect_mongodb_containers() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        
+
         # Filtro Anti-Impostor: Ignorar proxies e aplicações web
         if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
             continue
@@ -120,7 +120,7 @@ detect_mongodb_containers() {
 
         local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
         local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-        
+
         if [[ "$image" =~ mongo ]] || echo "$env_vars" | grep -qEi 'MONGO_INITDB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 27017 ]]; then
             echo "$name"
         fi
@@ -303,36 +303,64 @@ fi
 echo ""
 log_info "Total: $TOTAL_DBS banco(s) de dados detectado(s)"
 
-### ========== PERGUNTAR SOBRE COOLIFY-DB ==========
-# Verificar se coolify-db está na lista
-COOLIFY_DB_FOUND=false
-for container in "${POSTGRES_CONTAINERS[@]}"; do
-    if [ "$container" = "coolify-db" ]; then
-        COOLIFY_DB_FOUND=true
-        break
-    fi
-done
+### ========== PERGUNTAR SOBRE CONTAINERS COOLIFY ==========
+if [ "$AUTO_MODE" = false ]; then
+    # Separar containers Coolify dos demais
+    COOLIFY_MYSQL=()
+    COOLIFY_POSTGRES=()
+    COOLIFY_MONGODB=()
+    APP_MYSQL=()
+    APP_POSTGRES=()
+    APP_MONGODB=()
 
-if [ "$COOLIFY_DB_FOUND" = true ] && [ "$AUTO_MODE" = false ]; then
-    echo ""
-    log_warning "⚠️  Detecção: O banco de dados do Coolify (coolify-db) foi encontrado."
-    echo ""
-    read -p "Deseja incluir o backup do coolify-db? (s/N): " include_coolify
-    include_coolify=${include_coolify,,}  # Converter para minúsculas
+    for container in "${MYSQL_CONTAINERS[@]}"; do
+        if [[ "$container" =~ coolify ]]; then
+            COOLIFY_MYSQL+=("$container")
+        else
+            APP_MYSQL+=("$container")
+        fi
+    done
 
-    if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
-        log_info "✓ coolify-db será incluído no backup."
-    else
-        # Remover coolify-db da lista de PostgreSQL
-        NEW_POSTGRES_CONTAINERS=()
-        for container in "${POSTGRES_CONTAINERS[@]}"; do
-            if [ "$container" != "coolify-db" ]; then
-                NEW_POSTGRES_CONTAINERS+=("$container")
-            fi
+    for container in "${POSTGRES_CONTAINERS[@]}"; do
+        if [[ "$container" =~ coolify ]]; then
+            COOLIFY_POSTGRES+=("$container")
+        else
+            APP_POSTGRES+=("$container")
+        fi
+    done
+
+    for container in "${MONGODB_CONTAINERS[@]}"; do
+        if [[ "$container" =~ coolify ]]; then
+            COOLIFY_MONGODB+=("$container")
+        else
+            APP_MONGODB+=("$container")
+        fi
+    done
+
+    TOTAL_COOLIFY=$((${#COOLIFY_MYSQL[@]} + ${#COOLIFY_POSTGRES[@]} + ${#COOLIFY_MONGODB[@]}))
+
+    if [ $TOTAL_COOLIFY -gt 0 ]; then
+        echo ""
+        log_warning "⚠️  Detecção: $TOTAL_COOLIFY container(s) relacionado(s) ao Coolify encontrado(s):"
+        for c in "${COOLIFY_MYSQL[@]}" "${COOLIFY_POSTGRES[@]}" "${COOLIFY_MONGODB[@]}"; do
+            echo "    - $c"
         done
-        POSTGRES_CONTAINERS=("${NEW_POSTGRES_CONTAINERS[@]}")
-        ((TOTAL_DBS--))
-        log_info "✓ coolify-db NÃO será incluído no backup."
+        echo ""
+        read -p "Deseja incluir estes containers no backup? (s/N): " include_coolify
+        include_coolify=${include_coolify,,}  # Converter para minúsculas
+
+        if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
+            log_info "✓ Containers Coolify serão incluídos no backup."
+        else
+            # Remover containers Coolify das listas
+            MYSQL_CONTAINERS=("${APP_MYSQL[@]}")
+            POSTGRES_CONTAINERS=("${APP_POSTGRES[@]}")
+            MONGODB_CONTAINERS=("${APP_MONGODB[@]}")
+            TOTAL_DBS=$((TOTAL_DBS - TOTAL_COOLIFY))
+            log_info "✓ Containers Coolify NÃO serão incluídos no backup."
+            echo ""
+            log_info "Total de bancos a migrar: $TOTAL_DBS"
+        fi
     fi
 fi
 

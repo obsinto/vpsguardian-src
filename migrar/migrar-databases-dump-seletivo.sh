@@ -66,13 +66,9 @@ detect_app_databases() {
 # Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
 detect_all_app_databases() {
     docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        if [ "$name" = "coolify-db" ] || [ "$name" = "coolify-redis" ]; then
-            continue
-        fi
-
         local is_database=false
         local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-        
+
         # Filtro Anti-Impostor: Ignorar proxies e aplicações web
         if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
             continue
@@ -306,16 +302,12 @@ if [ "$MIGRATION_MODE" = "interactive" ]; then
     log_section "Escolha o que Migrar"
     echo "  1) Apenas APLICAÇÕES com label (${#APP_DATABASES[@]} banco(s))"
     echo "  2) TODOS OS BANCOS detectados (${#ALL_APP_DATABASES[@]} banco(s)) ⭐ RECOMENDADO"
-    echo "  3) Apenas COOLIFY (1 banco)"
-    echo "  4) TUDO (aplicações + Coolify)"
     echo "  0) Cancelar"
     echo ""
-    read -p "Escolha (1-4): " choice
+    read -p "Escolha (1-2): " choice
     case $choice in
         1) MIGRATION_MODE="apps-only" ;;
         2) MIGRATION_MODE="apps-all" ;;
-        3) MIGRATION_MODE="coolify-only" ;;
-        4) MIGRATION_MODE="all" ;;
         0) log_info "Operação cancelada"; exit 0 ;;
         *) log_error "Opção inválida"; exit 1 ;;
     esac
@@ -325,27 +317,39 @@ DATABASES_TO_MIGRATE=()
 case "$MIGRATION_MODE" in
     apps-only) DATABASES_TO_MIGRATE=("${APP_DATABASES[@]}") ;;
     apps-all) DATABASES_TO_MIGRATE=("${ALL_APP_DATABASES[@]}") ;;
-    coolify-only) [ -n "$COOLIFY_DATABASE" ] && DATABASES_TO_MIGRATE=("$COOLIFY_DATABASE") ;;
-    all) DATABASES_TO_MIGRATE=("${ALL_APP_DATABASES[@]}"); [ -n "$COOLIFY_DATABASE" ] && DATABASES_TO_MIGRATE+=("$COOLIFY_DATABASE") ;;
 esac
 
-# Perguntar especificamente sobre coolify-db se não for modo coolify-only
-if [ "$MIGRATION_MODE" != "coolify-only" ] && [ -n "$COOLIFY_DATABASE" ]; then
-    echo ""
-    log_warning "Detecção: O banco de dados do Coolify (coolify-db) foi encontrado."
-    echo ""
-    read -p "Deseja incluir o backup do coolify-db? (s/N): " include_coolify
-    include_coolify=${include_coolify,,}  # Converter para minúsculas
+### ========== PERGUNTAR SOBRE CONTAINERS COOLIFY ==========
+if [ "$MIGRATION_MODE" != "" ]; then
+    # Separar containers Coolify dos demais
+    COOLIFY_CONTAINERS=()
+    APP_CONTAINERS=()
 
-    if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
-        if [ "$MIGRATION_MODE" != "all" ]; then
-            DATABASES_TO_MIGRATE+=("$COOLIFY_DATABASE")
-            log_info "coolify-db será incluído no backup."
+    for container in "${DATABASES_TO_MIGRATE[@]}"; do
+        if [[ "$container" =~ coolify ]]; then
+            COOLIFY_CONTAINERS+=("$container")
+        else
+            APP_CONTAINERS+=("$container")
         fi
-    else
-        # Remover coolify-db da lista se estiver presente
-        DATABASES_TO_MIGRATE=("${DATABASES_TO_MIGRATE[@]/$COOLIFY_DATABASE}")
-        log_info "coolify-db NÃO será incluído no backup."
+    done
+
+    if [ ${#COOLIFY_CONTAINERS[@]} -gt 0 ]; then
+        echo ""
+        log_warning "⚠️  Detecção: ${#COOLIFY_CONTAINERS[@]} container(s) relacionado(s) ao Coolify encontrado(s):"
+        for c in "${COOLIFY_CONTAINERS[@]}"; do
+            echo "    - $c"
+        done
+        echo ""
+        read -p "Deseja incluir estes containers no backup? (s/N): " include_coolify
+        include_coolify=${include_coolify,,}  # Converter para minúsculas
+
+        if [ "$include_coolify" = "s" ] || [ "$include_coolify" = "sim" ] || [ "$include_coolify" = "y" ] || [ "$include_coolify" = "yes" ]; then
+            log_info "✓ Containers Coolify serão incluídos no backup."
+        else
+            # Usar apenas containers de apps
+            DATABASES_TO_MIGRATE=("${APP_CONTAINERS[@]}")
+            log_info "✓ Containers Coolify NÃO serão incluídos no backup."
+        fi
     fi
 fi
 

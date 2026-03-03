@@ -336,30 +336,97 @@ fi
 
 log_section "Detectando Bancos de Dados de Aplicações"
 
-# Detectar containers de banco (excluindo coolify-db e coolify-redis)
+# Detectar TODOS os containers de banco
+ALL_DBS=()
+COOLIFY_DBS=()
 APP_DBS=()
+
 while IFS= read -r container; do
-    if [ "$container" != "coolify-db" ] && [ "$container" != "coolify-redis" ]; then
-        db_type=$(detect_database_type "$container")
-        if [ "$db_type" != "unknown" ]; then
+    db_type=$(detect_database_type "$container")
+    if [ "$db_type" != "unknown" ]; then
+        ALL_DBS+=("$container")
+
+        # Separar Coolify de Apps
+        if [[ "$container" =~ coolify ]]; then
+            COOLIFY_DBS+=("$container")
+        else
             APP_DBS+=("$container")
         fi
     fi
 done < <(docker ps --format '{{.Names}}' 2>/dev/null)
 
-if [ ${#APP_DBS[@]} -eq 0 ]; then
-    log_warning "Nenhum banco de dados de aplicação encontrado"
+if [ ${#ALL_DBS[@]} -eq 0 ]; then
+    log_warning "Nenhum banco de dados encontrado"
     exit 0
 fi
 
-echo "Bancos de dados detectados (coolify-db será IGNORADO):"
+echo "Bancos de dados detectados:"
 echo ""
-for i in "${!APP_DBS[@]}"; do
-    container="${APP_DBS[$i]}"
+
+if [ ${#APP_DBS[@]} -gt 0 ]; then
+    echo "📊 BANCOS DE APLICAÇÕES:"
+    for i in "${!APP_DBS[@]}"; do
+        container="${APP_DBS[$i]}"
+        db_type=$(detect_database_type "$container")
+        image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+        echo "  [$i] $container"
+        echo "      Tipo: $db_type | Imagem: $image"
+    done
+    echo ""
+fi
+
+if [ ${#COOLIFY_DBS[@]} -gt 0 ]; then
+    echo "⚙️  BANCOS DO COOLIFY (use com CUIDADO!):"
+    for container in "${COOLIFY_DBS[@]}"; do
+        db_type=$(detect_database_type "$container")
+        image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+        echo "  ⚠️  $container"
+        echo "      Tipo: $db_type | Imagem: $image"
+    done
+    echo ""
+fi
+
+# Perguntar se quer incluir Coolify
+INCLUDE_COOLIFY=false
+if [ ${#COOLIFY_DBS[@]} -gt 0 ]; then
+    log_warning "Containers Coolify detectados (${#COOLIFY_DBS[@]})"
+    echo ""
+    read -p "Deseja incluir os containers Coolify na lista para limpeza? (s/N): " include_coolify_input
+    include_coolify_input=${include_coolify_input,,}
+
+    if [ "$include_coolify_input" = "s" ] || [ "$include_coolify_input" = "sim" ] || [ "$include_coolify_input" = "y" ] || [ "$include_coolify_input" = "yes" ]; then
+        INCLUDE_COOLIFY=true
+        log_info "✓ Containers Coolify serão incluídos na lista"
+    else
+        log_info "✓ Containers Coolify NÃO serão incluídos"
+    fi
+    echo ""
+fi
+
+# Construir lista final
+AVAILABLE_DBS=()
+if [ "$INCLUDE_COOLIFY" = true ]; then
+    AVAILABLE_DBS=("${APP_DBS[@]}" "${COOLIFY_DBS[@]}")
+else
+    AVAILABLE_DBS=("${APP_DBS[@]}")
+fi
+
+if [ ${#AVAILABLE_DBS[@]} -eq 0 ]; then
+    log_warning "Nenhum banco disponível para limpeza"
+    exit 0
+fi
+
+echo "Bancos disponíveis para limpeza:"
+for i in "${!AVAILABLE_DBS[@]}"; do
+    container="${AVAILABLE_DBS[$i]}"
     db_type=$(detect_database_type "$container")
-    image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
-    echo "  [$i] $container"
-    echo "      Tipo: $db_type | Imagem: $image"
+
+    # Indicar se é Coolify
+    if [[ "$container" =~ coolify ]]; then
+        echo "  [$i] $container ⚠️  COOLIFY"
+    else
+        echo "  [$i] $container"
+    fi
 done
 
 echo ""
@@ -389,11 +456,11 @@ fi
 
 SELECTED_DBS=()
 if [ "$selection" = "all" ]; then
-    SELECTED_DBS=("${APP_DBS[@]}")
+    SELECTED_DBS=("${AVAILABLE_DBS[@]}")
 else
     for num in $selection; do
-        if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -lt "${#APP_DBS[@]}" ]; then
-            SELECTED_DBS+=("${APP_DBS[$num]}")
+        if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -lt "${#AVAILABLE_DBS[@]}" ]; then
+            SELECTED_DBS+=("${AVAILABLE_DBS[$num]}")
         fi
     done
 fi

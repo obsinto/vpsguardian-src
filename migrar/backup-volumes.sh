@@ -509,7 +509,7 @@ echo ""
 echo "  📦 Batch ID: $BATCH_ID"
 echo "  📂 Localização: $OUTPUT_DIR"
 echo "  ✅ Backups bem-sucedidos: $SUCCESSFUL_BACKUPS"
-[ $FAILED_BACKUPS -gt 0 ] && echo "  ❌ Backups falhados: $FAILED_BACKUPS"
+if [ $FAILED_BACKUPS -gt 0 ]; then echo "  ❌ Backups falhados: $FAILED_BACKUPS"; fi
 echo "  🗄️  Bancos de dados: $DB_COUNT (Slow Shutdown aplicado)"
 echo ""
 echo "  Arquivos criados:"

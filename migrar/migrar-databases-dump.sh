@@ -38,6 +38,7 @@ TARGET_USER="${TARGET_USER:-root}"
 TARGET_PORT="${TARGET_PORT:-22}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 AUTO_MODE=false
+INCLUDE_COOLIFY=""  # vazio = perguntar, true = incluir, false = excluir
 DUMP_DIR="/tmp/database-dumps-$$"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
@@ -49,21 +50,26 @@ while [[ $# -gt 0 ]]; do
         --port=*) TARGET_PORT="${1#*=}"; shift ;;
         --key=*) SSH_KEY="${1#*=}"; shift ;;
         --auto) AUTO_MODE=true; shift ;;
+        --include-coolify) INCLUDE_COOLIFY=true; shift ;;
+        --exclude-coolify) INCLUDE_COOLIFY=false; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Migração de bancos de dados via DUMP SQL"
             echo ""
             echo "Options:"
-            echo "  --target=IP      IP do servidor de destino"
-            echo "  --user=USER      Usuário SSH (default: root)"
-            echo "  --port=PORT      Porta SSH (default: 22)"
-            echo "  --key=PATH       Chave SSH (default: ~/.ssh/id_rsa)"
-            echo "  --auto           Modo automático (sem confirmações)"
-            echo "  -h, --help       Mostrar esta ajuda"
+            echo "  --target=IP         IP do servidor de destino"
+            echo "  --user=USER         Usuário SSH (default: root)"
+            echo "  --port=PORT         Porta SSH (default: 22)"
+            echo "  --key=PATH          Chave SSH (default: ~/.ssh/id_rsa)"
+            echo "  --auto              Modo automático (sem confirmações)"
+            echo "  --include-coolify   Incluir banco do Coolify (coolify-db)"
+            echo "  --exclude-coolify   Excluir banco do Coolify (coolify-db)"
+            echo "  -h, --help          Mostrar esta ajuda"
             echo ""
             echo "Exemplo:"
             echo "  $0 --target=192.168.1.100"
+            echo "  $0 --auto --include-coolify --target=local"
             echo ""
             exit 0
             ;;
@@ -186,10 +192,11 @@ dump_mysql() {
     fi
 
     # Executa o dump usando as variáveis higienizadas
+    # IMPORTANTE: --add-drop-table permite restaurar sobre dados existentes
     if [ "$database" = "all" ]; then
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table 2>/dev/null > "$output_file"
     else
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table "$database" 2>/dev/null > "$output_file"
     fi
     
     # Verificação de segurança: se gerou um arquivo com 0 bytes, algo deu errado
@@ -304,48 +311,60 @@ echo ""
 log_info "Total: $TOTAL_DBS banco(s) de dados detectado(s)"
 
 ### ========== PERGUNTAR SOBRE CONTAINERS COOLIFY ==========
-if [ "$AUTO_MODE" = false ]; then
-    # Separar containers Coolify dos demais
-    COOLIFY_MYSQL=()
-    COOLIFY_POSTGRES=()
-    COOLIFY_MONGODB=()
-    APP_MYSQL=()
-    APP_POSTGRES=()
-    APP_MONGODB=()
+# Separar containers Coolify dos demais
+COOLIFY_MYSQL=()
+COOLIFY_POSTGRES=()
+COOLIFY_MONGODB=()
+APP_MYSQL=()
+APP_POSTGRES=()
+APP_MONGODB=()
 
-    for container in "${MYSQL_CONTAINERS[@]}"; do
-        if [[ "$container" =~ coolify ]]; then
-            COOLIFY_MYSQL+=("$container")
-        else
-            APP_MYSQL+=("$container")
-        fi
+for container in "${MYSQL_CONTAINERS[@]}"; do
+    if [[ "$container" =~ coolify ]]; then
+        COOLIFY_MYSQL+=("$container")
+    else
+        APP_MYSQL+=("$container")
+    fi
+done
+
+for container in "${POSTGRES_CONTAINERS[@]}"; do
+    if [[ "$container" =~ coolify ]]; then
+        COOLIFY_POSTGRES+=("$container")
+    else
+        APP_POSTGRES+=("$container")
+    fi
+done
+
+for container in "${MONGODB_CONTAINERS[@]}"; do
+    if [[ "$container" =~ coolify ]]; then
+        COOLIFY_MONGODB+=("$container")
+    else
+        APP_MONGODB+=("$container")
+    fi
+done
+
+TOTAL_COOLIFY=$((${#COOLIFY_MYSQL[@]} + ${#COOLIFY_POSTGRES[@]} + ${#COOLIFY_MONGODB[@]}))
+
+# Decidir se inclui Coolify baseado em flags ou modo
+if [ $TOTAL_COOLIFY -gt 0 ]; then
+    echo ""
+    log_warning "⚠️  Detecção: $TOTAL_COOLIFY container(s) relacionado(s) ao Coolify encontrado(s):"
+    for c in "${COOLIFY_MYSQL[@]}" "${COOLIFY_POSTGRES[@]}" "${COOLIFY_MONGODB[@]}"; do
+        echo "    - $c"
     done
+    echo ""
 
-    for container in "${POSTGRES_CONTAINERS[@]}"; do
-        if [[ "$container" =~ coolify ]]; then
-            COOLIFY_POSTGRES+=("$container")
-        else
-            APP_POSTGRES+=("$container")
-        fi
-    done
-
-    for container in "${MONGODB_CONTAINERS[@]}"; do
-        if [[ "$container" =~ coolify ]]; then
-            COOLIFY_MONGODB+=("$container")
-        else
-            APP_MONGODB+=("$container")
-        fi
-    done
-
-    TOTAL_COOLIFY=$((${#COOLIFY_MYSQL[@]} + ${#COOLIFY_POSTGRES[@]} + ${#COOLIFY_MONGODB[@]}))
-
-    if [ $TOTAL_COOLIFY -gt 0 ]; then
-        echo ""
-        log_warning "⚠️  Detecção: $TOTAL_COOLIFY container(s) relacionado(s) ao Coolify encontrado(s):"
-        for c in "${COOLIFY_MYSQL[@]}" "${COOLIFY_POSTGRES[@]}" "${COOLIFY_MONGODB[@]}"; do
-            echo "    - $c"
-        done
-        echo ""
+    # Se flag explícita foi passada, usar ela
+    if [ "$INCLUDE_COOLIFY" = "true" ]; then
+        log_info "✓ Containers Coolify serão incluídos (--include-coolify)"
+    elif [ "$INCLUDE_COOLIFY" = "false" ]; then
+        log_info "✓ Containers Coolify serão EXCLUÍDOS (--exclude-coolify)"
+        MYSQL_CONTAINERS=("${APP_MYSQL[@]}")
+        POSTGRES_CONTAINERS=("${APP_POSTGRES[@]}")
+        MONGODB_CONTAINERS=("${APP_MONGODB[@]}")
+        TOTAL_DBS=$((TOTAL_DBS - TOTAL_COOLIFY))
+    # Modo interativo: perguntar ao usuário
+    elif [ "$AUTO_MODE" = false ]; then
         read -p "Deseja incluir estes containers no backup? (s/N): " include_coolify
         include_coolify=${include_coolify,,}  # Converter para minúsculas
 
@@ -361,6 +380,9 @@ if [ "$AUTO_MODE" = false ]; then
             echo ""
             log_info "Total de bancos a migrar: $TOTAL_DBS"
         fi
+    # Modo auto sem flag: incluir por padrão
+    else
+        log_info "✓ Containers Coolify serão incluídos (modo automático)"
     fi
 fi
 

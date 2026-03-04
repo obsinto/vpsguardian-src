@@ -164,9 +164,17 @@ restore_mysql() {
 
     log_info "  Credenciais: user=$user, database=$database"
 
-    # Para MySQL, dumps criados com mysqldump de um único banco geralmente
-    # NÃO incluem CREATE DATABASE ou USE, então precisamos especificar o banco
-    # Apenas no caso de --all-databases o dump tem tudo interno
+    # Verificar se o banco já tem dados
+    if [ "$database" != "all" ]; then
+        local table_count=$(docker exec "$container" $cmd -u "$user" -p"$password" "$database" -e "SHOW TABLES;" 2>/dev/null | wc -l)
+        if [ $table_count -gt 1 ]; then
+            log_warning "  ⚠️  Banco '$database' já contém $((table_count - 1)) tabela(s)"
+            log_info "  O dump contém DROP TABLE, então as tabelas serão substituídas"
+        fi
+    fi
+
+    # Para MySQL, dumps criados com --add-drop-table incluem DROP TABLE IF EXISTS
+    # Isso permite restaurar sobre dados existentes sem erro
 
     if [ "$database" = "all" ]; then
         log_info "  Restaurando todos os bancos de dados..."
@@ -212,7 +220,18 @@ restore_postgres() {
     if [ -z "$database" ]; then database="postgres"; log_warning "  Nome do banco não especificado, usando 'postgres'"; fi
 
     log_info "  Credenciais: user=$user, database=$database"
+
+    # Verificar se o banco já tem dados
+    local table_count=$(docker exec -e PGPASSWORD="$password" "$container" psql -U "$user" -d "$database" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>/dev/null | tr -d ' ')
+    if [ -n "$table_count" ] && [ "$table_count" -gt 0 ]; then
+        log_warning "  ⚠️  Banco '$database' já contém $table_count tabela(s)"
+        log_info "  O dump contém DROP TABLE, então as tabelas serão substituídas"
+    fi
+
     log_info "  Restaurando banco de dados PostgreSQL..."
+
+    # O dump foi criado com --clean --if-exists, então contém DROP TABLE IF EXISTS
+    # Isso permite restaurar sobre dados existentes sem erro
 
     # Executa e joga qualquer erro para um arquivo de log temporário
     if [[ "$dump_file" =~ \.gz$ ]]; then
@@ -328,9 +347,17 @@ for dump_file in "${DUMP_FILES[@]}"; do
     size=$(du -h "$dump_file" | cut -f1)
     date_modified=$(stat -c %y "$dump_file" 2>/dev/null | cut -d'.' -f1)
 
-    echo "  [$INDEX] $filename"
-    echo "         Tipo: $db_type | Container: $container_name | Tamanho: $size"
-    echo "         Data: $date_modified"
+    # Destacar dumps do Coolify
+    if [[ "$container_name" =~ coolify ]]; then
+        echo "  [$INDEX] $filename ⚠️  COOLIFY"
+        echo "         Tipo: $db_type | Container: $container_name | Tamanho: $size"
+        echo "         Data: $date_modified"
+        echo "         ⚠️  Este é o banco do Coolify - restaurar sobrescreve configurações do Coolify"
+    else
+        echo "  [$INDEX] $filename"
+        echo "         Tipo: $db_type | Container: $container_name | Tamanho: $size"
+        echo "         Data: $date_modified"
+    fi
     echo ""
 
     DUMP_INFO["$INDEX,file"]="$dump_file"
@@ -341,6 +368,7 @@ for dump_file in "${DUMP_FILES[@]}"; do
 done
 
 log_info "Total: ${#DUMP_FILES[@]} dump(s) encontrado(s)"
+echo ""
 
 ### ========== SELECIONAR DUMPS ==========
 if [ "$AUTO_MODE" = true ]; then
@@ -348,27 +376,70 @@ if [ "$AUTO_MODE" = true ]; then
         SELECTED_DUMPS+=($i)
     done
 else
-    echo "Opções:"
-    echo "  - Digite os números separados por espaço (ex: 0 2 3)"
-    echo "  - Digite 'all' para restaurar todos desta lista"
-    echo "  - Digite 'q' para cancelar"
+    echo "════════════════════════════════════════════════════════════"
+    echo "  💡 OPÇÕES DE RESTAURAÇÃO"
+    echo "════════════════════════════════════════════════════════════"
     echo ""
-    read -p "Selecione os dumps para restaurar: " selection
+    echo "  [1] Restaurar TODOS os dumps (incluindo Coolify)"
+    echo "  [2] Restaurar TODOS EXCETO Coolify ⭐ RECOMENDADO"
+    echo "  [3] Escolher dumps específicos manualmente"
+    echo "  [0] Cancelar"
+    echo ""
+    read -p "Escolha uma opção (0-3): " restore_option
 
-    if [ "$selection" = "q" ]; then
-        log_info "Operação cancelada"
-        exit 0
-    elif [ "$selection" = "all" ]; then
-        for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
-            SELECTED_DUMPS+=($i)
-        done
-    else
-        for num in $selection; do
-            if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -lt "${#DUMP_FILES[@]}" ]; then
-                SELECTED_DUMPS+=($num)
+    case "$restore_option" in
+        1)
+            # Restaurar tudo
+            log_info "Selecionado: Restaurar TODOS os dumps (incluindo Coolify)"
+            for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
+                SELECTED_DUMPS+=($i)
+            done
+            ;;
+        2)
+            # Restaurar tudo exceto Coolify
+            log_info "Selecionado: Restaurar TODOS EXCETO Coolify"
+            for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
+                container_name="${DUMP_INFO["$i,container"]}"
+                # Pular containers que tenham "coolify" no nome
+                if [[ ! "$container_name" =~ coolify ]]; then
+                    SELECTED_DUMPS+=($i)
+                else
+                    log_warning "  Pulando: $container_name (Coolify)"
+                fi
+            done
+            ;;
+        3)
+            # Escolha manual
+            echo ""
+            echo "Digite os números separados por espaço (ex: 0 2 3)"
+            echo "Ou digite 'all' para todos, 'q' para cancelar"
+            echo ""
+            read -p "Selecione os dumps: " selection
+
+            if [ "$selection" = "q" ]; then
+                log_info "Operação cancelada"
+                exit 0
+            elif [ "$selection" = "all" ]; then
+                for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
+                    SELECTED_DUMPS+=($i)
+                done
+            else
+                for num in $selection; do
+                    if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -lt "${#DUMP_FILES[@]}" ]; then
+                        SELECTED_DUMPS+=($num)
+                    fi
+                done
             fi
-        done
-    fi
+            ;;
+        0|q|Q)
+            log_info "Operação cancelada"
+            exit 0
+            ;;
+        *)
+            log_error "Opção inválida!"
+            exit 1
+            ;;
+    esac
 fi
 
 if [ ${#SELECTED_DUMPS[@]} -eq 0 ]; then log_warning "Nenhum dump válido selecionado"; exit 0; fi

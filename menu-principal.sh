@@ -299,6 +299,11 @@ show_backup_menu() {
     echo -e "       ${GRAY}(S3, Google Drive, servidor SSH)${NC}"
     echo -e "       ${GRAY}(AWS, Backblaze, rsync, rclone)${NC}"
     echo ""
+    echo -e "  ${MAGENTA}CONFIGURAÇÃO DE BACKUPS AUTOMÁTICOS${NC}"
+    echo -e "  ${GREEN}11${NC} → ⚙️  Configurar Destinos de Backup"
+    echo -e "       ${GRAY}(Local, Google Drive, S3, SSH)${NC}"
+    echo -e "       ${GRAY}(Define onde backups automáticos vão)${NC}"
+    echo ""
     echo -e "  ${MAGENTA}RESTAURAR BACKUPS${NC}"
     echo -e "  ${GREEN}5${NC} → 📥 Restaurar Coolify de Backup Remoto"
     echo -e "       ${GRAY}(Baixar de servidor SSH e restaurar)${NC}"
@@ -621,6 +626,12 @@ handle_backup_menu() {
                     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 
                     pause
+                fi
+                ;;
+            11)
+                # Configurar Destinos de Backup
+                if confirm "Configurar destinos de backup automático (Local, Google Drive, S3, SSH)?"; then
+                    run_script "$SCRIPT_DIR/backup/configurar-backup-destinos.sh" "Configurar Destinos de Backup"
                 fi
                 ;;
             0)

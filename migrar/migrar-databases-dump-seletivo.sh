@@ -190,10 +190,11 @@ dump_mysql() {
     fi
 
     # Executa o dump usando as variáveis higienizadas
+    # IMPORTANTE: --add-drop-table permite restaurar sobre dados existentes
     if [ "$database" = "all" ]; then
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers 2>/dev/null > "$output_file"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table 2>/dev/null > "$output_file"
     else
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers "$database" 2>/dev/null > "$output_file"
+        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table "$database" 2>/dev/null > "$output_file"
     fi
     
     # Verificação de segurança: se gerou um arquivo com 0 bytes, algo deu errado

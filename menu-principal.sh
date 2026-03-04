@@ -287,9 +287,9 @@ show_backup_menu() {
     echo -e "       ${GRAY}(DB + SSH keys + configs + volumes)${NC}"
     echo -e "       ${GRAY}(Salvo em: /var/backups/vpsguardian)${NC}"
     echo ""
-    echo -e "  ${GREEN}2${NC} → 🗄️  Backup de Bancos de Dados"
-    echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB)${NC}"
-    echo -e "       ${GRAY}(Escolha quais bancos fazer backup)${NC}"
+    echo -e "  ${GREEN}2${NC} → 🗄️  Backup de Bancos via Dump SQL"
+    echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB - inclui Coolify)${NC}"
+    echo -e "       ${GRAY}(Escolha destino: Local, Google Drive, S3, SSH)${NC}"
     echo ""
     echo -e "  ${GREEN}3${NC} → 📁 Backup de Volume Docker Específico"
     echo -e "       ${GRAY}(Selecione volume manualmente)${NC}"
@@ -321,10 +321,10 @@ show_backup_menu() {
     echo -e "       ${GRAY}(Escolha backup e volume de destino)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
     echo ""
-    echo -e "  ${GREEN}9${NC} → 🗄️  Restaurar Banco de Dados Específico"
-    echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB)${NC}"
-    echo -e "       ${GRAY}(Restauração inteligente com fallback SQL)${NC}"
-    echo -e "       ${GRAY}(⚠️  Sobrescreve dados do banco)${NC}"
+    echo -e "  ${GREEN}9${NC} → 🗄️  Restaurar Dumps SQL de Bancos"
+    echo -e "       ${GRAY}(Local ou Remoto: S3/Google Drive/SSH)${NC}"
+    echo -e "       ${GRAY}(Controle total: tudo, tudo exceto Coolify, ou específico)${NC}"
+    echo -e "       ${GRAY}(⚠️  Sobrescreve dados dos bancos selecionados)${NC}"
     echo ""
     echo -e "  ${MAGENTA}VALIDAÇÃO E DIAGNÓSTICO${NC}"
     echo -e "  ${GREEN}10${NC} → 🏥 Validar Saúde dos Bancos de Dados"
@@ -513,8 +513,32 @@ handle_backup_menu() {
                 fi
                 ;;
             2)
-                if confirm "Executar backup dos bancos de dados?"; then
-                    run_script "$SCRIPT_DIR/backup/backup-databases.sh" "Backup de Bancos de Dados"
+                # Backup de Bancos via Dump SQL (novo sistema)
+                echo ""
+                echo -e "${CYAN}🗄️  BACKUP DE BANCOS DE DADOS VIA DUMP SQL${NC}"
+                echo ""
+                echo "Onde deseja salvar o backup?"
+                echo "  1) Local apenas"
+                echo "  2) Local + Google Drive"
+                echo "  3) Local + AWS S3"
+                echo "  4) Local + SSH"
+                echo "  5) Todos os destinos"
+                echo "  0) Cancelar"
+                echo ""
+                read -p "Escolha (0-5): " backup_dest_choice
+
+                case $backup_dest_choice in
+                    1) DEST="local" ;;
+                    2) DEST="google-drive" ;;
+                    3) DEST="aws-s3" ;;
+                    4) DEST="self-hosted" ;;
+                    5) DEST="all" ;;
+                    0) continue ;;
+                    *) DEST="local" ;;
+                esac
+
+                if confirm "Executar backup via dump SQL (destino: $DEST)?"; then
+                    run_script "$SCRIPT_DIR/backup/backup-databases-dump-auto.sh --dest=$DEST" "Backup de Bancos via Dump"
                 fi
                 ;;
             3)
@@ -594,14 +618,62 @@ handle_backup_menu() {
                 fi
                 ;;
             9)
-                # Confirmação crítica para Restaurar Banco de Dados
-                if confirm_critical \
-                    "🗄️  RESTAURAR BANCO DE DADOS ESPECÍFICO" \
-                    "Este script irá restaurar bancos de dados usando estratégia inteligente.\n\n${WHITE}O que será feito:${NC}\n  • Listar backups de bancos disponíveis\n  • Você escolherá qual banco restaurar\n  • ${YELLOW}PARAR${NC} containers de banco de dados\n  • ${RED}SUBSTITUIR${NC} dados do banco\n  • Validar integridade pós-restore\n  • Reiniciar containers\n\n${WHITE}Estratégia de Restauração:${NC}\n  1. Tentar restaurar de ${GREEN}volume snapshot${NC} (rápido)\n  2. Validar se banco iniciou corretamente\n  3. Se detectar ${RED}crash loop${NC} → rollback automático\n  4. Fallback para ${YELLOW}SQL dump${NC} (mais confiável)" \
-                    "${RED}⚠ TODOS OS DADOS DO BANCO SERÃO PERDIDOS!${NC}\n\n  • ${RED}Tabelas e dados${NC} → SERÃO SOBRESCRITOS\n  • ${RED}Aplicações conectadas${NC} → TERÃO DOWNTIME\n  • ${RED}Transações em andamento${NC} → SERÃO PERDIDAS\n  • ${YELLOW}Índices e views${NC} → SERÃO RECRIADOS\n\n${WHITE}Bancos suportados:${NC}\n  • ${GREEN}PostgreSQL${NC} → pg_dump + volume\n  • ${GREEN}MySQL/MariaDB${NC} → mysqldump + volume\n  • ${GREEN}MongoDB${NC} → mongodump + volume\n  • ${GREEN}Redis${NC} → volume snapshot\n\n${YELLOW}Tempo estimado:${NC}\n  • Pequeno (<1GB): 2-5 min\n  • Médio (1-10GB): 5-15 min\n  • Grande (>10GB): 15-60 min" \
-                    "1. ${GREEN}FAÇA BACKUP${NC} dos dados atuais antes de restaurar\n2. ${GREEN}Avise usuários${NC} que haverá downtime do banco\n3. ${GREEN}Verifique se tem o backup correto${NC}\n4. ${YELLOW}Pare aplicações${NC} que usam o banco\n5. ${GREEN}O script detecta crash loop${NC} e faz fallback automático\n6. ${GREEN}Validação de saúde${NC} será executada automaticamente"; then
-                    run_script "$SCRIPT_DIR/migrar/restore-database-volumes.sh" "Restaurar Banco de Dados"
-                fi
+                # Restaurar Banco de Dados via Dump SQL
+                echo ""
+                echo -e "${CYAN}🗄️  RESTAURAR BANCO DE DADOS VIA DUMP SQL${NC}"
+                echo ""
+                echo "De onde deseja restaurar os dumps?"
+                echo "  1) Backup local (pasta com dumps)"
+                echo "  2) Origem remota (S3/Google Drive/SSH)"
+                echo "  0) Cancelar"
+                echo ""
+                read -p "Escolha (0-2): " restore_source_choice
+
+                case $restore_source_choice in
+                    1)
+                        # Restaurar de pasta local
+                        echo ""
+                        echo "Diretórios comuns com dumps:"
+                        echo "  1) /var/backups/vpsguardian/database-dumps (padrão)"
+                        echo "  2) /root/database-dumps-migration"
+                        echo "  3) Outro diretório"
+                        echo ""
+                        read -p "Escolha (1-3): " dir_choice
+
+                        case $dir_choice in
+                            1) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                            2) DUMP_PATH="/root/database-dumps-migration" ;;
+                            3) read -p "Digite o caminho completo: " DUMP_PATH ;;
+                            *) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                        esac
+
+                        if [ -d "$DUMP_PATH" ]; then
+                            if confirm_critical \
+                                "🗄️  RESTAURAR DUMPS SQL LOCAIS" \
+                                "Restaurar dumps SQL da pasta: $DUMP_PATH\n\n${WHITE}Você terá controle total:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos" \
+                                "${RED}⚠ DADOS DO BANCO SERÃO SOBRESCRITOS!${NC}\n\n  • ${RED}Tabelas existentes${NC} → SERÃO SUBSTITUÍDAS\n  • ${YELLOW}Aplicações${NC} → PODEM TER DOWNTIME\n  • ${GREEN}Coolify-db${NC} → VOCÊ DECIDE se restaura" \
+                                "1. ${GREEN}Você terá menu interativo${NC} para escolher o que restaurar\n2. ${GREEN}Dumps do Coolify${NC} são destacados visualmente\n3. ${YELLOW}Recomendado${NC}: Restaurar tudo EXCETO Coolify"; then
+                                run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh --dir=$DUMP_PATH" "Restaurar Dumps SQL"
+                            fi
+                        else
+                            echo -e "${RED}Diretório não encontrado: $DUMP_PATH${NC}"
+                            sleep 2
+                        fi
+                        ;;
+                    2)
+                        # Restaurar de origem remota
+                        if confirm_critical \
+                            "☁️  RESTAURAR DUMPS DE ORIGEM REMOTA" \
+                            "Baixar dumps de S3/Google Drive/SSH e restaurar\n\n${WHITE}O que será feito:${NC}\n  • Listar lotes disponíveis na origem\n  • Baixar lote selecionado\n  • ${GREEN}Menu interativo${NC} de restore\n  • Você escolhe o que restaurar" \
+                            "${WHITE}Controle total no restore:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos\n\n${YELLOW}Tempo de download:${NC}\n  • Depende do tamanho e velocidade da internet" \
+                            "1. ${GREEN}Origem será perguntada${NC} (S3, Drive ou SSH)\n2. ${GREEN}Você escolhe qual lote${NC} baixar\n3. ${GREEN}Menu completo de opções${NC} de restore"; then
+                            run_script "$SCRIPT_DIR/migrar/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
+                        fi
+                        ;;
+                    0)
+                        continue
+                        ;;
+                esac
                 ;;
             10)
                 # Validar Saúde dos Bancos

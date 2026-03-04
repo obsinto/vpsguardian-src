@@ -396,9 +396,13 @@ show_migration_menu() {
     echo -e "       ${GRAY}(MySQL, PostgreSQL, MongoDB - mais leve e seguro)${NC}"
     echo -e "       ${GRAY}(Sem problemas de redo logs corrompidos)${NC}"
     echo ""
-    echo -e "  ${GREEN}5${NC} → 📥 Restaurar Dumps SQL"
+    echo -e "  ${GREEN}5${NC} → 📥 Restaurar Dumps SQL Locais"
     echo -e "       ${GRAY}(Restaurar de pasta com dumps pré-existentes)${NC}"
     echo -e "       ${GRAY}(Suporta .sql.gz e .tar.gz)${NC}"
+    echo ""
+    echo -e "  ${GREEN}6${NC} → ☁️  Restaurar Dumps de Origem Remota"
+    echo -e "       ${GRAY}(Baixar de S3/Google Drive/SSH e restaurar)${NC}"
+    echo -e "       ${GRAY}(Controle total: tudo, tudo exceto Coolify, ou específico)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
@@ -777,6 +781,13 @@ handle_migration_menu() {
                 else
                     echo -e "${RED}Diretório não encontrado: $DUMP_PATH${NC}"
                     sleep 2
+                fi
+                ;;
+            6)
+                # Restaurar Dumps de Origem Remota
+                if confirm \
+                    "Baixar dumps de S3/Google Drive/SSH e restaurar?\n\nVocê terá controle total sobre o que restaurar:\n• Tudo (incluindo Coolify)\n• Tudo EXCETO Coolify (recomendado)\n• Dumps específicos"; then
+                    run_script "$SCRIPT_DIR/migrar/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
                 fi
                 ;;
             0)

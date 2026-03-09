@@ -203,9 +203,15 @@ echo "  📅 Data/Hora: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  📁 Lote criado: $(basename "$LATEST_BATCH")"
 echo "  💾 Tamanho: $BATCH_SIZE"
 echo "  🎯 Destino: $UPLOAD_DEST"
+echo ""
+echo "  📂 Arquivos salvos em:"
+echo "     $LATEST_BATCH"
 if [ "$UPLOAD_DEST" != "local" ]; then
-    echo "  📦 Tarball: $(basename "$TARBALL") ($TARBALL_SIZE)"
+    echo ""
+    echo "  📦 Tarball criado: $(basename "$TARBALL") ($TARBALL_SIZE)"
+    echo "     $TARBALL"
 fi
+echo ""
 echo "  📝 Log completo: $LOG_FILE"
 echo ""
 

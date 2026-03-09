@@ -581,9 +581,15 @@ else
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
     rm -rf "$DUMP_DIR"
-    log_info "Dumps salvos e organizados em: $FINAL_DIR"
+
     echo ""
-    ls -lh "$FINAL_DIR"/*${TIMESTAMP}* 2>/dev/null
+    log_success "Dumps salvos e organizados com sucesso!"
+    echo ""
+    echo "  📂 Localização dos arquivos:"
+    echo "     $FINAL_DIR"
+    echo ""
+    echo "  📄 Conteúdo do lote:"
+    ls -lh "$FINAL_DIR"/*${TIMESTAMP}* 2>/dev/null | awk '{printf "     %s  %s\n", $5, $9}' | sed "s|$FINAL_DIR/|     |"
 fi
 
 ### ========== RESUMO FINAL ==========
@@ -599,6 +605,10 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
     echo ""
     echo "  Destino: $TARGET_USER@$TARGET_SERVER"
     echo "  Diretório remoto: $REMOTE_DIR"
+else
+    echo ""
+    echo "  📂 Diretório dos backups:"
+    echo "     $FINAL_DIR"
 fi
 
 echo ""

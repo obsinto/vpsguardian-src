@@ -294,12 +294,32 @@ echo ""
 
 ### ========== MENU DE LOTES ==========
 if [ ! -d "$DUMP_DIR" ]; then
-    log_error "Diretório base não encontrado: $DUMP_DIR"
-    exit 1
+    log_warning "Diretório de backups não existe: $DUMP_DIR"
+    log_info "Criando diretório..."
+    mkdir -p "$DUMP_DIR"
+
+    if [ $? -eq 0 ]; then
+        log_success "Diretório criado com sucesso"
+    else
+        log_error "Falha ao criar diretório: $DUMP_DIR"
+        exit 1
+    fi
 fi
 
 # Detectar subdiretórios de lotes
 LOTES=($(find "$DUMP_DIR" -mindepth 1 -maxdepth 1 -type d | sort -r))
+
+# Verificar se há lotes disponíveis
+if [ ${#LOTES[@]} -eq 0 ]; then
+    echo ""
+    log_warning "Nenhum lote de backup encontrado em: $DUMP_DIR"
+    echo ""
+    echo "Para criar backups, execute:"
+    echo "  • Menu Principal → 2 (Backups) → 2 (Backup de Bancos via Dump SQL)"
+    echo "  • Ou diretamente: $SCRIPT_DIR/migrar-databases-dump.sh --target=local --auto"
+    echo ""
+    exit 0
+fi
 
 if [ ${#LOTES[@]} -gt 0 ] && [ "$AUTO_MODE" = false ]; then
     log_section "Lotes de Backup Disponíveis"

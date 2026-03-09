@@ -147,6 +147,8 @@ confirm_critical() {
 run_script() {
     local script_path="$1"
     local script_name="$2"
+    shift 2  # Remove os dois primeiros argumentos, deixando apenas os argumentos adicionais
+    local script_args="$@"  # Captura todos os argumentos restantes
 
     clear_screen
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
@@ -171,8 +173,8 @@ run_script() {
     # EXECUÇÃO: Log início
     log_execution "INÍCIO: $script_name"
 
-    # EXECUÇÃO: Rodar script
-    bash "$script_path"
+    # EXECUÇÃO: Rodar script (com argumentos se fornecidos)
+    bash "$script_path" $script_args
     local exit_code=$?
 
     # RESULTADO: Exibir e logar
@@ -538,7 +540,7 @@ handle_backup_menu() {
                 esac
 
                 if confirm "Executar backup via dump SQL (destino: $DEST)?"; then
-                    run_script "$SCRIPT_DIR/backup/backup-databases-dump-auto.sh --dest=$DEST" "Backup de Bancos via Dump"
+                    run_script "$SCRIPT_DIR/backup/backup-databases-dump-auto.sh" "Backup de Bancos via Dump" "--dest=$DEST"
                 fi
                 ;;
             3)
@@ -569,7 +571,7 @@ handle_backup_menu() {
                     echo ""
                     read -p "Nome do bucket S3: " S3_BUCKET
                     if [ -n "$S3_BUCKET" ]; then
-                        run_script "$SCRIPT_DIR/backup/restaurar-do-s3.sh --bucket=$S3_BUCKET" "Restaurar do S3"
+                        run_script "$SCRIPT_DIR/backup/restaurar-do-s3.sh" "Restaurar do S3" "--bucket=$S3_BUCKET"
                     else
                         echo -e "${RED}Bucket não informado${NC}"
                         sleep 2
@@ -596,11 +598,11 @@ handle_backup_menu() {
                             "Restaurar Coolify de backup local em /var/backups/vpsguardian" \
                             "${RED}⚠ DADOS ATUAIS SERÃO SOBRESCRITOS!${NC}" \
                             "Certifique-se de ter o backup correto"; then
-                            run_script "$SCRIPT_DIR/backup/restaurar-completo.sh --local" "Restaurar Coolify Local"
+                            run_script "$SCRIPT_DIR/backup/restaurar-completo.sh" "Restaurar Coolify Local" "--local"
                         fi
                         ;;
                     2)
-                        run_script "$SCRIPT_DIR/migrar/restore-volumes.sh --all" "Restaurar Volumes Local"
+                        run_script "$SCRIPT_DIR/migrar/restore-volumes.sh" "Restaurar Volumes Local" "--all"
                         ;;
                     3)
                         run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh" "Restaurar Dumps SQL"
@@ -653,7 +655,7 @@ handle_backup_menu() {
                                 "Restaurar dumps SQL da pasta: $DUMP_PATH\n\n${WHITE}Você terá controle total:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos" \
                                 "${RED}⚠ DADOS DO BANCO SERÃO SOBRESCRITOS!${NC}\n\n  • ${RED}Tabelas existentes${NC} → SERÃO SUBSTITUÍDAS\n  • ${YELLOW}Aplicações${NC} → PODEM TER DOWNTIME\n  • ${GREEN}Coolify-db${NC} → VOCÊ DECIDE se restaura" \
                                 "1. ${GREEN}Você terá menu interativo${NC} para escolher o que restaurar\n2. ${GREEN}Dumps do Coolify${NC} são destacados visualmente\n3. ${YELLOW}Recomendado${NC}: Restaurar tudo EXCETO Coolify"; then
-                                run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh --dir=$DUMP_PATH" "Restaurar Dumps SQL"
+                                run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh" "Restaurar Dumps SQL" "--dir=$DUMP_PATH"
                             fi
                         else
                             echo -e "${RED}Diretório não encontrado: $DUMP_PATH${NC}"
@@ -849,7 +851,7 @@ handle_migration_menu() {
                 esac
 
                 if [ -d "$DUMP_PATH" ]; then
-                    run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh --dir=$DUMP_PATH" "Restaurar Dumps SQL"
+                    run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh" "Restaurar Dumps SQL" "--dir=$DUMP_PATH"
                 else
                     echo -e "${RED}Diretório não encontrado: $DUMP_PATH${NC}"
                     sleep 2

@@ -636,17 +636,17 @@ handle_backup_menu() {
                         # Restaurar de pasta local
                         echo ""
                         echo "Diretórios comuns com dumps:"
-                        echo "  1) /var/backups/vpsguardian/database-dumps (padrão)"
+                        echo "  1) /var/backups/vpsguardian/databases (padrão)"
                         echo "  2) /root/database-dumps-migration"
                         echo "  3) Outro diretório"
                         echo ""
                         read -p "Escolha (1-3): " dir_choice
 
                         case $dir_choice in
-                            1) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                            1) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
                             2) DUMP_PATH="/root/database-dumps-migration" ;;
                             3) read -p "Digite o caminho completo: " DUMP_PATH ;;
-                            *) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                            *) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
                         esac
 
                         if [ -d "$DUMP_PATH" ]; then
@@ -835,19 +835,19 @@ handle_migration_menu() {
                 echo -e "${CYAN}📥 RESTAURAR DUMPS SQL${NC}"
                 echo ""
                 echo "Diretórios comuns com dumps:"
-                echo "  1) /var/backups/vpsguardian/database-dumps (padrão)"
+                echo "  1) /var/backups/vpsguardian/databases (padrão)"
                 echo "  2) /root/database-dumps-migration (migração remota)"
                 echo "  3) Outro diretório"
                 echo ""
                 read -p "Escolha (1-3): " dir_choice
 
                 case $dir_choice in
-                    1) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                    1) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
                     2) DUMP_PATH="/root/database-dumps-migration" ;;
                     3)
                         read -p "Digite o caminho completo: " DUMP_PATH
                         ;;
-                    *) DUMP_PATH="/var/backups/vpsguardian/database-dumps" ;;
+                    *) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
                 esac
 
                 if [ -d "$DUMP_PATH" ]; then

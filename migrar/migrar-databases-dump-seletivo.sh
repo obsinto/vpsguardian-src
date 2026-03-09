@@ -419,7 +419,7 @@ if [ "$TARGET_SERVER" != "local" ]; then
 else
     # Mover para pasta local definitiva e organizada
     # Usar DATABASE_BACKUP_DIR da configuração ou padrão
-    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}"
+    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
     FINAL_DIR="$BASE_BACKUP_DIR/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null

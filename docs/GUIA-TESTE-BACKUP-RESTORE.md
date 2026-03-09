@@ -80,13 +80,13 @@ Executar backup via dump SQL (destino: all)?
 **Validação:**
 ```bash
 # 1. Verificar backup local
-ls -lh /var/backups/vpsguardian/database-dumps/
+ls -lh /var/backups/vpsguardian/databases/
 
 # Deve mostrar algo como:
 # drwxr-xr-x 2 root root 4.0K Mar  4 02:00 lote-20260304_020000
 
 # 2. Ver conteúdo do lote
-ls -lh /var/backups/vpsguardian/database-dumps/lote-20260304_020000/
+ls -lh /var/backups/vpsguardian/databases/lote-20260304_020000/
 
 # Deve mostrar:
 # coolify-db-postgres-20260304_020000.sql.gz
@@ -95,7 +95,7 @@ ls -lh /var/backups/vpsguardian/database-dumps/lote-20260304_020000/
 # app3-mysql-20260304_020000.sql.gz
 
 # 3. Verificar tarball criado
-ls -lh /var/backups/vpsguardian/database-dumps/*.tar.gz
+ls -lh /var/backups/vpsguardian/databases/*.tar.gz
 
 # 4. Verificar upload no S3
 aws s3 ls s3://seu-bucket/backups/vpsguardian/databases/
@@ -104,12 +104,12 @@ aws s3 ls s3://seu-bucket/backups/vpsguardian/databases/
 # 2026-03-04 02:05:00  245678912 lote-20260304_020000.tar.gz
 
 # 5. Ver tamanho total
-du -sh /var/backups/vpsguardian/database-dumps/
+du -sh /var/backups/vpsguardian/databases/
 ```
 
 **Resultado Esperado:**
 ```
-✅ Lote criado em /var/backups/vpsguardian/database-dumps/lote-TIMESTAMP/
+✅ Lote criado em /var/backups/vpsguardian/databases/lote-TIMESTAMP/
 ✅ Tarball criado: lote-TIMESTAMP.tar.gz
 ✅ Enviado para S3: s3://seu-bucket/backups/vpsguardian/databases/
 ✅ Inclui coolify-db + todos os apps
@@ -199,7 +199,7 @@ Escolha uma opção (0-3): 3
 IP/Hostname do servidor remoto: [IP-SERVIDOR-ANTIGO]
 Usuário SSH (padrão: root): root
 Porta SSH (padrão: 22): 22
-Diretório remoto: /var/backups/vpsguardian/database-dumps
+Diretório remoto: /var/backups/vpsguardian/databases
 
 [ INFO ] Testando conexão SSH...
 [ OK ] SSH configurado: root@[IP-ANTIGO]:/var/backups/...
@@ -452,7 +452,7 @@ Menu Principal → 2 (Backups) → 10 (Validar Saúde)
 - [ ] Credenciais AWS configuradas (`~/.aws/credentials`)
 
 ### **Backup (Máquina Antiga)**
-- [ ] Lote criado em `/var/backups/vpsguardian/database-dumps/lote-TIMESTAMP/`
+- [ ] Lote criado em `/var/backups/vpsguardian/databases/lote-TIMESTAMP/`
 - [ ] Contém dump do coolify-db
 - [ ] Contém dumps de todos os apps
 - [ ] Tarball criado: `lote-TIMESTAMP.tar.gz`
@@ -553,7 +553,7 @@ aws s3 ls s3://seu-bucket/
 ### **Problema: Dumps não aparecem**
 ```bash
 # Verificar se backup foi executado:
-ls -lh /var/backups/vpsguardian/database-dumps/
+ls -lh /var/backups/vpsguardian/databases/
 
 # Ver log do backup:
 tail -100 /var/log/vpsguardian/backup-databases-auto-*.log

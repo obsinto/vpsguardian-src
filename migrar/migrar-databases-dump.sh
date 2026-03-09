@@ -576,7 +576,7 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
 else
     log_section "Dumps Criados Localmente"
     # Salvando em lotes organizados usando diretório configurado
-    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}"
+    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
     FINAL_DIR="$BASE_BACKUP_DIR/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null

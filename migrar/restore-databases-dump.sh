@@ -33,7 +33,7 @@ fi
 
 ### ========== CONFIGURAÇÃO ==========
 # Usar DATABASE_BACKUP_DIR da configuração ou padrão
-DUMP_DIR="${DUMP_DIR:-${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}}"
+DUMP_DIR="${DUMP_DIR:-${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}}"
 AUTO_MODE=false
 SELECTED_DUMPS=()
 
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             echo "Restaurar bancos de dados de dumps SQL"
             echo ""
             echo "Options:"
-            echo "  --dir=PATH       Diretório base (default: ${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps})"
+            echo "  --dir=PATH       Diretório base (default: ${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases})"
             echo "  --auto           Modo automático (restaurar todos)"
             echo "  -h, --help       Mostrar esta ajuda"
             echo ""

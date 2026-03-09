@@ -189,8 +189,8 @@ case "$SOURCE" in
             SSH_REMOTE_USER=${SSH_REMOTE_USER:-root}
             read -p "Porta SSH (padrão: 22): " SSH_REMOTE_PORT
             SSH_REMOTE_PORT=${SSH_REMOTE_PORT:-22}
-            read -p "Diretório remoto (padrão: /var/backups/vpsguardian/database-dumps): " SSH_REMOTE_DIR
-            SSH_REMOTE_DIR=${SSH_REMOTE_DIR:-/var/backups/vpsguardian/database-dumps}
+            read -p "Diretório remoto (padrão: /var/backups/vpsguardian/databases): " SSH_REMOTE_DIR
+            SSH_REMOTE_DIR=${SSH_REMOTE_DIR:-/var/backups/vpsguardian/databases}
         fi
 
         log_info "Testando conexão SSH..."

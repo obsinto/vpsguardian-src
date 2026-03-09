@@ -35,7 +35,7 @@ fi
 
 ### ========== CONFIGURAÇÃO ==========
 UPLOAD_DEST="${1:-local}"
-BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/database-dumps}"
+BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="/var/log/vpsguardian/backup-databases-auto-${TIMESTAMP}.log"
 

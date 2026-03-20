@@ -336,6 +336,9 @@ show_backup_menu() {
     echo -e "  ${GREEN}12${NC} → 📊 Ver Status dos Backups Automáticos"
     echo -e "       ${GRAY}(Destinos configurados, cron jobs, últimos backups)${NC}"
     echo ""
+    echo -e "  ${GREEN}13${NC} → 🚀 Executar Backup Completo AGORA"
+    echo -e "       ${GRAY}(Teste em tempo real com notificações webhook)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -718,6 +721,10 @@ handle_backup_menu() {
             12)
                 # Ver Status dos Backups Automáticos
                 run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
+                ;;
+            13)
+                # Executar Backup Completo AGORA
+                run_script "$SCRIPT_DIR/scripts-auxiliares/backup-completo-agora.sh" "Backup Completo"
                 ;;
             0)
                 return

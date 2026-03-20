@@ -70,8 +70,12 @@ BACKUP_SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
 log_info "Arquivo: $BACKUP_FILENAME ($BACKUP_SIZE)"
 echo ""
 
+# Modo automático = usa configurações do arquivo, sem interação
+AUTO_MODE=false
+
 # Se destino foi especificado via --dest, usar automaticamente
 if [ -n "$DEST_AUTO" ]; then
+    AUTO_MODE=true
     case $DEST_AUTO in
         self-hosted)
             CHOICE=1
@@ -124,9 +128,50 @@ case $CHOICE in
         UPLOAD_S3=true
         ;;
     4)
-        UPLOAD_SELFHOSTED=true
-        UPLOAD_GDRIVE=true
-        UPLOAD_S3=true
+        if [ "$AUTO_MODE" = true ]; then
+            # Modo automático: usar apenas destinos HABILITADOS e CONFIGURADOS
+            log_info "Verificando destinos configurados..."
+            echo ""
+
+            # Self-hosted (SSH)
+            if [ "$BACKUP_DEST_SSH" = true ] && [ -n "$SSH_REMOTE_SERVER" ]; then
+                UPLOAD_SELFHOSTED=true
+                log_info "✓ Self-hosted habilitado: $SSH_REMOTE_SERVER"
+            elif [ "$BACKUP_DEST_SSH" = true ]; then
+                log_warning "✗ Self-hosted habilitado mas SSH_REMOTE_SERVER não configurado"
+            fi
+
+            # Google Drive
+            if [ "$BACKUP_DEST_GOOGLE_DRIVE" = true ]; then
+                UPLOAD_GDRIVE=true
+                log_info "✓ Google Drive habilitado"
+            fi
+
+            # AWS S3
+            if [ "$BACKUP_DEST_AWS_S3" = true ] && [ -n "$S3_BUCKET" ]; then
+                UPLOAD_S3=true
+                log_info "✓ AWS S3 habilitado: $S3_BUCKET"
+            elif [ "$BACKUP_DEST_AWS_S3" = true ]; then
+                log_warning "✗ AWS S3 habilitado mas S3_BUCKET não configurado"
+            fi
+
+            # Verificar se pelo menos um destino está configurado
+            if [ "$UPLOAD_SELFHOSTED" != true ] && [ "$UPLOAD_GDRIVE" != true ] && [ "$UPLOAD_S3" != true ]; then
+                log_error "Nenhum destino remoto está habilitado e configurado!"
+                log_info "Configure os destinos em: $CONFIG_FILE"
+                log_info ""
+                log_info "Opções disponíveis:"
+                log_info "  BACKUP_DEST_SSH=true + SSH_REMOTE_SERVER=<ip>"
+                log_info "  BACKUP_DEST_GOOGLE_DRIVE=true (+ rclone configurado)"
+                log_info "  BACKUP_DEST_AWS_S3=true + S3_BUCKET=<bucket>"
+                exit 1
+            fi
+        else
+            # Modo interativo: habilitar todos
+            UPLOAD_SELFHOSTED=true
+            UPLOAD_GDRIVE=true
+            UPLOAD_S3=true
+        fi
         ;;
     *)
         log_error "Opção inválida"
@@ -146,34 +191,54 @@ if [ "$UPLOAD_SELFHOSTED" = true ]; then
     log_info "========== UPLOAD SELF-HOSTED =========="
     echo ""
 
-    read -p "$LOG_PREFIX [ INPUT ] IP do servidor remoto: " REMOTE_IP
-    read -p "$LOG_PREFIX [ INPUT ] Usuário SSH (padrão: root): " REMOTE_USER
-    REMOTE_USER=${REMOTE_USER:-root}
-    read -p "$LOG_PREFIX [ INPUT ] Porta SSH (padrão: 22): " REMOTE_PORT
-    REMOTE_PORT=${REMOTE_PORT:-22}
-    read -p "$LOG_PREFIX [ INPUT ] Diretório de destino (padrão: /root/backups): " REMOTE_DIR
-    REMOTE_DIR=${REMOTE_DIR:-/root/backups}
+    if [ "$AUTO_MODE" = true ]; then
+        # Usar configurações do arquivo
+        REMOTE_IP="$SSH_REMOTE_SERVER"
+        REMOTE_USER="${SSH_REMOTE_USER:-root}"
+        REMOTE_PORT="${SSH_REMOTE_PORT:-22}"
+        REMOTE_DIR="${SSH_REMOTE_DIR:-/root/backups}"
 
-    log_info "Testando conexão SSH..."
-    if ssh -p "$REMOTE_PORT" -o ConnectTimeout=10 "$REMOTE_USER@$REMOTE_IP" "exit" 2>/dev/null; then
-        log_success "Conexão SSH estabelecida"
-
-        # Criar diretório remoto se não existir
-        log_info "Criando diretório remoto se necessário..."
-        ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR"
-
-        # Upload do arquivo
-        log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_DIR..."
-        if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"; then
-            log_success "Upload self-hosted concluído!"
-            ((SUCCESS_COUNT++))
-        else
-            log_error "Falha no upload self-hosted"
+        if [ -z "$REMOTE_IP" ]; then
+            log_error "SSH_REMOTE_SERVER não configurado em $CONFIG_FILE"
+            log_info "Configure o servidor remoto antes de usar o modo automático"
             ((FAIL_COUNT++))
+            UPLOAD_SELFHOSTED=false
+        else
+            log_info "Usando configuração: $REMOTE_USER@$REMOTE_IP:$REMOTE_PORT → $REMOTE_DIR"
         fi
     else
-        log_error "Falha na conexão SSH com $REMOTE_IP"
-        ((FAIL_COUNT++))
+        # Modo interativo - pedir inputs
+        read -p "$LOG_PREFIX [ INPUT ] IP do servidor remoto: " REMOTE_IP
+        read -p "$LOG_PREFIX [ INPUT ] Usuário SSH (padrão: root): " REMOTE_USER
+        REMOTE_USER=${REMOTE_USER:-root}
+        read -p "$LOG_PREFIX [ INPUT ] Porta SSH (padrão: 22): " REMOTE_PORT
+        REMOTE_PORT=${REMOTE_PORT:-22}
+        read -p "$LOG_PREFIX [ INPUT ] Diretório de destino (padrão: /root/backups): " REMOTE_DIR
+        REMOTE_DIR=${REMOTE_DIR:-/root/backups}
+    fi
+
+    if [ "$UPLOAD_SELFHOSTED" = true ]; then
+        log_info "Testando conexão SSH..."
+        if ssh -p "$REMOTE_PORT" -o ConnectTimeout=10 "$REMOTE_USER@$REMOTE_IP" "exit" 2>/dev/null; then
+            log_success "Conexão SSH estabelecida"
+
+            # Criar diretório remoto se não existir
+            log_info "Criando diretório remoto se necessário..."
+            ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR"
+
+            # Upload do arquivo
+            log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_DIR..."
+            if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"; then
+                log_success "Upload self-hosted concluído!"
+                ((SUCCESS_COUNT++))
+            else
+                log_error "Falha no upload self-hosted"
+                ((FAIL_COUNT++))
+            fi
+        else
+            log_error "Falha na conexão SSH com $REMOTE_IP"
+            ((FAIL_COUNT++))
+        fi
     fi
     echo ""
 fi
@@ -192,28 +257,46 @@ if [ "$UPLOAD_GDRIVE" = true ]; then
         log_info "Instale com: curl https://rclone.org/install.sh | sudo bash"
         ((FAIL_COUNT++))
     else
-        # Verificar se já existe configuração do Google Drive
-        if ! rclone listremotes | grep -q "gdrive:"; then
-            log_info "Configuração do Google Drive não encontrada"
-            log_info "Execute: rclone config"
-            log_info "Escolha: Google Drive, nome do remote: gdrive"
+        # Definir nome do remote (do config ou padrão)
+        RCLONE_REMOTE="${GDRIVE_REMOTE_NAME:-gdrive}"
 
-            read -p "$LOG_PREFIX [ INPUT ] Deseja configurar agora? (y/N): " CONFIG_NOW
-            if [ "$CONFIG_NOW" = "y" ]; then
-                rclone config
-            else
+        # Verificar se já existe configuração do Google Drive
+        if ! rclone listremotes | grep -q "${RCLONE_REMOTE}:"; then
+            log_info "Configuração do Google Drive não encontrada (remote: $RCLONE_REMOTE)"
+            log_info "Execute: rclone config"
+            log_info "Escolha: Google Drive, nome do remote: $RCLONE_REMOTE"
+
+            if [ "$AUTO_MODE" = true ]; then
                 log_error "Upload para Google Drive cancelado - configure rclone primeiro"
                 ((FAIL_COUNT++))
+            else
+                read -p "$LOG_PREFIX [ INPUT ] Deseja configurar agora? (y/N): " CONFIG_NOW
+                if [ "$CONFIG_NOW" = "y" ]; then
+                    rclone config
+                else
+                    log_error "Upload para Google Drive cancelado - configure rclone primeiro"
+                    ((FAIL_COUNT++))
+                fi
             fi
         fi
 
         # Se configuração existe, fazer upload
-        if rclone listremotes | grep -q "gdrive:"; then
-            read -p "$LOG_PREFIX [ INPUT ] Diretório no Google Drive (padrão: backups/coolify): " GDRIVE_DIR
-            GDRIVE_DIR=${GDRIVE_DIR:-backups/coolify}
+        if rclone listremotes | grep -q "${RCLONE_REMOTE}:"; then
+            if [ "$AUTO_MODE" = true ]; then
+                # Usar configuração do arquivo
+                GDRIVE_UPLOAD_DIR="${GDRIVE_DIR:-backups/vpsguardian}"
+                log_info "Usando configuração: ${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR"
+            else
+                read -p "$LOG_PREFIX [ INPUT ] Diretório no Google Drive (padrão: backups/coolify): " GDRIVE_UPLOAD_DIR
+                GDRIVE_UPLOAD_DIR=${GDRIVE_UPLOAD_DIR:-backups/coolify}
+            fi
 
-            log_info "Enviando backup para Google Drive: $GDRIVE_DIR..."
-            if rclone copy "$BACKUP_FILE" "gdrive:$GDRIVE_DIR" --progress; then
+            log_info "Enviando backup para Google Drive: $GDRIVE_UPLOAD_DIR..."
+            RCLONE_OPTS=""
+            if [ "$AUTO_MODE" = false ]; then
+                RCLONE_OPTS="--progress"
+            fi
+            if rclone copy "$BACKUP_FILE" "${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR" $RCLONE_OPTS; then
                 log_success "Upload para Google Drive concluído!"
                 ((SUCCESS_COUNT++))
             else
@@ -249,50 +332,74 @@ if [ "$UPLOAD_S3" = true ]; then
             log_info "Execute: aws configure"
             log_info "Você precisará de: Access Key ID, Secret Access Key, Region"
 
-            read -p "$LOG_PREFIX [ INPUT ] Deseja configurar agora? (y/N): " CONFIG_NOW
-            if [ "$CONFIG_NOW" = "y" ]; then
-                aws configure
-            else
+            if [ "$AUTO_MODE" = true ]; then
                 log_error "Upload para S3 cancelado - configure AWS CLI primeiro"
                 ((FAIL_COUNT++))
+            else
+                read -p "$LOG_PREFIX [ INPUT ] Deseja configurar agora? (y/N): " CONFIG_NOW
+                if [ "$CONFIG_NOW" = "y" ]; then
+                    aws configure
+                else
+                    log_error "Upload para S3 cancelado - configure AWS CLI primeiro"
+                    ((FAIL_COUNT++))
+                fi
             fi
         fi
 
         # Se configuração existe, fazer upload
         if [ -f ~/.aws/credentials ]; then
             # Usar configurações salvas ou perguntar interativamente
-            if [ -z "$S3_BUCKET" ]; then
-                read -p "$LOG_PREFIX [ INPUT ] Nome do bucket S3: " S3_BUCKET
+            if [ "$AUTO_MODE" = true ]; then
+                # Modo automático - usar config ou falhar
+                if [ -z "$S3_BUCKET" ]; then
+                    log_error "S3_BUCKET não configurado em $CONFIG_FILE"
+                    log_info "Configure o bucket S3 antes de usar o modo automático"
+                    ((FAIL_COUNT++))
+                    S3_UPLOAD_READY=false
+                else
+                    log_info "Usando bucket configurado: $S3_BUCKET"
+                    S3_PREFIX="${S3_PREFIX:-backups/vpsguardian}"
+                    log_info "Usando prefixo configurado: $S3_PREFIX"
+                    S3_UPLOAD_READY=true
+                fi
             else
-                log_info "Usando bucket configurado: $S3_BUCKET"
+                # Modo interativo
+                if [ -z "$S3_BUCKET" ]; then
+                    read -p "$LOG_PREFIX [ INPUT ] Nome do bucket S3: " S3_BUCKET
+                else
+                    log_info "Usando bucket configurado: $S3_BUCKET"
+                fi
+
+                if [ -z "$S3_PREFIX" ]; then
+                    read -p "$LOG_PREFIX [ INPUT ] Prefixo/pasta (padrão: backups/coolify): " S3_PREFIX
+                    S3_PREFIX=${S3_PREFIX:-backups/coolify}
+                else
+                    log_info "Usando prefixo configurado: $S3_PREFIX"
+                fi
+                S3_UPLOAD_READY=true
             fi
 
-            if [ -z "$S3_PREFIX" ]; then
-                read -p "$LOG_PREFIX [ INPUT ] Prefixo/pasta (padrão: backups/coolify): " S3_PREFIX
-                S3_PREFIX=${S3_PREFIX:-backups/coolify}
-            else
-                log_info "Usando prefixo configurado: $S3_PREFIX"
-            fi
+            if [ "$S3_UPLOAD_READY" = true ]; then
+                # Montar comando com endpoint se configurado (R2, MinIO, etc)
+                AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\""
+                if [ -n "$S3_ENDPOINT" ]; then
+                    AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\" --endpoint-url \"$S3_ENDPOINT\""
+                    log_info "Usando endpoint customizado: $S3_ENDPOINT"
+                fi
 
-            # Montar comando com endpoint se configurado (R2, MinIO, etc)
-            AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\""
-            if [ -n "$S3_ENDPOINT" ]; then
-                AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\" --endpoint-url \"$S3_ENDPOINT\""
-                log_info "Usando endpoint customizado: $S3_ENDPOINT"
-            fi
+                log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_PREFIX/..."
+                if eval $AWS_CMD; then
+                    log_success "Upload para S3 concluído!"
 
-            log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_PREFIX/..."
-            if eval $AWS_CMD; then
-                log_success "Upload para S3 concluído!"
+                    # Configurar lifecycle policy (apenas em modo interativo)
+                    if [ "$AUTO_MODE" = false ]; then
+                        read -p "$LOG_PREFIX [ INPUT ] Configurar expiração automática? (y/N): " CONFIGURE_LIFECYCLE
+                        if [ "$CONFIGURE_LIFECYCLE" = "y" ]; then
+                            read -p "$LOG_PREFIX [ INPUT ] Dias para expiração (padrão: 30): " EXPIRE_DAYS
+                            EXPIRE_DAYS=${EXPIRE_DAYS:-30}
 
-                # Configurar lifecycle policy (opcional)
-                read -p "$LOG_PREFIX [ INPUT ] Configurar expiração automática? (y/N): " CONFIGURE_LIFECYCLE
-                if [ "$CONFIGURE_LIFECYCLE" = "y" ]; then
-                    read -p "$LOG_PREFIX [ INPUT ] Dias para expiração (padrão: 30): " EXPIRE_DAYS
-                    EXPIRE_DAYS=${EXPIRE_DAYS:-30}
-
-                    log_info "Configurando lifecycle policy para $EXPIRE_DAYS dias..."
-                    cat > /tmp/s3-lifecycle.json <<EOF
+                            log_info "Configurando lifecycle policy para $EXPIRE_DAYS dias..."
+                            cat > /tmp/s3-lifecycle.json <<EOF
 {
   "Rules": [
     {
@@ -306,17 +413,19 @@ if [ "$UPLOAD_S3" = true ]; then
   ]
 }
 EOF
-                    aws s3api put-bucket-lifecycle-configuration \
-                        --bucket "$S3_BUCKET" \
-                        --lifecycle-configuration file:///tmp/s3-lifecycle.json
-                    rm /tmp/s3-lifecycle.json
-                    log_success "Lifecycle policy configurada"
-                fi
+                            aws s3api put-bucket-lifecycle-configuration \
+                                --bucket "$S3_BUCKET" \
+                                --lifecycle-configuration file:///tmp/s3-lifecycle.json
+                            rm /tmp/s3-lifecycle.json
+                            log_success "Lifecycle policy configurada"
+                        fi
+                    fi
 
-                ((SUCCESS_COUNT++))
-            else
-                log_error "Falha no upload para S3"
-                ((FAIL_COUNT++))
+                    ((SUCCESS_COUNT++))
+                else
+                    log_error "Falha no upload para S3"
+                    ((FAIL_COUNT++))
+                fi
             fi
         fi
     fi

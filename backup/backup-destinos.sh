@@ -33,6 +33,12 @@ if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
 
+# Carregar biblioteca de notificações
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../lib/notificacoes.sh" ]; then
+    source "$SCRIPT_DIR/../lib/notificacoes.sh"
+fi
+
 # Verificar argumentos
 BACKUP_FILE=""
 DEST_AUTO=""
@@ -230,13 +236,16 @@ if [ "$UPLOAD_SELFHOSTED" = true ]; then
             log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_DIR..."
             if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"; then
                 log_success "Upload self-hosted concluído!"
+                notify_upload_success "$BACKUP_FILENAME" "SSH ($REMOTE_IP)" "$BACKUP_SIZE"
                 ((SUCCESS_COUNT++))
             else
                 log_error "Falha no upload self-hosted"
+                notify_upload_error "$BACKUP_FILENAME" "SSH ($REMOTE_IP)" "Falha no SCP"
                 ((FAIL_COUNT++))
             fi
         else
             log_error "Falha na conexão SSH com $REMOTE_IP"
+            notify_upload_error "$BACKUP_FILENAME" "SSH ($REMOTE_IP)" "Conexão SSH falhou"
             ((FAIL_COUNT++))
         fi
     fi
@@ -298,9 +307,11 @@ if [ "$UPLOAD_GDRIVE" = true ]; then
             fi
             if rclone copy "$BACKUP_FILE" "${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR" $RCLONE_OPTS; then
                 log_success "Upload para Google Drive concluído!"
+                notify_upload_success "$BACKUP_FILENAME" "Google Drive" "$BACKUP_SIZE"
                 ((SUCCESS_COUNT++))
             else
                 log_error "Falha no upload para Google Drive"
+                notify_upload_error "$BACKUP_FILENAME" "Google Drive" "Falha no rclone"
                 ((FAIL_COUNT++))
             fi
         fi
@@ -354,6 +365,7 @@ if [ "$UPLOAD_S3" = true ]; then
                 if [ -z "$S3_BUCKET" ]; then
                     log_error "S3_BUCKET não configurado em $CONFIG_FILE"
                     log_info "Configure o bucket S3 antes de usar o modo automático"
+                    notify_upload_error "$BACKUP_FILENAME" "AWS S3" "S3_BUCKET não configurado"
                     ((FAIL_COUNT++))
                     S3_UPLOAD_READY=false
                 else
@@ -390,6 +402,7 @@ if [ "$UPLOAD_S3" = true ]; then
                 log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_PREFIX/..."
                 if eval $AWS_CMD; then
                     log_success "Upload para S3 concluído!"
+                    notify_upload_success "$BACKUP_FILENAME" "S3 ($S3_BUCKET)" "$BACKUP_SIZE"
 
                     # Configurar lifecycle policy (apenas em modo interativo)
                     if [ "$AUTO_MODE" = false ]; then
@@ -424,6 +437,7 @@ EOF
                     ((SUCCESS_COUNT++))
                 else
                     log_error "Falha no upload para S3"
+                    notify_upload_error "$BACKUP_FILENAME" "S3 ($S3_BUCKET)" "Falha no aws s3 cp"
                     ((FAIL_COUNT++))
                 fi
             fi

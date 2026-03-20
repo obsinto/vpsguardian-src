@@ -91,7 +91,7 @@ echo ""
 read -p "$LOG_PREFIX [ INPUT ] Habilitar backup automático de bancos? (Y/n): " ENABLE_DB_BACKUP
 ENABLE_DB_BACKUP=${ENABLE_DB_BACKUP:-y}
 
-if [ "$ENABLE_DB_BACKUP" = "y" ]; then
+if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
     read -p "$LOG_PREFIX [ INPUT ] Frequência (daily/weekly, padrão: daily): " DB_BACKUP_FREQ
     DB_BACKUP_FREQ=${DB_BACKUP_FREQ:-daily}
 
@@ -139,7 +139,7 @@ VOLUMES_BACKUP_TIME=""
 VOLUMES_BACKUP_HOUR=""
 VOLUMES_BACKUP_MIN=""
 
-if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     read -p "$LOG_PREFIX [ INPUT ] Frequência (daily/weekly, padrão: weekly): " VOLUMES_BACKUP_FREQ
     VOLUMES_BACKUP_FREQ=${VOLUMES_BACKUP_FREQ:-weekly}
 
@@ -191,7 +191,7 @@ read -p "$LOG_PREFIX [ INPUT ] Enviar backups para destino remoto automaticament
 AUTO_UPLOAD=${AUTO_UPLOAD:-n}
 
 UPLOAD_DEST=""
-if [ "$AUTO_UPLOAD" = "y" ]; then
+if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
     echo ""
     echo "Destinos disponíveis:"
     echo "  [1] Self-hosted (SSH)"
@@ -212,7 +212,7 @@ if [ "$AUTO_UPLOAD" = "y" ]; then
             ;;
     esac
 
-    if [ "$AUTO_UPLOAD" = "y" ]; then
+    if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
         echo ""
         read -p "$LOG_PREFIX [ INPUT ] Quantas horas após o backup fazer upload? (padrão: 1): " UPLOAD_DELAY
         UPLOAD_DELAY=${UPLOAD_DELAY:-1}
@@ -231,7 +231,7 @@ CLEANUP_STRATEGY=""
 CLEANUP_DAYS=""
 CLEANUP_COUNT=""
 
-if [ "$ENABLE_CLEANUP" = "y" ]; then
+if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     echo ""
     echo "Estratégias de retenção disponíveis:"
     echo "  [1] GFS (Grandfather-Father-Son) - Recomendado ⭐"
@@ -286,7 +286,7 @@ if [ "$ENABLE_CLEANUP" = "y" ]; then
 
     CLEANUP_MIN=$BACKUP_MIN
 
-    log "INFO" "Limpeza será executada 2h após o backup ($(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))"
+    log "INFO" "Limpeza será executada 2h após o backup ($(printf "%02d:%02d" $((10#$CLEANUP_HOUR)) $((10#$CLEANUP_MIN))))"
 fi
 
 echo ""
@@ -311,7 +311,7 @@ echo "   • Dia: $(case $BACKUP_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 
 echo "   • Horário: $BACKUP_TIME"
 echo ""
 
-if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     echo "📦 Backup de Volumes (Dados das Aplicações):"
     if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
         echo "   • Frequência: Diário"
@@ -335,14 +335,14 @@ echo "📦 Rotação de Logs:"
 echo "   • Frequência: Mensalmente (dia 1 às 04:00)"
 echo ""
 
-if [ "$AUTO_UPLOAD" = "y" ]; then
+if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
     echo "☁️  Upload Automático:"
     echo "   • Destino: $UPLOAD_DEST"
     echo "   • Delay: $UPLOAD_DELAY hora(s) após o backup"
     echo ""
 fi
 
-if [ "$ENABLE_CLEANUP" = "y" ]; then
+if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     echo "🗑️  Limpeza de Backups:"
     case "$CLEANUP_STRATEGY" in
         gfs)
@@ -356,14 +356,14 @@ if [ "$ENABLE_CLEANUP" = "y" ]; then
             ;;
     esac
     echo "   • Dia: $(case $CLEANUP_DAY in 0) echo 'Domingo';; 1) echo 'Segunda';; 2) echo 'Terça';; 3) echo 'Quarta';; 4) echo 'Quinta';; 5) echo 'Sexta';; 6) echo 'Sábado';; esac)"
-    echo "   • Horário: $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN)"
+    echo "   • Horário: $(printf "%02d:%02d" $((10#$CLEANUP_HOUR)) $((10#$CLEANUP_MIN)))"
     echo ""
 fi
 
 read -p "$LOG_PREFIX [ INPUT ] Confirmar configuração? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
 
-if [ "$CONFIRM" != "y" ]; then
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
     log "INFO" "Configuração cancelada"
     exit 0
 fi
@@ -412,24 +412,31 @@ MAILTO=""
 EOF
 
 # Adicionar backup de bancos de dados se habilitado
-if [ "$ENABLE_DB_BACKUP" = "y" ]; then
+if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
+    # Determinar destino do backup (usa o mesmo destino do upload automático se configurado)
+    if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]] && [ -n "$UPLOAD_DEST" ]; then
+        DB_BACKUP_DEST="$UPLOAD_DEST"
+    else
+        DB_BACKUP_DEST="local"
+    fi
+
     if [ "$DB_BACKUP_FREQ" = "daily" ]; then
         cat >> "$TEMP_CRON" << EOF
-# Backup automático de bancos de dados (diário às $DB_BACKUP_TIME)
-$DB_BACKUP_MIN $DB_BACKUP_HOUR * * * $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=local >> /var/log/vpsguardian/cron-db-backup.log 2>&1
+# Backup automático de bancos de dados (diário às $DB_BACKUP_TIME) → destino: $DB_BACKUP_DEST
+$DB_BACKUP_MIN $DB_BACKUP_HOUR * * * $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> /var/log/vpsguardian/cron-db-backup.log 2>&1
 
 EOF
     else
         cat >> "$TEMP_CRON" << EOF
-# Backup automático de bancos de dados (semanal ${DB_BACKUP_DAY}=Dia da semana, $DB_BACKUP_TIME)
-$DB_BACKUP_MIN $DB_BACKUP_HOUR * * $DB_BACKUP_DAY $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=local >> /var/log/vpsguardian/cron-db-backup.log 2>&1
+# Backup automático de bancos de dados (semanal ${DB_BACKUP_DAY}=Dia da semana, $DB_BACKUP_TIME) → destino: $DB_BACKUP_DEST
+$DB_BACKUP_MIN $DB_BACKUP_HOUR * * $DB_BACKUP_DAY $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> /var/log/vpsguardian/cron-db-backup.log 2>&1
 
 EOF
     fi
 fi
 
 # Adicionar backup de volumes se habilitado
-if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
         cat >> "$TEMP_CRON" << EOF
 # Backup de volumes das aplicações (diário às $VOLUMES_BACKUP_TIME)
@@ -453,7 +460,7 @@ $BACKUP_MIN $BACKUP_HOUR * * $BACKUP_DAY $INSTALL_ROOT/backup/backup-coolify.sh 
 EOF
 
 # Adicionar upload automático se configurado
-if [ "$AUTO_UPLOAD" = "y" ]; then
+if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
     # Calcular horário do upload (backup_time + delay)
     UPLOAD_HOUR=$((BACKUP_HOUR + UPLOAD_DELAY))
 
@@ -490,7 +497,7 @@ $ALERTA_MIN $ALERTA_HOUR * * * $INSTALL_ROOT/manutencao/alerta-disco.sh >> /var/
 EOF
 
 # Adicionar limpeza de backups se habilitado
-if [ "$ENABLE_CLEANUP" = "y" ]; then
+if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     # Construir argumentos do comando
     CLEANUP_ARGS="--strategy=$CLEANUP_STRATEGY --auto"
 
@@ -506,17 +513,30 @@ if [ "$ENABLE_CLEANUP" = "y" ]; then
     # Diretórios a limpar
     COOLIFY_BACKUP_DIR="/var/backups/vpsguardian/coolify"
     VOLUMES_BACKUP_DIR="/var/backups/vpsguardian/volumes"
+    DATABASES_BACKUP_DIR="/var/backups/vpsguardian/databases"
+
+    # Formatação de horário (evita erro de octal com 08, 09)
+    CLEANUP_TIME_FMT=$(printf "%02d:%02d" $((10#$CLEANUP_HOUR)) $((10#$CLEANUP_MIN)))
 
     cat >> "$TEMP_CRON" << EOF
-# Limpeza automática de backups do Coolify (${CLEANUP_DAY}=Dia da semana, $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))
+# Limpeza automática de backups do Coolify (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
 $CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$COOLIFY_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-coolify.log 2>&1
 
 EOF
 
-    # Adicionar limpeza de volumes se backup de volumes estiver habilitado
-    if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    # Adicionar limpeza de databases se backup de databases estiver habilitado
+    if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
         cat >> "$TEMP_CRON" << EOF
-# Limpeza automática de backups de volumes (${CLEANUP_DAY}=Dia da semana, $(printf "%02d:%02d" $CLEANUP_HOUR $CLEANUP_MIN))
+# Limpeza automática de backups de databases (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$DATABASES_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-databases.log 2>&1
+
+EOF
+    fi
+
+    # Adicionar limpeza de volumes se backup de volumes estiver habilitado
+    if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
+        cat >> "$TEMP_CRON" << EOF
+# Limpeza automática de backups de volumes (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
 $CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$VOLUMES_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-volumes.log 2>&1
 
 EOF
@@ -545,8 +565,8 @@ log "INFO" "========== VERIFICANDO CONFIGURAÇÃO =========="
 echo ""
 
 log "INFO" "Cron jobs instalados:"
-crontab -l | grep -E "(backup-coolify|backup-databases|backup-database-volumes|manutencao-completa|alerta-disco|backup-destinos|limpar-backups-antigos|logrotate)" | while read line; do
-    echo "  ✓ $(echo $line | sed 's|/opt/vpsguardian/[^ ]*/||g')"
+crontab -l | grep -E "(backup-coolify|backup-databases|backup-database-volumes|manutencao-completa|alerta-disco|backup-destinos|limpar-backups-antigos|logrotate)" | while read -r line; do
+    echo "  ✓ $(echo "$line" | sed 's|/opt/vpsguardian/[^ ]*/||g')"
 done
 
 echo ""
@@ -591,15 +611,15 @@ echo "📅 Backup do Coolify (Configurações):"
 echo "   $(get_next_execution $BACKUP_MIN $BACKUP_HOUR $BACKUP_DAY)"
 echo ""
 
-if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     echo "📦 Backup de Volumes (Dados das Aplicações):"
     if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
         # Para diário, calcular próxima execução
         TOMORROW=$(date -d "tomorrow" +%d/%m/%Y)
         if [ $(date +%H) -lt $VOLUMES_BACKUP_HOUR ]; then
-            echo "   Hoje às $(printf "%02d:%02d" $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_MIN)"
+            echo "   Hoje às $(printf "%02d:%02d" $((10#$VOLUMES_BACKUP_HOUR)) $((10#$VOLUMES_BACKUP_MIN)))"
         else
-            echo "   $TOMORROW às $(printf "%02d:%02d" $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_MIN)"
+            echo "   $TOMORROW às $(printf "%02d:%02d" $((10#$VOLUMES_BACKUP_HOUR)) $((10#$VOLUMES_BACKUP_MIN)))"
         fi
     else
         echo "   $(get_next_execution $VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR $VOLUMES_BACKUP_DAY)"
@@ -614,9 +634,9 @@ echo ""
 echo "💾 Alerta de Disco:"
 TOMORROW=$(date -d "tomorrow" +%d/%m/%Y)
 if [ $(date +%H) -lt $ALERTA_HOUR ]; then
-    echo "   Hoje às $(printf "%02d:%02d" $ALERTA_HOUR $ALERTA_MIN)"
+    echo "   Hoje às $(printf "%02d:%02d" $((10#$ALERTA_HOUR)) $((10#$ALERTA_MIN)))"
 else
-    echo "   $TOMORROW às $(printf "%02d:%02d" $ALERTA_HOUR $ALERTA_MIN)"
+    echo "   $TOMORROW às $(printf "%02d:%02d" $((10#$ALERTA_HOUR)) $((10#$ALERTA_MIN)))"
 fi
 echo ""
 
@@ -625,13 +645,13 @@ NEXT_MONTH=$(date -d "$(date +%Y-%m-01) +1 month" +%d/%m/%Y)
 echo "   $NEXT_MONTH às 04:00"
 echo ""
 
-if [ "$AUTO_UPLOAD" = "y" ]; then
+if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
     echo "☁️  Upload Automático:"
     echo "   $(get_next_execution $BACKUP_MIN $UPLOAD_HOUR $UPLOAD_DAY)"
     echo ""
 fi
 
-if [ "$ENABLE_CLEANUP" = "y" ]; then
+if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     echo "🗑️  Limpeza de Backups:"
     echo "   $(get_next_execution $CLEANUP_MIN $CLEANUP_HOUR $CLEANUP_DAY)"
     case "$CLEANUP_STRATEGY" in
@@ -659,14 +679,20 @@ echo "  sudo crontab -e"
 echo ""
 echo "  # Ver logs de execução"
 echo "  tail -f /var/log/vpsguardian/cron-backup.log"
-if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
+    echo "  tail -f /var/log/vpsguardian/cron-db-backup.log"
+fi
+if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     echo "  tail -f /var/log/vpsguardian/cron-volumes-backup.log"
 fi
 echo "  tail -f /var/log/vpsguardian/cron-manutencao.log"
 echo "  tail -f /var/log/vpsguardian/cron-alerta.log"
-if [ "$ENABLE_CLEANUP" = "y" ]; then
+if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     echo "  tail -f /var/log/vpsguardian/cron-cleanup-coolify.log"
-    if [ "$ENABLE_VOLUMES_BACKUP" = "y" ]; then
+    if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
+        echo "  tail -f /var/log/vpsguardian/cron-cleanup-databases.log"
+    fi
+    if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
         echo "  tail -f /var/log/vpsguardian/cron-cleanup-volumes.log"
     fi
 fi

@@ -176,7 +176,10 @@ echo ""
 # Verificar se aws-cli está instalado
 if ! command -v aws &> /dev/null; then
     log_warning "AWS CLI não está instalado"
-    echo "Instale com: sudo apt install awscli -y"
+    echo "Instale com o instalador oficial (AWS CLI v2):"
+    echo "  sudo apt update && sudo apt install unzip -y"
+    echo "  curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
+    echo "  unzip awscliv2.zip && sudo ./aws/install"
     echo "Configure com: aws configure"
     S3_ENABLED=false
     BACKUP_DEST_AWS_S3=false
@@ -207,16 +210,40 @@ else
             read -p "$(echo -e ${BLUE}Storage Class \(STANDARD/STANDARD_IA/GLACIER, padrão: STANDARD_IA\):${NC} )" S3_CLASS
             S3_STORAGE_CLASS=${S3_CLASS:-STANDARD_IA}
 
+            # Endpoint customizado (para Cloudflare R2, MinIO, Backblaze, etc)
+            echo ""
+            echo -e "${YELLOW}Endpoint customizado (para Cloudflare R2, MinIO, Backblaze B2, etc)${NC}"
+            echo "Deixe vazio para usar AWS S3 padrão."
+            echo "Cloudflare R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+            echo ""
+            read -p "$(echo -e ${BLUE}Endpoint URL \(vazio = AWS S3\):${NC} )" S3_ENDPOINT_INPUT
+            S3_ENDPOINT=${S3_ENDPOINT_INPUT:-}
+
             # Testar acesso ao bucket
             log_info "Testando acesso ao bucket S3..."
-            if aws s3 ls "s3://$S3_BUCKET" --region "$S3_REGION" >/dev/null 2>&1; then
-                log_success "Acesso ao bucket S3 confirmado!"
+            if [ -n "$S3_ENDPOINT" ]; then
+                # Com endpoint customizado (R2, MinIO, etc)
+                if aws s3 ls "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1; then
+                    log_success "Acesso ao bucket confirmado! (endpoint: $S3_ENDPOINT)"
+                else
+                    log_error "Falha ao acessar bucket. Verifique credenciais, bucket e endpoint."
+                    read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
+                    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                        S3_ENABLED=false
+                        BACKUP_DEST_AWS_S3=false
+                    fi
+                fi
             else
-                log_error "Falha ao acessar bucket. Verifique credenciais e nome do bucket."
-                read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
-                if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-                    S3_ENABLED=false
-                    BACKUP_DEST_AWS_S3=false
+                # AWS S3 padrão
+                if aws s3 ls "s3://$S3_BUCKET" --region "$S3_REGION" >/dev/null 2>&1; then
+                    log_success "Acesso ao bucket S3 confirmado!"
+                else
+                    log_error "Falha ao acessar bucket. Verifique credenciais e nome do bucket."
+                    read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
+                    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                        S3_ENABLED=false
+                        BACKUP_DEST_AWS_S3=false
+                    fi
                 fi
             fi
         else
@@ -272,7 +299,15 @@ echo -e "${GREEN}Destinos habilitados:${NC}"
 [ "$BACKUP_DEST_LOCAL" = "true" ] && echo "  ✅ Local (Retenção: $LOCAL_BACKUP_RETENTION_DAYS dias)" || echo "  ❌ Local"
 [ "$BACKUP_DEST_SSH" = "true" ] && echo "  ✅ SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER:$SSH_REMOTE_DIR" || echo "  ❌ SSH"
 [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo "  ✅ Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo "  ❌ Google Drive"
-[ "$BACKUP_DEST_AWS_S3" = "true" ] && echo "  ✅ AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}" || echo "  ❌ AWS S3"
+if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
+    if [ -n "$S3_ENDPOINT" ]; then
+        echo "  ✅ S3-Compatible → s3://${S3_BUCKET}/${S3_PREFIX} (${S3_ENDPOINT})"
+    else
+        echo "  ✅ AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}"
+    fi
+else
+    echo "  ❌ AWS S3"
+fi
 echo ""
 
 echo -e "${YELLOW}Opções:${NC}"
@@ -319,12 +354,13 @@ GDRIVE_ENABLED=$GDRIVE_ENABLED
 GDRIVE_REMOTE_NAME="$GDRIVE_REMOTE_NAME"
 GDRIVE_DIR="$GDRIVE_DIR"
 
-# ========== CONFIGURAÇÕES AWS S3 ==========
+# ========== CONFIGURAÇÕES AWS S3 / R2 / MinIO ==========
 S3_ENABLED=$S3_ENABLED
 S3_BUCKET="$S3_BUCKET"
 S3_PREFIX="$S3_PREFIX"
 S3_REGION="$S3_REGION"
 S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
+S3_ENDPOINT="$S3_ENDPOINT"
 
 # ========== RETENÇÃO DE BACKUPS LOCAIS ==========
 REMOVE_LOCAL_AFTER_UPLOAD=$REMOVE_LOCAL_AFTER_UPLOAD

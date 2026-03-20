@@ -1,9 +1,59 @@
 # Guia Completo: Backup Automático + Deploy em Nova Máquina
 
 > Como configurar backups automáticos e restaurar tudo em outro servidor
-
+2->11
 ---
+  ---
+  1. Google Drive (rclone)
 
+  Execute:
+
+  rclone config
+
+  Siga os passos:
+  n) New remote
+  name> gdrive
+  Storage> drive
+  client_id> (deixe vazio, Enter)
+  client_secret> (deixe vazio, Enter)
+  scope> 1 (Full access)
+  root_folder_id> (deixe vazio, Enter)
+  service_account_file> (deixe vazio, Enter)
+  Edit advanced config> n
+  Use auto config> n (você está em servidor remoto)
+
+  Vai aparecer um link. Abra no seu navegador, faça login no Google, autorize, e cole o código de volta no terminal.
+
+  Configure as a team drive> n
+  y) Yes this is OK
+  q) Quit config
+
+  Teste:
+  rclone lsd gdrive:
+
+  ---
+  2. Cloudflare R2 (compatível S3)
+
+  No painel da Cloudflare:
+  1. R2 → Seu bucket → Manage R2 API Tokens
+  2. Crie um token com permissão Edit
+  3. Copie: Access Key ID e Secret Access Key
+  4. Copie o endpoint (ex: https://<account_id>.r2.cloudflarestorage.com)
+
+  Agora configure o AWS CLI:
+
+  aws configure
+
+  AWS Access Key ID: <sua_access_key_do_R2>
+  AWS Secret Access Key: <sua_secret_key_do_R2>
+  Default region name: auto
+  Default output format: json
+
+  Teste a conexão com R2:
+  aws s3 ls --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+
+  ---
+ 
 ## PARTE 1: Configurar Backups Automáticos
 
 ### Passo 1.1: Acessar o Menu

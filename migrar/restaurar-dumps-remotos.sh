@@ -122,7 +122,10 @@ case "$SOURCE" in
     s3)
         if ! command -v aws &> /dev/null; then
             log_error "AWS CLI não está instalado"
-            echo "Instale com: sudo apt install awscli -y"
+            echo "Instale com o instalador oficial (AWS CLI v2):"
+            echo "  sudo apt update && sudo apt install unzip -y"
+            echo "  curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
+            echo "  unzip awscliv2.zip && sudo ./aws/install"
             echo "Configure com: aws configure"
             exit 1
         fi

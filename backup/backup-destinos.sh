@@ -217,7 +217,10 @@ if [ "$UPLOAD_S3" = true ]; then
     # Verificar se aws-cli está instalado
     if ! command -v aws &> /dev/null; then
         log_error "AWS CLI não está instalado"
-        log_info "Instale com: sudo apt install awscli -y"
+        log_info "Instale com o instalador oficial (AWS CLI v2):"
+        log_info "  sudo apt update && sudo apt install unzip -y"
+        log_info "  curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
+        log_info "  unzip awscliv2.zip && sudo ./aws/install"
         log_info "Configure com: aws configure"
         ((FAIL_COUNT++))
     else

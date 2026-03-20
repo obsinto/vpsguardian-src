@@ -35,88 +35,435 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Criar backup do arquivo de configuração existente
-if [ -f "$CONFIG_FILE" ]; then
-    BACKUP_CONFIG="${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
-    cp "$CONFIG_FILE" "$BACKUP_CONFIG"
-    log_info "Backup da configuração atual: $BACKUP_CONFIG"
-    echo ""
-fi
+# Função para salvar configuração
+save_config() {
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    cat > "$CONFIG_FILE" << EOF
+#!/bin/bash
+################################################################################
+# VPS Guardian - Configuração de Destinos de Backup
+# Gerado automaticamente em: $(date '+%Y-%m-%d %H:%M:%S')
+################################################################################
+
+# ========== DESTINOS HABILITADOS ==========
+BACKUP_DEST_LOCAL=$BACKUP_DEST_LOCAL
+BACKUP_DEST_SSH=$BACKUP_DEST_SSH
+BACKUP_DEST_GOOGLE_DRIVE=$BACKUP_DEST_GOOGLE_DRIVE
+BACKUP_DEST_AWS_S3=$BACKUP_DEST_AWS_S3
+
+# ========== CONFIGURAÇÕES SSH (Self-hosted) ==========
+SSH_REMOTE_ENABLED=${SSH_REMOTE_ENABLED:-false}
+SSH_REMOTE_SERVER="$SSH_REMOTE_SERVER"
+SSH_REMOTE_USER="$SSH_REMOTE_USER"
+SSH_REMOTE_PORT="$SSH_REMOTE_PORT"
+SSH_REMOTE_DIR="$SSH_REMOTE_DIR"
+SSH_KEY_PATH="$SSH_KEY_PATH"
+
+# ========== CONFIGURAÇÕES GOOGLE DRIVE (rclone) ==========
+GDRIVE_ENABLED=${GDRIVE_ENABLED:-false}
+GDRIVE_REMOTE_NAME="$GDRIVE_REMOTE_NAME"
+GDRIVE_DIR="$GDRIVE_DIR"
+
+# ========== CONFIGURAÇÕES AWS S3 / R2 / MinIO ==========
+S3_ENABLED=${S3_ENABLED:-false}
+S3_BUCKET="$S3_BUCKET"
+S3_PREFIX="$S3_PREFIX"
+S3_REGION="$S3_REGION"
+S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
+S3_ENDPOINT="$S3_ENDPOINT"
+
+# ========== RETENÇÃO DE BACKUPS LOCAIS ==========
+REMOVE_LOCAL_AFTER_UPLOAD=$REMOVE_LOCAL_AFTER_UPLOAD
+LOCAL_BACKUP_RETENTION_DAYS=$LOCAL_BACKUP_RETENTION_DAYS
+
+# ========== OPÇÕES DE BACKUP ==========
+BACKUP_INCLUDE_COOLIFY=$BACKUP_INCLUDE_COOLIFY
+
+# ========== NOTIFICAÇÕES ==========
+WEBHOOK_URL="$WEBHOOK_URL"
+NOTIFICATION_EMAIL="$NOTIFICATION_EMAIL"
+EOF
+    chmod 600 "$CONFIG_FILE"
+}
 
 # Carregar configuração existente se houver
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
+
+    # Menu de edição quando configuração existe
+    echo -e "${GREEN}✅ Configuração existente encontrada${NC}"
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}Configuração atual:${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    # Mostrar configuração atual resumida
+    [ "$BACKUP_DEST_LOCAL" = "true" ] && echo -e "  ${GREEN}✅${NC} Local (Retenção: ${LOCAL_BACKUP_RETENTION_DAYS:-30} dias)" || echo -e "  ${RED}❌${NC} Local"
+    [ "$BACKUP_DEST_SSH" = "true" ] && echo -e "  ${GREEN}✅${NC} SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER" || echo -e "  ${RED}❌${NC} SSH"
+    [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo -e "  ${GREEN}✅${NC} Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo -e "  ${RED}❌${NC} Google Drive"
+    if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
+        [ -n "$S3_ENDPOINT" ] && echo -e "  ${GREEN}✅${NC} S3/R2 → s3://${S3_BUCKET}/${S3_PREFIX}" || echo -e "  ${GREEN}✅${NC} AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}"
+    else
+        echo -e "  ${RED}❌${NC} AWS S3"
+    fi
+    echo ""
+    [ "$BACKUP_INCLUDE_COOLIFY" = "true" ] && echo -e "  ${GREEN}✅${NC} Incluir coolify-db" || echo -e "  ${YELLOW}⚠️${NC}  Excluir coolify-db"
+    [ -n "$WEBHOOK_URL" ] && echo -e "  ${GREEN}🔔${NC} Webhook: configurado" || echo -e "  ${RED}❌${NC} Webhook: não configurado"
+    [ -n "$NOTIFICATION_EMAIL" ] && echo -e "  ${GREEN}📧${NC} Email: $NOTIFICATION_EMAIL" || echo -e "  ${RED}❌${NC} Email: não configurado"
+    echo ""
+
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}O que deseja fazer?${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${GREEN}1${NC} → Editar Notificações (Webhook/Email)"
+    echo -e "  ${GREEN}2${NC} → 🧪 Testar Webhook"
+    echo -e "  ${GREEN}3${NC} → Editar Destino Local"
+    echo -e "  ${GREEN}4${NC} → Editar Destino SSH"
+    echo -e "  ${GREEN}5${NC} → Editar Destino Google Drive"
+    echo -e "  ${GREEN}6${NC} → Editar Destino AWS S3 / R2"
+    echo -e "  ${GREEN}7${NC} → Editar Opções (coolify-db, etc)"
+    echo -e "  ${GREEN}8${NC} → Reconfigurar TUDO do zero"
+    echo -e "  ${GREEN}0${NC} → Voltar (manter configuração atual)"
+    echo ""
+
+    read -p "$(echo -e ${BLUE}Escolha uma opção:${NC} )" EDIT_CHOICE
+
+    case $EDIT_CHOICE in
+        1)
+            # Editar notificações
+            clear
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}EDITAR NOTIFICAÇÕES${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "Webhook atual: ${YELLOW}${WEBHOOK_URL:-não configurado}${NC}"
+            echo -e "Email atual: ${YELLOW}${NOTIFICATION_EMAIL:-não configurado}${NC}"
+            echo ""
+            read -p "$(echo -e ${BLUE}Novo Webhook \(Enter para manter, 'limpar' para remover\):${NC} )" NEW_WEBHOOK
+            if [ "$NEW_WEBHOOK" = "limpar" ]; then
+                WEBHOOK_URL=""
+                log_success "Webhook removido"
+            elif [ -n "$NEW_WEBHOOK" ]; then
+                WEBHOOK_URL="$NEW_WEBHOOK"
+                log_success "Webhook atualizado"
+            fi
+
+            read -p "$(echo -e ${BLUE}Novo Email \(Enter para manter, 'limpar' para remover\):${NC} )" NEW_EMAIL
+            if [ "$NEW_EMAIL" = "limpar" ]; then
+                NOTIFICATION_EMAIL=""
+                log_success "Email removido"
+            elif [ -n "$NEW_EMAIL" ]; then
+                NOTIFICATION_EMAIL="$NEW_EMAIL"
+                log_success "Email atualizado"
+            fi
+
+            save_config
+            log_success "Configuração salva!"
+            exit 0
+            ;;
+        2)
+            # Testar webhook
+            clear
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}🧪 TESTAR WEBHOOK${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+
+            if [ -z "$WEBHOOK_URL" ]; then
+                log_error "Nenhum webhook configurado!"
+                echo ""
+                read -p "$(echo -e ${BLUE}Deseja configurar um webhook agora? \(Y/n\):${NC} )" CONFIGURE_NOW
+                if [[ "$CONFIGURE_NOW" =~ ^[Yy]$ ]] || [ -z "$CONFIGURE_NOW" ]; then
+                    read -p "$(echo -e ${BLUE}URL do Webhook \(Discord/Slack\):${NC} )" WEBHOOK_URL
+                    if [ -n "$WEBHOOK_URL" ]; then
+                        save_config
+                        log_success "Webhook salvo!"
+                    else
+                        exit 0
+                    fi
+                else
+                    exit 0
+                fi
+            fi
+
+            echo -e "Webhook: ${YELLOW}$WEBHOOK_URL${NC}"
+            echo ""
+            log_info "Enviando mensagem de teste..."
+            echo ""
+
+            # Detectar tipo de webhook (Discord ou Slack)
+            if [[ "$WEBHOOK_URL" == *"discord.com"* ]]; then
+                # Discord webhook
+                HOSTNAME=$(hostname)
+                IP=$(curl -s ifconfig.me 2>/dev/null || echo "N/A")
+                DATE=$(date '+%Y-%m-%d %H:%M:%S')
+
+                PAYLOAD=$(cat <<EOF
+{
+    "embeds": [{
+        "title": "🧪 Teste de Webhook - VPS Guardian",
+        "description": "Este é um teste de notificação do VPS Guardian.",
+        "color": 3066993,
+        "fields": [
+            {"name": "🖥️ Servidor", "value": "$HOSTNAME", "inline": true},
+            {"name": "🌐 IP", "value": "$IP", "inline": true},
+            {"name": "📅 Data/Hora", "value": "$DATE", "inline": false},
+            {"name": "✅ Status", "value": "Webhook funcionando corretamente!", "inline": false}
+        ],
+        "footer": {"text": "VPS Guardian - Sistema de Backup e Manutenção"}
+    }]
+}
+EOF
+)
+                RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL")
+
+                if [ "$RESPONSE" = "204" ] || [ "$RESPONSE" = "200" ]; then
+                    log_success "Mensagem de teste enviada com sucesso!"
+                    echo ""
+                    echo -e "${GREEN}✅ Verifique seu canal Discord para confirmar o recebimento.${NC}"
+                else
+                    log_error "Falha ao enviar mensagem (HTTP $RESPONSE)"
+                    echo ""
+                    echo "Possíveis causas:"
+                    echo "  • URL do webhook incorreta"
+                    echo "  • Webhook foi deletado no Discord"
+                    echo "  • Problemas de conectividade"
+                fi
+            elif [[ "$WEBHOOK_URL" == *"slack.com"* ]]; then
+                # Slack webhook
+                HOSTNAME=$(hostname)
+                DATE=$(date '+%Y-%m-%d %H:%M:%S')
+
+                PAYLOAD=$(cat <<EOF
+{
+    "text": "🧪 *Teste de Webhook - VPS Guardian*",
+    "attachments": [{
+        "color": "#2eb886",
+        "fields": [
+            {"title": "Servidor", "value": "$HOSTNAME", "short": true},
+            {"title": "Data/Hora", "value": "$DATE", "short": true},
+            {"title": "Status", "value": "✅ Webhook funcionando corretamente!", "short": false}
+        ]
+    }]
+}
+EOF
+)
+                RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$WEBHOOK_URL")
+
+                if [ "$RESPONSE" = "200" ]; then
+                    log_success "Mensagem de teste enviada com sucesso!"
+                else
+                    log_error "Falha ao enviar mensagem (HTTP $RESPONSE)"
+                fi
+            else
+                log_warning "Tipo de webhook não reconhecido. Tentando envio genérico..."
+                RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
+                    -d '{"text": "Teste VPS Guardian - Webhook funcionando!"}' "$WEBHOOK_URL")
+
+                if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "204" ]; then
+                    log_success "Mensagem enviada (HTTP $RESPONSE)"
+                else
+                    log_error "Falha (HTTP $RESPONSE)"
+                fi
+            fi
+
+            echo ""
+            read -p "Pressione ENTER para continuar..."
+            exit 0
+            ;;
+        3)
+            # Editar Local
+            clear
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}EDITAR BACKUP LOCAL${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "Status atual: ${YELLOW}$([[ "$BACKUP_DEST_LOCAL" = "true" ]] && echo "Habilitado" || echo "Desabilitado")${NC}"
+            echo -e "Retenção atual: ${YELLOW}${LOCAL_BACKUP_RETENTION_DAYS:-30} dias${NC}"
+            echo ""
+            read -p "$(echo -e ${BLUE}Habilitar backup local? \(Y/n\):${NC} )" KEEP_LOCAL
+            KEEP_LOCAL=${KEEP_LOCAL:-Y}
+            BACKUP_DEST_LOCAL=$([[ "$KEEP_LOCAL" =~ ^[Yy]$ ]] && echo "true" || echo "false")
+
+            if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
+                read -p "$(echo -e ${BLUE}Retenção em dias \(atual: ${LOCAL_BACKUP_RETENTION_DAYS:-30}\):${NC} )" RETENTION
+                LOCAL_BACKUP_RETENTION_DAYS=${RETENTION:-${LOCAL_BACKUP_RETENTION_DAYS:-30}}
+            fi
+
+            save_config
+            log_success "Configuração salva!"
+            exit 0
+            ;;
+        4)
+            # Editar SSH - pula para a seção SSH abaixo
+            SKIP_TO_SSH=true
+            ;;
+        5)
+            # Editar Google Drive - pula para a seção
+            SKIP_TO_GDRIVE=true
+            ;;
+        6)
+            # Editar S3/R2 - pula para a seção
+            SKIP_TO_S3=true
+            ;;
+        7)
+            # Editar opções
+            clear
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}EDITAR OPÇÕES${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "Incluir coolify-db: ${YELLOW}$([[ "$BACKUP_INCLUDE_COOLIFY" = "true" ]] && echo "Sim" || echo "Não")${NC}"
+            echo -e "Remover local após upload: ${YELLOW}$([[ "$REMOVE_LOCAL_AFTER_UPLOAD" = "true" ]] && echo "Sim" || echo "Não")${NC}"
+            echo ""
+
+            read -p "$(echo -e ${BLUE}Incluir coolify-db nos backups? \(Y/n\):${NC} )" INCLUDE_COOLIFY
+            INCLUDE_COOLIFY=${INCLUDE_COOLIFY:-Y}
+            BACKUP_INCLUDE_COOLIFY=$([[ "$INCLUDE_COOLIFY" =~ ^[Yy]$ ]] && echo "true" || echo "false")
+
+            read -p "$(echo -e ${BLUE}Remover backup local após upload? \(y/N\):${NC} )" REMOVE_LOCAL
+            REMOVE_LOCAL=${REMOVE_LOCAL:-N}
+            REMOVE_LOCAL_AFTER_UPLOAD=$([[ "$REMOVE_LOCAL" =~ ^[Yy]$ ]] && echo "true" || echo "false")
+
+            save_config
+            log_success "Configuração salva!"
+            exit 0
+            ;;
+        8)
+            # Reconfigurar tudo - continua com o fluxo normal
+            BACKUP_CONFIG="${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+            cp "$CONFIG_FILE" "$BACKUP_CONFIG"
+            log_info "Backup da configuração atual: $BACKUP_CONFIG"
+            # Limpar variáveis para reconfigurar
+            unset BACKUP_DEST_LOCAL BACKUP_DEST_SSH BACKUP_DEST_GOOGLE_DRIVE BACKUP_DEST_AWS_S3
+            unset SSH_REMOTE_SERVER SSH_REMOTE_USER SSH_REMOTE_PORT SSH_REMOTE_DIR
+            unset GDRIVE_REMOTE_NAME GDRIVE_DIR S3_BUCKET S3_PREFIX S3_REGION S3_ENDPOINT
+            unset WEBHOOK_URL NOTIFICATION_EMAIL
+            ;;
+        0|"")
+            log_info "Configuração mantida sem alterações"
+            exit 0
+            ;;
+        *)
+            log_error "Opção inválida"
+            exit 1
+            ;;
+    esac
+fi
+
+# Se estiver editando seção específica, pular para ela
+if [ "$SKIP_TO_SSH" = "true" ]; then
+    clear
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}EDITAR BACKUP SSH${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+fi
+
+if [ "$SKIP_TO_GDRIVE" = "true" ]; then
+    clear
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}EDITAR GOOGLE DRIVE${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+fi
+
+if [ "$SKIP_TO_S3" = "true" ]; then
+    clear
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}EDITAR AWS S3 / R2${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
 fi
 
 log_info "Configure os destinos para onde os backups via dump serão enviados automaticamente."
 echo ""
 
 # ========== LOCAL ==========
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}1️⃣  BACKUP LOCAL${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-read -p "$(echo -e ${BLUE}Manter backups locais? \(Y/n\):${NC} )" KEEP_LOCAL
-KEEP_LOCAL=${KEEP_LOCAL:-Y}
-BACKUP_DEST_LOCAL=$([[ "$KEEP_LOCAL" =~ ^[Yy]$ ]] && echo "true" || echo "false")
+if [ "$SKIP_TO_SSH" != "true" ] && [ "$SKIP_TO_GDRIVE" != "true" ] && [ "$SKIP_TO_S3" != "true" ]; then
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}1️⃣  BACKUP LOCAL${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    read -p "$(echo -e ${BLUE}Manter backups locais? \(Y/n\):${NC} )" KEEP_LOCAL
+    KEEP_LOCAL=${KEEP_LOCAL:-Y}
+    BACKUP_DEST_LOCAL=$([[ "$KEEP_LOCAL" =~ ^[Yy]$ ]] && echo "true" || echo "false")
 
-if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
-    read -p "$(echo -e ${BLUE}Retenção local em dias \(padrão: 30\):${NC} )" RETENTION
-    LOCAL_BACKUP_RETENTION_DAYS=${RETENTION:-30}
+    if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
+        read -p "$(echo -e ${BLUE}Retenção local em dias \(padrão: 30\):${NC} )" RETENTION
+        LOCAL_BACKUP_RETENTION_DAYS=${RETENTION:-30}
+    fi
+    echo ""
 fi
-echo ""
 
 # ========== SSH ==========
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}2️⃣  BACKUP REMOTO VIA SSH (Self-hosted)${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-read -p "$(echo -e ${BLUE}Habilitar backup via SSH? \(y/N\):${NC} )" ENABLE_SSH
-ENABLE_SSH=${ENABLE_SSH:-N}
-
-if [[ "$ENABLE_SSH" =~ ^[Yy]$ ]]; then
-    SSH_REMOTE_ENABLED=true
-    BACKUP_DEST_SSH=true
-
-    read -p "$(echo -e ${BLUE}IP/Hostname do servidor remoto:${NC} )" SSH_SERVER
-    SSH_REMOTE_SERVER="$SSH_SERVER"
-
-    read -p "$(echo -e ${BLUE}Usuário SSH \(padrão: root\):${NC} )" SSH_USER
-    SSH_REMOTE_USER=${SSH_USER:-root}
-
-    read -p "$(echo -e ${BLUE}Porta SSH \(padrão: 22\):${NC} )" SSH_PORT
-    SSH_REMOTE_PORT=${SSH_PORT:-22}
-
-    read -p "$(echo -e ${BLUE}Diretório no servidor remoto \(padrão: /root/backups\):${NC} )" SSH_DIR
-    SSH_REMOTE_DIR=${SSH_DIR:-/root/backups}
-
-    read -p "$(echo -e ${BLUE}Caminho da chave SSH \(padrão: ~/.ssh/id_rsa\):${NC} )" SSH_KEY
-    SSH_KEY_PATH=${SSH_KEY:-$HOME/.ssh/id_rsa}
-
-    # Testar conexão
-    log_info "Testando conexão SSH..."
-    if ssh -i "$SSH_KEY_PATH" -p "$SSH_REMOTE_PORT" -o ConnectTimeout=10 -o BatchMode=yes "$SSH_REMOTE_USER@$SSH_REMOTE_SERVER" "exit" 2>/dev/null; then
-        log_success "Conexão SSH estabelecida com sucesso!"
-    else
-        log_error "Falha na conexão SSH. Verifique as configurações."
-        log_warning "Você pode continuar, mas o backup falhará se a conexão não funcionar."
-        read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
-        if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-            SSH_REMOTE_ENABLED=false
-            BACKUP_DEST_SSH=false
-        fi
+if [ "$SKIP_TO_GDRIVE" != "true" ] && [ "$SKIP_TO_S3" != "true" ]; then
+    if [ "$SKIP_TO_SSH" != "true" ]; then
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}2️⃣  BACKUP REMOTO VIA SSH (Self-hosted)${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
     fi
-else
-    SSH_REMOTE_ENABLED=false
-    BACKUP_DEST_SSH=false
+
+    read -p "$(echo -e ${BLUE}Habilitar backup via SSH? \(y/N\):${NC} )" ENABLE_SSH
+    ENABLE_SSH=${ENABLE_SSH:-N}
+
+    if [[ "$ENABLE_SSH" =~ ^[Yy]$ ]]; then
+        SSH_REMOTE_ENABLED=true
+        BACKUP_DEST_SSH=true
+
+        read -p "$(echo -e ${BLUE}IP/Hostname do servidor remoto:${NC} )" SSH_SERVER
+        SSH_REMOTE_SERVER="$SSH_SERVER"
+
+        read -p "$(echo -e ${BLUE}Usuário SSH \(padrão: root\):${NC} )" SSH_USER
+        SSH_REMOTE_USER=${SSH_USER:-root}
+
+        read -p "$(echo -e ${BLUE}Porta SSH \(padrão: 22\):${NC} )" SSH_PORT
+        SSH_REMOTE_PORT=${SSH_PORT:-22}
+
+        read -p "$(echo -e ${BLUE}Diretório no servidor remoto \(padrão: /root/backups\):${NC} )" SSH_DIR
+        SSH_REMOTE_DIR=${SSH_DIR:-/root/backups}
+
+        read -p "$(echo -e ${BLUE}Caminho da chave SSH \(padrão: ~/.ssh/id_rsa\):${NC} )" SSH_KEY
+        SSH_KEY_PATH=${SSH_KEY:-$HOME/.ssh/id_rsa}
+
+        # Testar conexão
+        log_info "Testando conexão SSH..."
+        if ssh -i "$SSH_KEY_PATH" -p "$SSH_REMOTE_PORT" -o ConnectTimeout=10 -o BatchMode=yes "$SSH_REMOTE_USER@$SSH_REMOTE_SERVER" "exit" 2>/dev/null; then
+            log_success "Conexão SSH estabelecida com sucesso!"
+        else
+            log_error "Falha na conexão SSH. Verifique as configurações."
+            log_warning "Você pode continuar, mas o backup falhará se a conexão não funcionar."
+            read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
+            if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                SSH_REMOTE_ENABLED=false
+                BACKUP_DEST_SSH=false
+            fi
+        fi
+    else
+        SSH_REMOTE_ENABLED=false
+        BACKUP_DEST_SSH=false
+    fi
+    echo ""
+
+    # Se estava editando apenas SSH, salvar e sair
+    if [ "$SKIP_TO_SSH" = "true" ]; then
+        save_config
+        log_success "Configuração SSH salva!"
+        exit 0
+    fi
 fi
-echo ""
 
 # ========== GOOGLE DRIVE ==========
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}3️⃣  GOOGLE DRIVE (via rclone)${NC}"
-echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
+if [ "$SKIP_TO_S3" != "true" ]; then
+    if [ "$SKIP_TO_GDRIVE" != "true" ] && [ "$SKIP_TO_SSH" != "true" ]; then
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}3️⃣  GOOGLE DRIVE (via rclone)${NC}"
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+    fi
 
 # Verificar se rclone está instalado
 if ! command -v rclone &> /dev/null; then
@@ -326,56 +673,7 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 # ========== SALVAR CONFIGURAÇÃO ==========
-mkdir -p "$(dirname "$CONFIG_FILE")"
-
-cat > "$CONFIG_FILE" << EOF
-#!/bin/bash
-################################################################################
-# VPS Guardian - Configuração de Destinos de Backup
-# Gerado automaticamente em: $(date '+%Y-%m-%d %H:%M:%S')
-################################################################################
-
-# ========== DESTINOS HABILITADOS ==========
-BACKUP_DEST_LOCAL=$BACKUP_DEST_LOCAL
-BACKUP_DEST_SSH=$BACKUP_DEST_SSH
-BACKUP_DEST_GOOGLE_DRIVE=$BACKUP_DEST_GOOGLE_DRIVE
-BACKUP_DEST_AWS_S3=$BACKUP_DEST_AWS_S3
-
-# ========== CONFIGURAÇÕES SSH (Self-hosted) ==========
-SSH_REMOTE_ENABLED=$SSH_REMOTE_ENABLED
-SSH_REMOTE_SERVER="$SSH_REMOTE_SERVER"
-SSH_REMOTE_USER="$SSH_REMOTE_USER"
-SSH_REMOTE_PORT="$SSH_REMOTE_PORT"
-SSH_REMOTE_DIR="$SSH_REMOTE_DIR"
-SSH_KEY_PATH="$SSH_KEY_PATH"
-
-# ========== CONFIGURAÇÕES GOOGLE DRIVE (rclone) ==========
-GDRIVE_ENABLED=$GDRIVE_ENABLED
-GDRIVE_REMOTE_NAME="$GDRIVE_REMOTE_NAME"
-GDRIVE_DIR="$GDRIVE_DIR"
-
-# ========== CONFIGURAÇÕES AWS S3 / R2 / MinIO ==========
-S3_ENABLED=$S3_ENABLED
-S3_BUCKET="$S3_BUCKET"
-S3_PREFIX="$S3_PREFIX"
-S3_REGION="$S3_REGION"
-S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
-S3_ENDPOINT="$S3_ENDPOINT"
-
-# ========== RETENÇÃO DE BACKUPS LOCAIS ==========
-REMOVE_LOCAL_AFTER_UPLOAD=$REMOVE_LOCAL_AFTER_UPLOAD
-LOCAL_BACKUP_RETENTION_DAYS=$LOCAL_BACKUP_RETENTION_DAYS
-
-# ========== OPÇÕES DE BACKUP ==========
-# Incluir banco de dados do Coolify (coolify-db) nos backups automáticos?
-BACKUP_INCLUDE_COOLIFY=$BACKUP_INCLUDE_COOLIFY
-
-# ========== NOTIFICAÇÕES ==========
-WEBHOOK_URL="$WEBHOOK_URL"
-NOTIFICATION_EMAIL="$NOTIFICATION_EMAIL"
-EOF
-
-chmod 600 "$CONFIG_FILE"
+save_config
 log_success "Configuração salva em: $CONFIG_FILE"
 echo ""
 

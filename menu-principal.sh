@@ -412,6 +412,16 @@ show_migration_menu() {
     echo -e "       ${GRAY}(Baixar de S3/Google Drive/SSH e restaurar)${NC}"
     echo -e "       ${GRAY}(Controle total: tudo, tudo exceto Coolify, ou específico)${NC}"
     echo ""
+    echo -e "  ${MAGENTA}VALIDAÇÃO E CHECKLIST${NC}"
+    echo -e "  ${GREEN}7${NC} → 📋 Checklist de Migração"
+    echo -e "       ${GRAY}(Guia passo a passo com verificações)${NC}"
+    echo ""
+    echo -e "  ${GREEN}8${NC} → ✅ Validar Pré-Migração (Origem)"
+    echo -e "       ${GRAY}(Verificar ambiente antes de migrar)${NC}"
+    echo ""
+    echo -e "  ${GREEN}9${NC} → ✅ Validar Pós-Migração (Destino)"
+    echo -e "       ${GRAY}(Verificar ambiente após migrar)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -878,6 +888,18 @@ handle_migration_menu() {
                     run_script "$SCRIPT_DIR/migrar/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
                 fi
                 ;;
+            7)
+                # Checklist de Migração
+                run_script "$SCRIPT_DIR/scripts-auxiliares/checklist-migracao.sh" "Checklist de Migração"
+                ;;
+            8)
+                # Validar Pré-Migração
+                run_script "$SCRIPT_DIR/scripts-auxiliares/validar-pre-migracao.sh" "Validar Pré-Migração"
+                ;;
+            9)
+                # Validar Pós-Migração
+                run_script "$SCRIPT_DIR/scripts-auxiliares/validar-pos-migracao.sh" "Validar Pós-Migração"
+                ;;
             0)
                 return
                 ;;
@@ -906,6 +928,9 @@ show_firewall_menu() {
     echo ""
     echo -e "  ${YELLOW}3${NC} → 📊 Ver Status Atual"
     echo -e "       ${GRAY}(Mostra configuração do firewall agora)${NC}"
+    echo ""
+    echo -e "  ${GREEN}4${NC} → 🎛️  Gerenciador Interativo"
+    echo -e "       ${GRAY}(Whitelist de IPs, múltiplos perfis)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
@@ -954,6 +979,10 @@ handle_firewall_menu() {
                 fi
                 echo ""
                 pause
+                ;;
+            4)
+                # Gerenciador Interativo
+                run_script "$SCRIPT_DIR/manutencao/firewall-interativo.sh" "Firewall Interativo"
                 ;;
             0)
                 return

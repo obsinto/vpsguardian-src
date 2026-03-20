@@ -72,9 +72,12 @@ S3_REGION="$S3_REGION"
 S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
 S3_ENDPOINT="$S3_ENDPOINT"
 
-# ========== RETENÇÃO DE BACKUPS LOCAIS ==========
+# ========== RETENÇÃO DE BACKUPS ==========
+# Estratégia: simple, count, gfs
+BACKUP_RETENTION_STRATEGY="${BACKUP_RETENTION_STRATEGY:-simple}"
+BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+BACKUP_RETENTION_COUNT=${BACKUP_RETENTION_COUNT:-10}
 REMOVE_LOCAL_AFTER_UPLOAD=$REMOVE_LOCAL_AFTER_UPLOAD
-LOCAL_BACKUP_RETENTION_DAYS=$LOCAL_BACKUP_RETENTION_DAYS
 
 # ========== OPÇÕES DE BACKUP ==========
 BACKUP_INCLUDE_COOLIFY=$BACKUP_INCLUDE_COOLIFY
@@ -99,7 +102,15 @@ if [ -f "$CONFIG_FILE" ]; then
     echo ""
 
     # Mostrar configuração atual resumida
-    [ "$BACKUP_DEST_LOCAL" = "true" ] && echo -e "  ${GREEN}✅${NC} Local (Retenção: ${LOCAL_BACKUP_RETENTION_DAYS:-30} dias)" || echo -e "  ${RED}❌${NC} Local"
+    if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
+        case "${BACKUP_RETENTION_STRATEGY:-simple}" in
+            simple) echo -e "  ${GREEN}✅${NC} Local (Retenção: ${BACKUP_RETENTION_DAYS:-30} dias)" ;;
+            count) echo -e "  ${GREEN}✅${NC} Local (Retenção: últimos ${BACKUP_RETENTION_COUNT:-10} backups)" ;;
+            gfs) echo -e "  ${GREEN}✅${NC} Local (Retenção: GFS - 7d+4w+12m)" ;;
+        esac
+    else
+        echo -e "  ${RED}❌${NC} Local"
+    fi
     [ "$BACKUP_DEST_SSH" = "true" ] && echo -e "  ${GREEN}✅${NC} SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER" || echo -e "  ${RED}❌${NC} SSH"
     [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo -e "  ${GREEN}✅${NC} Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo -e "  ${RED}❌${NC} Google Drive"
     if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
@@ -124,7 +135,8 @@ if [ -f "$CONFIG_FILE" ]; then
     echo -e "  ${GREEN}5${NC} → Editar Destino Google Drive"
     echo -e "  ${GREEN}6${NC} → Editar Destino AWS S3 / R2"
     echo -e "  ${GREEN}7${NC} → Editar Opções (coolify-db, etc)"
-    echo -e "  ${GREEN}8${NC} → Reconfigurar TUDO do zero"
+    echo -e "  ${GREEN}8${NC} → 🗑️ Editar Retenção de Backups"
+    echo -e "  ${GREEN}9${NC} → Reconfigurar TUDO do zero"
     echo -e "  ${GREEN}0${NC} → Voltar (manter configuração atual)"
     echo ""
 
@@ -332,6 +344,56 @@ EOF
             exit 0
             ;;
         8)
+            # Editar retenção de backups
+            clear
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}🗑️ EDITAR RETENÇÃO DE BACKUPS${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "Configuração atual:"
+            echo -e "  Estratégia: ${YELLOW}${BACKUP_RETENTION_STRATEGY:-simple}${NC}"
+            echo -e "  Dias (simple): ${YELLOW}${BACKUP_RETENTION_DAYS:-30}${NC}"
+            echo -e "  Quantidade (count): ${YELLOW}${BACKUP_RETENTION_COUNT:-10}${NC}"
+            echo ""
+            echo -e "${CYAN}Estratégias disponíveis:${NC}"
+            echo "  simple = Deleta backups mais antigos que X dias"
+            echo "  count  = Mantém últimos X backups (independente da idade)"
+            echo "  gfs    = Grandfather-Father-Son (7 diários + 4 semanais + 12 mensais)"
+            echo ""
+            read -p "$(echo -e ${BLUE}Estratégia \(simple/count/gfs, atual: ${BACKUP_RETENTION_STRATEGY:-simple}\):${NC} )" NEW_STRATEGY
+            NEW_STRATEGY=${NEW_STRATEGY:-${BACKUP_RETENTION_STRATEGY:-simple}}
+
+            case "$NEW_STRATEGY" in
+                simple|count|gfs)
+                    BACKUP_RETENTION_STRATEGY="$NEW_STRATEGY"
+                    ;;
+                *)
+                    log_error "Estratégia inválida. Use: simple, count ou gfs"
+                    exit 1
+                    ;;
+            esac
+
+            if [ "$BACKUP_RETENTION_STRATEGY" = "simple" ]; then
+                read -p "$(echo -e ${BLUE}Dias de retenção \(atual: ${BACKUP_RETENTION_DAYS:-30}\):${NC} )" NEW_DAYS
+                BACKUP_RETENTION_DAYS=${NEW_DAYS:-${BACKUP_RETENTION_DAYS:-30}}
+            elif [ "$BACKUP_RETENTION_STRATEGY" = "count" ]; then
+                read -p "$(echo -e ${BLUE}Quantidade de backups a manter \(atual: ${BACKUP_RETENTION_COUNT:-10}\):${NC} )" NEW_COUNT
+                BACKUP_RETENTION_COUNT=${NEW_COUNT:-${BACKUP_RETENTION_COUNT:-10}}
+            else
+                log_info "GFS usa retenção fixa: 7 diários + 4 semanais + 12 mensais"
+            fi
+
+            save_config
+            log_success "Configuração de retenção salva!"
+            echo ""
+            echo -e "${YELLOW}Resumo:${NC}"
+            echo -e "  Estratégia: ${GREEN}$BACKUP_RETENTION_STRATEGY${NC}"
+            [ "$BACKUP_RETENTION_STRATEGY" = "simple" ] && echo -e "  Retenção: ${GREEN}$BACKUP_RETENTION_DAYS dias${NC}"
+            [ "$BACKUP_RETENTION_STRATEGY" = "count" ] && echo -e "  Retenção: ${GREEN}últimos $BACKUP_RETENTION_COUNT backups${NC}"
+            [ "$BACKUP_RETENTION_STRATEGY" = "gfs" ] && echo -e "  Retenção: ${GREEN}7 diários + 4 semanais + 12 mensais${NC}"
+            exit 0
+            ;;
+        9)
             # Reconfigurar tudo - continua com o fluxo normal
             BACKUP_CONFIG="${CONFIG_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
             cp "$CONFIG_FILE" "$BACKUP_CONFIG"
@@ -340,7 +402,7 @@ EOF
             unset BACKUP_DEST_LOCAL BACKUP_DEST_SSH BACKUP_DEST_GOOGLE_DRIVE BACKUP_DEST_AWS_S3
             unset SSH_REMOTE_SERVER SSH_REMOTE_USER SSH_REMOTE_PORT SSH_REMOTE_DIR
             unset GDRIVE_REMOTE_NAME GDRIVE_DIR S3_BUCKET S3_PREFIX S3_REGION S3_ENDPOINT
-            unset WEBHOOK_URL NOTIFICATION_EMAIL
+            unset WEBHOOK_URL NOTIFICATION_EMAIL BACKUP_RETENTION_STRATEGY BACKUP_RETENTION_DAYS BACKUP_RETENTION_COUNT
             ;;
         0|"")
             log_info "Configuração mantida sem alterações"
@@ -643,7 +705,15 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 echo -e "${GREEN}Destinos habilitados:${NC}"
-[ "$BACKUP_DEST_LOCAL" = "true" ] && echo "  ✅ Local (Retenção: $LOCAL_BACKUP_RETENTION_DAYS dias)" || echo "  ❌ Local"
+if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
+    case "${BACKUP_RETENTION_STRATEGY:-simple}" in
+        simple) echo "  ✅ Local (Retenção: ${BACKUP_RETENTION_DAYS:-30} dias)" ;;
+        count) echo "  ✅ Local (Retenção: últimos ${BACKUP_RETENTION_COUNT:-10} backups)" ;;
+        gfs) echo "  ✅ Local (Retenção: GFS - 7d+4w+12m)" ;;
+    esac
+else
+    echo "  ❌ Local"
+fi
 [ "$BACKUP_DEST_SSH" = "true" ] && echo "  ✅ SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER:$SSH_REMOTE_DIR" || echo "  ❌ SSH"
 [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo "  ✅ Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo "  ❌ Google Drive"
 if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
@@ -714,3 +784,5 @@ echo -e "${CYAN}Para agendar backups automáticos:${NC}"
 echo "  Execute o menu principal → Configuração → Configurar Cron"
 echo "  ou execute: sudo $SCRIPT_DIR/../scripts-auxiliares/configurar-cron.sh"
 echo ""
+
+fi  # Fecha o if [ "$SKIP_TO_S3" != "true" ]

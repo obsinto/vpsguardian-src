@@ -21,6 +21,43 @@ log_success() {
     echo "$LOG_PREFIX [ OK ] $1"
 }
 
+# Arquivo de configuração de destinos
+BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+
+# Função para atualizar variável no arquivo de configuração
+update_config_var() {
+    local var_name="$1"
+    local var_value="$2"
+    local config_file="${3:-$BACKUP_DEST_CONFIG}"
+
+    if [ ! -f "$config_file" ]; then
+        log "WARN" "Arquivo de config não encontrado: $config_file"
+        return 1
+    fi
+
+    # Se a variável existe, atualiza; senão, adiciona
+    if grep -q "^${var_name}=" "$config_file"; then
+        sed -i "s|^${var_name}=.*|${var_name}=\"${var_value}\"|" "$config_file"
+    else
+        echo "${var_name}=\"${var_value}\"" >> "$config_file"
+    fi
+}
+
+# Função para salvar configurações de retenção
+save_retention_config() {
+    local strategy="$1"
+    local days="$2"
+    local count="$3"
+
+    if [ -f "$BACKUP_DEST_CONFIG" ]; then
+        log "INFO" "Salvando configurações de retenção..."
+        update_config_var "BACKUP_RETENTION_STRATEGY" "$strategy"
+        update_config_var "BACKUP_RETENTION_DAYS" "$days"
+        update_config_var "BACKUP_RETENTION_COUNT" "$count"
+        log_success "Configurações de retenção salvas em $BACKUP_DEST_CONFIG"
+    fi
+}
+
 # Verificar se é root
 if [ "$EUID" -ne 0 ]; then
     log_error "Este script deve ser executado como root (use sudo)"
@@ -287,6 +324,9 @@ if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     CLEANUP_MIN=$BACKUP_MIN
 
     log "INFO" "Limpeza será executada 2h após o backup ($(printf "%02d:%02d" $((10#$CLEANUP_HOUR)) $((10#$CLEANUP_MIN))))"
+
+    # Salvar configurações de retenção no arquivo de config
+    save_retention_config "$CLEANUP_STRATEGY" "${CLEANUP_DAYS:-30}" "${CLEANUP_COUNT:-10}"
 fi
 
 echo ""

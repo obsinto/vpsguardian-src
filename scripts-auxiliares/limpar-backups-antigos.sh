@@ -28,11 +28,17 @@ source "$SCRIPT_DIR/../lib/common.sh"
 # Inicializar script
 init_script
 
+# Carregar configurações de destino de backup (inclui retenção)
+BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+if [ -f "$BACKUP_DEST_CONFIG" ]; then
+    source "$BACKUP_DEST_CONFIG"
+fi
+
 ################################################################################
 # CONFIGURAÇÕES
 ################################################################################
 
-# Estratégia (sobrescreve config/default.conf se passado via argumento)
+# Estratégia (usa config do arquivo, argumentos sobrescrevem)
 STRATEGY="${BACKUP_RETENTION_STRATEGY:-simple}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 RETENTION_COUNT="${BACKUP_RETENTION_COUNT:-10}"

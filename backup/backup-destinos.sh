@@ -6,7 +6,8 @@
 #      DESTINO: self-hosted, google-drive, aws-s3, all
 ################################################################################
 
-set -e
+# NÃO usar set -e aqui - queremos continuar tentando outros destinos mesmo se um falhar
+# set -e
 
 LOG_PREFIX="[ Backup Upload ]"
 

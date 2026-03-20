@@ -333,6 +333,9 @@ show_backup_menu() {
     echo -e "       ${GRAY}(Verificar integridade após restore)${NC}"
     echo -e "       ${GRAY}(Teste de conectividade e queries)${NC}"
     echo ""
+    echo -e "  ${GREEN}12${NC} → 📊 Ver Status dos Backups Automáticos"
+    echo -e "       ${GRAY}(Destinos configurados, cron jobs, últimos backups)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -711,6 +714,10 @@ handle_backup_menu() {
                 if confirm "Configurar destinos de backup automático (Local, Google Drive, S3, SSH)?"; then
                     run_script "$SCRIPT_DIR/backup/configurar-backup-destinos.sh" "Configurar Destinos de Backup"
                 fi
+                ;;
+            12)
+                # Ver Status dos Backups Automáticos
+                run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
                 ;;
             0)
                 return

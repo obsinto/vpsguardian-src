@@ -1,7 +1,7 @@
 #!/bin/bash
 ################################################################################
 # Script de Upload de Backup para Múltiplos Destinos
-# Suporta: Self-hosted, Google Drive (rclone), AWS S3
+# Suporta: Self-hosted, Google Drive (rclone), AWS S3/R2/MinIO
 # Uso: ./backup-destinos.sh [arquivo_backup.tar.gz] [--dest=DESTINO]
 #      DESTINO: self-hosted, google-drive, aws-s3, all
 ################################################################################
@@ -10,9 +10,28 @@ set -e
 
 LOG_PREFIX="[ Backup Upload ]"
 
+# Funções de log
 log() {
     echo "$LOG_PREFIX [ $1 ] $2"
 }
+log_info() {
+    echo "$LOG_PREFIX [ INFO ] $*"
+}
+log_success() {
+    echo "$LOG_PREFIX [ OK ] $*"
+}
+log_error() {
+    echo "$LOG_PREFIX [ ERRO ] $*"
+}
+log_warning() {
+    echo "$LOG_PREFIX [ AVISO ] $*"
+}
+
+# Carregar configurações de destino
+CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+fi
 
 # Verificar argumentos
 BACKUP_FILE=""
@@ -241,12 +260,29 @@ if [ "$UPLOAD_S3" = true ]; then
 
         # Se configuração existe, fazer upload
         if [ -f ~/.aws/credentials ]; then
-            read -p "$LOG_PREFIX [ INPUT ] Nome do bucket S3: " S3_BUCKET
-            read -p "$LOG_PREFIX [ INPUT ] Prefixo/pasta (padrão: backups/coolify): " S3_PREFIX
-            S3_PREFIX=${S3_PREFIX:-backups/coolify}
+            # Usar configurações salvas ou perguntar interativamente
+            if [ -z "$S3_BUCKET" ]; then
+                read -p "$LOG_PREFIX [ INPUT ] Nome do bucket S3: " S3_BUCKET
+            else
+                log_info "Usando bucket configurado: $S3_BUCKET"
+            fi
+
+            if [ -z "$S3_PREFIX" ]; then
+                read -p "$LOG_PREFIX [ INPUT ] Prefixo/pasta (padrão: backups/coolify): " S3_PREFIX
+                S3_PREFIX=${S3_PREFIX:-backups/coolify}
+            else
+                log_info "Usando prefixo configurado: $S3_PREFIX"
+            fi
+
+            # Montar comando com endpoint se configurado (R2, MinIO, etc)
+            AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\""
+            if [ -n "$S3_ENDPOINT" ]; then
+                AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\" --endpoint-url \"$S3_ENDPOINT\""
+                log_info "Usando endpoint customizado: $S3_ENDPOINT"
+            fi
 
             log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_PREFIX/..."
-            if aws s3 cp "$BACKUP_FILE" "s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME"; then
+            if eval $AWS_CMD; then
                 log_success "Upload para S3 concluído!"
 
                 # Configurar lifecycle policy (opcional)

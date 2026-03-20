@@ -19,6 +19,12 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
+# Carregar biblioteca de notificações
+source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
+
+# Marcar início para calcular duração
+BACKUP_START_TIME=$(date +%s)
+
 # Carregar configurações
 if [ -f "/opt/vpsguardian/config/config.env" ]; then
     source "/opt/vpsguardian/config/config.env" 2>/dev/null
@@ -61,6 +67,9 @@ log_info "Iniciado em: $(date '+%Y-%m-%d %H:%M:%S')"
 log_info "Destino: $UPLOAD_DEST"
 echo ""
 
+# Notificar início
+notify_backup_start "Databases (Dumps SQL)" "Destino: $UPLOAD_DEST | Coolify: ${BACKUP_INCLUDE_COOLIFY:-true}"
+
 ### ========== EXECUTAR DUMP ==========
 log_section "Criando Dumps SQL"
 
@@ -87,6 +96,7 @@ bash "$DUMP_SCRIPT" --target=local --auto $COOLIFY_FLAG
 
 if [ $? -ne 0 ]; then
     log_error "Falha ao criar dumps"
+    notify_backup_error "Databases" "Falha ao executar script de dump SQL"
     exit 1
 fi
 
@@ -218,17 +228,16 @@ echo ""
 log_success "Backup automático concluído com sucesso!"
 echo ""
 
-# Notificação (se configurado)
-if [ -n "${WEBHOOK_URL:-}" ]; then
-    MESSAGE="✅ Backup via dump concluído!
-Servidor: $(hostname)
-Lote: $(basename "$LATEST_BATCH")
-Tamanho: $BATCH_SIZE
-Destino: $UPLOAD_DEST"
+# Calcular duração
+BACKUP_END_TIME=$(date +%s)
+BACKUP_DURATION=$((BACKUP_END_TIME - BACKUP_START_TIME))
+BACKUP_DURATION_FMT=$(printf '%02d:%02d:%02d' $((BACKUP_DURATION/3600)) $((BACKUP_DURATION%3600/60)) $((BACKUP_DURATION%60)))
 
-    curl -X POST "$WEBHOOK_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"content\": \"$MESSAGE\"}" 2>/dev/null || true
-fi
+# Contar bancos de dados backupeados
+DB_COUNT=$(find "$LATEST_BATCH" -name "*.sql.gz" -o -name "*.gz" 2>/dev/null | wc -l)
+
+# Notificar sucesso com detalhes
+notify_backup_success "Databases (Dumps SQL)" "$BATCH_SIZE" "$BACKUP_DURATION_FMT" "$UPLOAD_DEST" \
+    "$DB_COUNT bancos de dados | Lote: $(basename "$LATEST_BATCH")"
 
 exit 0

@@ -9,9 +9,13 @@
 # Carregar bibliotecas compartilhadas
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/notificacoes.sh"
 
 # Inicializar script (cria diretórios, configura log)
 init_script
+
+# Marcar início para calcular duração
+BACKUP_START_TIME=$(date +%s)
 
 # Configurações (usa variáveis de config/default.conf)
 BACKUP_BASE_DIR="${COOLIFY_BACKUP_DIR:-/var/backups/vpsguardian/coolify}"
@@ -29,33 +33,15 @@ COOLIFY_SOURCE_DIR="$COOLIFY_DATA_DIR/source"
 COOLIFY_SSH_DIR="$COOLIFY_DATA_DIR/ssh/keys"
 COOLIFY_ENV_FILE="$COOLIFY_SOURCE_DIR/.env"
 
-# Notificações (configure conforme necessário)
-WEBHOOK_URL=""
-EMAIL=""
-
-################################################################################
-# FUNÇÕES
-################################################################################
-
-notificar() {
-    local mensagem="$1"
-
-    if [ -n "$EMAIL" ]; then
-        echo "$mensagem" | mail -s "Backup Coolify - $(hostname)" "$EMAIL"
-    fi
-
-    if [ -n "$WEBHOOK_URL" ]; then
-        curl -s -H "Content-Type: application/json" \
-             -d "{\"content\":\"$mensagem\"}" \
-             "$WEBHOOK_URL" > /dev/null 2>&1
-    fi
-}
 
 ################################################################################
 # INÍCIO DO BACKUP
 ################################################################################
 
 log_section "VPS Guardian - Backup Coolify"
+
+# Notificar início
+notify_backup_start "Coolify" "Iniciando backup de SSH keys, .env, certificados e banco de dados..."
 
 # Verificar se Coolify está instalado
 check_docker || exit 1
@@ -84,7 +70,7 @@ if [ $? -eq 0 ]; then
     log_success "Banco de dados backupeado: $DB_SIZE"
 else
     log_error "Falha ao fazer backup do banco de dados"
-    notificar "⚠️ Falha no backup do banco de dados Coolify em $(hostname)"
+    notify_backup_error "Coolify" "Falha ao criar dump do PostgreSQL"
 fi
 
 ################################################################################
@@ -342,7 +328,13 @@ Data: $(date '+%d/%m/%Y %H:%M')
 
 echo "$RELATORIO" | tee -a "$LOG_FILE"
 
-# Notificar sucesso
-notificar "✅ Backup do Coolify concluído em $(hostname). Tamanho: $COMPRESSED_SIZE"
+# Calcular duração
+BACKUP_END_TIME=$(date +%s)
+BACKUP_DURATION=$((BACKUP_END_TIME - BACKUP_START_TIME))
+BACKUP_DURATION_FMT=$(printf '%02d:%02d:%02d' $((BACKUP_DURATION/3600)) $((BACKUP_DURATION%3600/60)) $((BACKUP_DURATION%60)))
+
+# Notificar sucesso com detalhes
+notify_backup_success "Coolify" "$COMPRESSED_SIZE" "$BACKUP_DURATION_FMT" "Local: $BACKUP_BASE_DIR" \
+    "SSH Keys, .env, PostgreSQL, Nginx, Certificados SSL"
 
 exit 0

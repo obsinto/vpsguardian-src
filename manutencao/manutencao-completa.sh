@@ -6,13 +6,18 @@
 # Uso: Execute manualmente ou via cron
 ################################################################################
 
+# Carregar biblioteca de notificações
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
+
 # Configurações
-LOG_DIR="/var/log/manutencao"
+LOG_DIR="/var/log/vpsguardian"
 LOG_FILE="$LOG_DIR/manutencao.log"
-EMAIL="" # Deixe vazio para não enviar emails
-WEBHOOK_URL="" # Webhook Discord/Slack (opcional)
 DISCO_LIMITE=85 # Alerta se disco > 85%
 MANTER_KERNELS=2 # Quantos kernels manter
+
+# Marcar início para calcular duração
+MANUTENCAO_START_TIME=$(date +%s)
 
 # Cores para output (opcional, remova se der problema)
 RED='\033[0;31m'
@@ -40,22 +45,6 @@ log_warning() {
     echo -e "${YELLOW}[AVISO]${NC} $1" | tee -a "$LOG_FILE"
 }
 
-# Envia notificação (email ou webhook)
-notificar() {
-    local mensagem="$1"
-
-    # Email
-    if [ -n "$EMAIL" ]; then
-        echo "$mensagem" | mail -s "Manutenção VPS - $(hostname)" "$EMAIL"
-    fi
-
-    # Webhook (Discord/Slack)
-    if [ -n "$WEBHOOK_URL" ]; then
-        curl -s -H "Content-Type: application/json" \
-             -d "{\"content\":\"$mensagem\"}" \
-             "$WEBHOOK_URL" > /dev/null 2>&1
-    fi
-}
 
 # Calcula espaço livre
 espaco_livre() {
@@ -77,6 +66,9 @@ mkdir -p "$LOG_DIR"
 log "========================================"
 log "INICIANDO MANUTENÇÃO AUTOMATIZADA"
 log "========================================"
+
+# Notificar início
+notify_maintenance_start
 
 # Espaço inicial
 ESPACO_INICIAL=$(espaco_livre)
@@ -278,16 +270,16 @@ fi
 
 # Alerta se disco > limite
 if [ "$ESPACO_FINAL" -gt "$DISCO_LIMITE" ]; then
-    MENSAGEM="⚠️  ALERTA: Disco em ${ESPACO_FINAL}% no VPS $(hostname) (limite: ${DISCO_LIMITE}%)"
-    log_error "$MENSAGEM"
-    notificar "$MENSAGEM"
+    log_error "ALERTA: Disco em ${ESPACO_FINAL}% (limite: ${DISCO_LIMITE}%)"
+    DISCO_LIVRE=$(df -h / | awk 'NR==2 {print $4}')
+    DISCO_TOTAL=$(df -h / | awk 'NR==2 {print $2}')
+    notify_disk_alert "${ESPACO_FINAL}%" "$DISCO_LIVRE" "$DISCO_TOTAL"
 fi
 
 # Verificar se precisa reboot
 if [ -f /var/run/reboot-required ]; then
-    MENSAGEM="⚠️  Reboot necessário no VPS $(hostname) após atualizações"
-    log_warning "$MENSAGEM"
-    notificar "$MENSAGEM"
+    log_warning "Reboot necessário após atualizações"
+    send_discord_simple "⚠️ Reboot Necessário" "O servidor precisa ser reiniciado após atualizações de sistema." "warning"
 
     # DESCOMENTE para reboot automático (CUIDADO!)
     # log "Agendando reboot em 5 minutos..."
@@ -326,10 +318,14 @@ Data: $(date '+%d/%m/%Y %H:%M')
 
 echo "$RESUMO" | tee -a "$LOG_FILE"
 
-# Enviar notificação de sucesso
-if [ "$ESPACO_FINAL" -le "$DISCO_LIMITE" ]; then
-    notificar "✅ Manutenção concluída com sucesso no VPS $(hostname). Disco: ${ESPACO_FINAL}%"
-fi
+# Calcular duração
+MANUTENCAO_END_TIME=$(date +%s)
+MANUTENCAO_DURATION=$((MANUTENCAO_END_TIME - MANUTENCAO_START_TIME))
+MANUTENCAO_DURATION_FMT=$(printf '%02d:%02d:%02d' $((MANUTENCAO_DURATION/3600)) $((MANUTENCAO_DURATION%3600/60)) $((MANUTENCAO_DURATION%60)))
+
+# Notificar sucesso
+ACOES_REALIZADAS="Disco: ${ESPACO_INICIAL}% → ${ESPACO_FINAL}% | Docker: limpo | Logs: rotacionados"
+notify_maintenance_success "$MANUTENCAO_DURATION_FMT" "$ACOES_REALIZADAS"
 
 # Rotacionar log se muito grande (> 10MB)
 LOG_SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)

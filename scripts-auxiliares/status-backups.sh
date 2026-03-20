@@ -223,7 +223,7 @@ echo ""
 
 # Backup Databases
 echo -e "  ${BLUE}Backup de Bancos de Dados:${NC}"
-ULTIMO_LOTE=$(ls -td "$BACKUP_DIR/databases/lote-"* 2>/dev/null | head -1)
+ULTIMO_LOTE=$(ls -td "$BACKUP_DIR/databases/lote-"*/ 2>/dev/null | head -1 | sed 's:/$::')
 if [ -n "$ULTIMO_LOTE" ] && [ -d "$ULTIMO_LOTE" ]; then
     NOME=$(basename "$ULTIMO_LOTE")
     TAMANHO=$(du -sh "$ULTIMO_LOTE" | cut -f1)

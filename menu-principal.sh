@@ -301,42 +301,37 @@ show_backup_menu() {
     echo -e "       ${GRAY}(S3, Google Drive, servidor SSH)${NC}"
     echo -e "       ${GRAY}(AWS, Backblaze, rsync, rclone)${NC}"
     echo ""
-    echo -e "  ${MAGENTA}CONFIGURAÇÃO DE BACKUPS AUTOMÁTICOS${NC}"
-    echo -e "  ${GREEN}11${NC} → ⚙️  Configurar Destinos de Backup"
-    echo -e "       ${GRAY}(Local, Google Drive, S3, SSH)${NC}"
-    echo -e "       ${GRAY}(Define onde backups automáticos vão)${NC}"
-    echo ""
     echo -e "  ${MAGENTA}RESTAURAR BACKUPS${NC}"
-    echo -e "  ${GREEN}5${NC} → 📥 Restaurar Coolify de Backup Remoto"
-    echo -e "       ${GRAY}(Baixar de servidor SSH e restaurar)${NC}"
+    echo -e "  ${GREEN}5${NC} → 🔄 Restaurar Coolify Completo"
+    echo -e "       ${GRAY}(Instalação + dados do Coolify)${NC}"
+    echo -e "       ${GRAY}(Escolha origem: Local / S3 / Google Drive)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve instalação atual)${NC}"
     echo ""
-    echo -e "  ${GREEN}6${NC} → ☁️  Restaurar Coolify do S3"
-    echo -e "       ${GRAY}(Baixar de bucket AWS S3 e restaurar)${NC}"
-    echo -e "       ${GRAY}(⚠️  Requer AWS CLI configurado)${NC}"
-    echo ""
-    echo -e "  ${GREEN}7${NC} → 📂 Restaurar de Backup Local"
-    echo -e "       ${GRAY}(Restaurar de /var/backups/vpsguardian)${NC}"
-    echo -e "       ${GRAY}(Coolify, volumes ou bancos de dados)${NC}"
-    echo ""
-    echo -e "  ${GREEN}8${NC} → 🔄 Restaurar Volume Docker Específico"
-    echo -e "       ${GRAY}(Escolha backup e volume de destino)${NC}"
-    echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
-    echo ""
-    echo -e "  ${GREEN}9${NC} → 🗄️  Restaurar Dumps SQL de Bancos"
-    echo -e "       ${GRAY}(Local ou Remoto: S3/Google Drive/SSH)${NC}"
-    echo -e "       ${GRAY}(Controle total: tudo, tudo exceto Coolify, ou específico)${NC}"
+    echo -e "  ${GREEN}6${NC} → 🗄️  Restaurar Bancos de Dados"
+    echo -e "       ${GRAY}(Dumps SQL dos seus projetos)${NC}"
+    echo -e "       ${GRAY}(Escolha origem: Local / S3 / Google Drive / SSH)${NC}"
+    echo -e "       ${GRAY}(Controle: tudo, exceto Coolify, ou específico)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados dos bancos selecionados)${NC}"
     echo ""
+    echo -e "  ${GREEN}7${NC} → 📦 Restaurar Volume Docker"
+    echo -e "       ${GRAY}(Dados persistentes de containers)${NC}"
+    echo -e "       ${GRAY}(De backup local em /var/backups/vpsguardian)${NC}"
+    echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
+    echo ""
     echo -e "  ${MAGENTA}VALIDAÇÃO E DIAGNÓSTICO${NC}"
-    echo -e "  ${GREEN}10${NC} → 🏥 Validar Saúde dos Bancos de Dados"
+    echo -e "  ${GREEN}8${NC} → 🏥 Validar Saúde dos Bancos de Dados"
     echo -e "       ${GRAY}(Verificar integridade após restore)${NC}"
     echo -e "       ${GRAY}(Teste de conectividade e queries)${NC}"
     echo ""
-    echo -e "  ${GREEN}12${NC} → 📊 Ver Status dos Backups Automáticos"
+    echo -e "  ${GREEN}9${NC} → 📊 Ver Status dos Backups Automáticos"
     echo -e "       ${GRAY}(Destinos configurados, cron jobs, últimos backups)${NC}"
     echo ""
-    echo -e "  ${GREEN}13${NC} → 🚀 Executar Tarefas do Cron AGORA"
+    echo -e "  ${MAGENTA}CONFIGURAÇÃO${NC}"
+    echo -e "  ${GREEN}10${NC} → ⚙️  Configurar Destinos de Backup"
+    echo -e "       ${GRAY}(Local, Google Drive, S3, SSH)${NC}"
+    echo -e "       ${GRAY}(Define onde backups automáticos vão)${NC}"
+    echo ""
+    echo -e "  ${GREEN}11${NC} → 🚀 Executar Tarefas do Cron AGORA"
     echo -e "       ${GRAY}(Executa exatamente o que os crons fazem)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
@@ -568,132 +563,36 @@ handle_backup_menu() {
                 fi
                 ;;
             5)
-                # Confirmação crítica para Restaurar Coolify de SSH Remoto
+                # Restaurar Coolify Completo (unificado)
                 if confirm_critical \
-                    "📥 RESTAURAR COOLIFY DE BACKUP REMOTO (SSH)" \
-                    "Este script irá SOBRESCREVER a instalação atual do Coolify com dados\nde um backup remoto via SSH.\n\n${WHITE}O que será feito:${NC}\n  • Baixar backup do servidor remoto\n  • ${RED}PARAR${NC} todos os serviços do Coolify\n  • ${RED}SUBSTITUIR${NC} configurações atuais\n  • ${RED}SUBSTITUIR${NC} volumes e bancos de dados\n  • Reiniciar serviços com dados restaurados" \
-                    "${RED}⚠ TODOS OS DADOS ATUAIS DO COOLIFY SERÃO PERDIDOS!${NC}\n\n  • ${RED}Aplicações em execução${NC} → SERÃO PARADAS\n  • ${RED}Configurações atuais${NC} → SERÃO PERDIDAS\n  • ${RED}Bancos de dados${NC} → SERÃO SOBRESCRITOS\n  • ${RED}Volumes Docker${NC} → SERÃO SUBSTITUÍDOS\n\n${YELLOW}Tempo estimado:${NC} 10-30 minutos (depende do tamanho)" \
-                    "1. ${GREEN}Faça backup dos dados atuais${NC} antes de prosseguir\n2. ${GREEN}Verifique se tem o backup remoto${NC} disponível\n3. ${GREEN}Certifique-se${NC} de que é o backup correto\n4. ${GREEN}Avise usuários${NC} que haverá downtime\n5. ${YELLOW}Esta operação NÃO pode ser desfeita${NC}"; then
-                    run_script "$SCRIPT_DIR/backup/restaurar-coolify-remoto.sh" "Restaurar Coolify Remoto"
+                    "🔄 RESTAURAR COOLIFY COMPLETO" \
+                    "Este script irá SOBRESCREVER a instalação atual do Coolify.\n\n${WHITE}Você escolherá a origem:${NC}\n  • Backup Local\n  • AWS S3\n  • Google Drive\n\n${WHITE}O que será restaurado:${NC}\n  • Banco de dados do Coolify\n  • Chaves SSH\n  • Configurações (.env)\n  • Volumes (se disponíveis)" \
+                    "${RED}⚠ TODOS OS DADOS ATUAIS DO COOLIFY SERÃO PERDIDOS!${NC}\n\n  • ${RED}Aplicações em execução${NC} → SERÃO PARADAS\n  • ${RED}Configurações atuais${NC} → SERÃO PERDIDAS\n  • ${RED}Bancos de dados${NC} → SERÃO SOBRESCRITOS\n\n${YELLOW}Tempo estimado:${NC} 10-30 minutos" \
+                    "1. ${GREEN}Faça backup dos dados atuais${NC} antes de prosseguir\n2. ${GREEN}Verifique se tem o backup${NC} disponível\n3. ${GREEN}Avise usuários${NC} que haverá downtime"; then
+                    run_script "$SCRIPT_DIR/backup/restaurar-coolify.sh" "Restaurar Coolify"
                 fi
                 ;;
             6)
-                # Restaurar do S3
+                # Restaurar Bancos de Dados (unificado)
                 if confirm_critical \
-                    "☁️  RESTAURAR COOLIFY DO AWS S3" \
-                    "Este script irá baixar e restaurar backups do AWS S3.\n\n${WHITE}O que será feito:${NC}\n  • Conectar ao bucket S3 configurado\n  • Baixar backups do Coolify e volumes\n  • ${RED}PARAR${NC} todos os serviços do Coolify\n  • ${RED}SUBSTITUIR${NC} dados locais pelos do S3\n  • Reiniciar serviços" \
-                    "${RED}⚠ DADOS ATUAIS SERÃO SOBRESCRITOS!${NC}\n\n${YELLOW}Pré-requisitos:${NC}\n  • AWS CLI instalado (apt install awscli)\n  • Credenciais configuradas (aws configure)\n  • Acesso ao bucket S3" \
-                    "1. ${GREEN}Verifique se AWS CLI está configurado${NC}\n2. ${GREEN}Confirme o nome do bucket${NC}\n3. ${GREEN}Faça backup local${NC} antes de restaurar"; then
-                    echo ""
-                    read -p "Nome do bucket S3: " S3_BUCKET
-                    if [ -n "$S3_BUCKET" ]; then
-                        run_script "$SCRIPT_DIR/backup/restaurar-do-s3.sh" "Restaurar do S3" "--bucket=$S3_BUCKET"
-                    else
-                        echo -e "${RED}Bucket não informado${NC}"
-                        sleep 2
-                    fi
+                    "🗄️  RESTAURAR BANCOS DE DADOS" \
+                    "Restaurar dumps SQL dos seus projetos.\n\n${WHITE}Você escolherá a origem:${NC}\n  • Backup Local\n  • AWS S3\n  • Google Drive\n  • Servidor SSH\n\n${WHITE}Controle total no restore:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos" \
+                    "${RED}⚠ DADOS DOS BANCOS SERÃO SOBRESCRITOS!${NC}\n\n  • ${RED}Tabelas existentes${NC} → SERÃO SUBSTITUÍDAS\n  • ${YELLOW}Aplicações${NC} → PODEM TER DOWNTIME\n  • ${GREEN}Coolify-db${NC} → VOCÊ DECIDE se restaura" \
+                    "1. ${GREEN}Você terá menu interativo${NC} para escolher\n2. ${GREEN}Dumps do Coolify${NC} são destacados\n3. ${YELLOW}Recomendado${NC}: Restaurar tudo EXCETO Coolify"; then
+                    run_script "$SCRIPT_DIR/backup/restaurar-databases.sh" "Restaurar Bancos de Dados"
                 fi
                 ;;
             7)
-                # Restaurar de Backup Local
-                echo ""
-                echo -e "${CYAN}📂 RESTAURAR DE BACKUP LOCAL${NC}"
-                echo ""
-                echo "O que deseja restaurar?"
-                echo "  1) Coolify completo (DB + configs + volumes)"
-                echo "  2) Apenas volumes Docker"
-                echo "  3) Apenas bancos de dados (via dump SQL)"
-                echo "  0) Cancelar"
-                echo ""
-                read -p "Escolha: " restore_type
-
-                case $restore_type in
-                    1)
-                        if confirm_critical \
-                            "📂 RESTAURAR COOLIFY DE BACKUP LOCAL" \
-                            "Restaurar Coolify de backup local em /var/backups/vpsguardian" \
-                            "${RED}⚠ DADOS ATUAIS SERÃO SOBRESCRITOS!${NC}" \
-                            "Certifique-se de ter o backup correto"; then
-                            run_script "$SCRIPT_DIR/backup/restaurar-completo.sh" "Restaurar Coolify Local" "--local"
-                        fi
-                        ;;
-                    2)
-                        run_script "$SCRIPT_DIR/migrar/restore-volumes.sh" "Restaurar Volumes Local" "--all"
-                        ;;
-                    3)
-                        run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh" "Restaurar Dumps SQL"
-                        ;;
-                esac
-                ;;
-            8)
-                # Confirmação crítica para Restaurar Volume
+                # Restaurar Volume Docker Específico
                 if confirm_critical \
-                    "🔄 RESTAURAR VOLUME DOCKER ESPECÍFICO" \
-                    "Este script permite restaurar um volume Docker específico de um backup.\n\n${WHITE}O que será feito:${NC}\n  • Listar backups disponíveis\n  • Você escolherá qual volume restaurar\n  • ${YELLOW}PARAR${NC} containers que usam o volume\n  • ${RED}SUBSTITUIR${NC} dados do volume\n  • Reiniciar containers" \
-                    "${YELLOW}⚠ OS DADOS ATUAIS DO VOLUME SERÃO PERDIDOS!${NC}\n\n  • ${RED}Dados do volume${NC} → SERÃO SOBRESCRITOS\n  • ${YELLOW}Aplicações afetadas${NC} → PODEM TER DOWNTIME\n  • ${YELLOW}Configurações no volume${NC} → SERÃO RESTAURADAS\n\n${WHITE}Impacto por tipo de volume:${NC}\n  • ${RED}Volume de banco de dados${NC} → DADOS SUBSTITUÍDOS\n  • ${YELLOW}Volume de aplicação${NC} → CÓDIGO/ARQUIVOS RESTAURADOS\n  • ${YELLOW}Volume de configuração${NC} → SETTINGS REVERTIDOS" \
-                    "1. ${GREEN}Identifique qual volume${NC} precisa restaurar\n2. ${GREEN}Verifique se tem o backup${NC} deste volume\n3. ${GREEN}Pare aplicações críticas${NC} manualmente se necessário\n4. ${YELLOW}Considere fazer snapshot${NC} antes de restaurar"; then
-                    run_script "$SCRIPT_DIR/backup/restaurar-volume-interativo.sh" "Restaurar Volume Interativo"
+                    "📦 RESTAURAR VOLUME DOCKER" \
+                    "Restaurar dados persistentes de containers.\n\n${WHITE}O que será feito:${NC}\n  • Listar backups disponíveis\n  • Você escolherá qual volume restaurar\n  • ${YELLOW}PARAR${NC} containers que usam o volume\n  • ${RED}SUBSTITUIR${NC} dados do volume\n  • Reiniciar containers" \
+                    "${YELLOW}⚠ OS DADOS ATUAIS DO VOLUME SERÃO PERDIDOS!${NC}\n\n  • ${RED}Dados do volume${NC} → SERÃO SOBRESCRITOS\n  • ${YELLOW}Aplicações afetadas${NC} → PODEM TER DOWNTIME\n\n${WHITE}Impacto por tipo de volume:${NC}\n  • ${RED}Volume de banco de dados${NC} → DADOS SUBSTITUÍDOS\n  • ${YELLOW}Volume de aplicação${NC} → ARQUIVOS RESTAURADOS" \
+                    "1. ${GREEN}Identifique qual volume${NC} precisa restaurar\n2. ${GREEN}Verifique se tem o backup${NC} deste volume\n3. ${YELLOW}Considere fazer snapshot${NC} antes de restaurar"; then
+                    run_script "$SCRIPT_DIR/backup/restaurar-volume-interativo.sh" "Restaurar Volume"
                 fi
                 ;;
-            9)
-                # Restaurar Banco de Dados via Dump SQL
-                echo ""
-                echo -e "${CYAN}🗄️  RESTAURAR BANCO DE DADOS VIA DUMP SQL${NC}"
-                echo ""
-                echo "De onde deseja restaurar os dumps?"
-                echo "  1) Backup local (pasta com dumps)"
-                echo "  2) Origem remota (S3/Google Drive/SSH)"
-                echo "  0) Cancelar"
-                echo ""
-                read -p "Escolha (0-2): " restore_source_choice
-
-                case $restore_source_choice in
-                    1)
-                        # Restaurar de pasta local
-                        echo ""
-                        echo "Diretórios comuns com dumps:"
-                        echo "  1) /var/backups/vpsguardian/databases (padrão)"
-                        echo "  2) /root/database-dumps-migration"
-                        echo "  3) Outro diretório"
-                        echo ""
-                        read -p "Escolha (1-3): " dir_choice
-
-                        case $dir_choice in
-                            1) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
-                            2) DUMP_PATH="/root/database-dumps-migration" ;;
-                            3) read -p "Digite o caminho completo: " DUMP_PATH ;;
-                            *) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
-                        esac
-
-                        if [ -d "$DUMP_PATH" ]; then
-                            if confirm_critical \
-                                "🗄️  RESTAURAR DUMPS SQL LOCAIS" \
-                                "Restaurar dumps SQL da pasta: $DUMP_PATH\n\n${WHITE}Você terá controle total:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos" \
-                                "${RED}⚠ DADOS DO BANCO SERÃO SOBRESCRITOS!${NC}\n\n  • ${RED}Tabelas existentes${NC} → SERÃO SUBSTITUÍDAS\n  • ${YELLOW}Aplicações${NC} → PODEM TER DOWNTIME\n  • ${GREEN}Coolify-db${NC} → VOCÊ DECIDE se restaura" \
-                                "1. ${GREEN}Você terá menu interativo${NC} para escolher o que restaurar\n2. ${GREEN}Dumps do Coolify${NC} são destacados visualmente\n3. ${YELLOW}Recomendado${NC}: Restaurar tudo EXCETO Coolify"; then
-                                run_script "$SCRIPT_DIR/migrar/restore-databases-dump.sh" "Restaurar Dumps SQL" "--dir=$DUMP_PATH"
-                            fi
-                        else
-                            echo -e "${RED}Diretório não encontrado: $DUMP_PATH${NC}"
-                            sleep 2
-                        fi
-                        ;;
-                    2)
-                        # Restaurar de origem remota
-                        if confirm_critical \
-                            "☁️  RESTAURAR DUMPS DE ORIGEM REMOTA" \
-                            "Baixar dumps de S3/Google Drive/SSH e restaurar\n\n${WHITE}O que será feito:${NC}\n  • Listar lotes disponíveis na origem\n  • Baixar lote selecionado\n  • ${GREEN}Menu interativo${NC} de restore\n  • Você escolhe o que restaurar" \
-                            "${WHITE}Controle total no restore:${NC}\n  • Restaurar TUDO (incluindo Coolify)\n  • Restaurar TUDO EXCETO Coolify ⭐\n  • Escolher dumps específicos\n\n${YELLOW}Tempo de download:${NC}\n  • Depende do tamanho e velocidade da internet" \
-                            "1. ${GREEN}Origem será perguntada${NC} (S3, Drive ou SSH)\n2. ${GREEN}Você escolhe qual lote${NC} baixar\n3. ${GREEN}Menu completo de opções${NC} de restore"; then
-                            run_script "$SCRIPT_DIR/migrar/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
-                        fi
-                        ;;
-                    0)
-                        continue
-                        ;;
-                esac
-                ;;
-            10)
+            8)
                 # Validar Saúde dos Bancos
                 if confirm "Verificar saúde de todos os bancos de dados?"; then
                     clear_screen
@@ -722,17 +621,17 @@ handle_backup_menu() {
                     pause
                 fi
                 ;;
-            11)
+            9)
+                # Ver Status dos Backups Automáticos
+                run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
+                ;;
+            10)
                 # Configurar Destinos de Backup
                 if confirm "Configurar destinos de backup automático (Local, Google Drive, S3, SSH)?"; then
                     run_script "$SCRIPT_DIR/backup/configurar-backup-destinos.sh" "Configurar Destinos de Backup"
                 fi
                 ;;
-            12)
-                # Ver Status dos Backups Automáticos
-                run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
-                ;;
-            13)
+            11)
                 # Executar Backup Completo AGORA
                 run_script "$SCRIPT_DIR/scripts-auxiliares/backup-completo-agora.sh" "Backup Completo"
                 ;;

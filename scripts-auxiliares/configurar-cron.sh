@@ -479,6 +479,7 @@ crontab -l 2>/dev/null | grep -v "vpsguardian.*backup-coolify.sh" | \
     grep -v "vpsguardian.*backup-destinos.sh" | \
     grep -v "vpsguardian.*limpar-backups-antigos.sh" | \
     grep -v "vpsguardian.*backup-database-volumes.sh" | \
+    grep -v "vpsguardian.*migrar/backup-volumes.sh" | \
     grep -v "logrotate" > "$TEMP_CRON" || true
 
 # Adicionar cabeçalho
@@ -524,14 +525,14 @@ fi
 if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
         cat >> "$TEMP_CRON" << EOF
-# Backup de volumes das aplicações (diário às $VOLUMES_BACKUP_TIME)
-$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * * BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes $INSTALL_ROOT/migrar/backup-database-volumes.sh >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
+# Backup de volumes das aplicações (diário às $VOLUMES_BACKUP_TIME) - estratégia double-check
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * * $INSTALL_ROOT/migrar/backup-volumes.sh --auto --all --output=/var/backups/vpsguardian/volumes --strategy=double-check >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
 
 EOF
     else
         cat >> "$TEMP_CRON" << EOF
-# Backup de volumes das aplicações (semanal ${VOLUMES_BACKUP_DAY}=Dia da semana, $VOLUMES_BACKUP_TIME)
-$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * $VOLUMES_BACKUP_DAY BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes $INSTALL_ROOT/migrar/backup-database-volumes.sh >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
+# Backup de volumes das aplicações (semanal ${VOLUMES_BACKUP_DAY}=Dia da semana, $VOLUMES_BACKUP_TIME) - estratégia double-check
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * $VOLUMES_BACKUP_DAY $INSTALL_ROOT/migrar/backup-volumes.sh --auto --all --output=/var/backups/vpsguardian/volumes --strategy=double-check >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
 
 EOF
     fi
@@ -650,7 +651,7 @@ log "INFO" "========== VERIFICANDO CONFIGURAÇÃO =========="
 echo ""
 
 log "INFO" "Cron jobs instalados:"
-crontab -l | grep -E "(backup-coolify|backup-databases|backup-database-volumes|manutencao-completa|alerta-disco|backup-destinos|limpar-backups-antigos|logrotate)" | while read -r line; do
+crontab -l | grep -E "(backup-coolify|backup-databases|backup-volumes|manutencao-completa|alerta-disco|backup-destinos|limpar-backups-antigos|logrotate)" | while read -r line; do
     echo "  ✓ $(echo "$line" | sed 's|/opt/vpsguardian/[^ ]*/||g')"
 done
 

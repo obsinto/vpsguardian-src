@@ -303,8 +303,8 @@ fi
 log_info "Launching backup script..."
 echo ""
 
-# Executar backup-volumes.sh em modo all
-"$BACKUP_SCRIPT" --all --output="$LOCAL_BACKUP_DIR"
+# Executar backup-volumes.sh em modo migração (para containers para integridade)
+"$BACKUP_SCRIPT" --all --output="$LOCAL_BACKUP_DIR" --strategy=slow-shutdown
 
 BACKUP_EXIT_CODE=$?
 

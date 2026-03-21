@@ -1,56 +1,43 @@
 #!/bin/bash
 ################################################################################
 # Script: backup-volumes.sh
-# Propósito: Backup seguro de volumes Docker com "Desligamento Perfeito" para DBs
-# Uso: ./backup-volumes.sh [--all] [--output=DIR] [--no-restart]
+# Propósito: Backup unificado de volumes Docker com estratégias inteligentes
+# Uso: ./backup-volumes.sh [--all] [--output=DIR] [--auto] [--strategy=MODE]
+#
+# Estratégias:
+#   slow-shutdown  - Para containers antes do backup (mais seguro, causa downtime)
+#   double-check   - Dump SQL + Snapshot sem parar (para cron, sem downtime)
+#
+# Versão: 3.0.0 - Unificado (backup-volumes.sh + backup-database-volumes.sh)
 ################################################################################
 
-set -euo pipefail
-
-# Cores para melhor visualização
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-LOG_PREFIX="[ Volume Backup Agent ]"
-
-### ========== FUNÇÕES DE LOG ==========
-
-log_info() {
-    echo -e "${BLUE}$LOG_PREFIX${NC} [ INFO ] $1"
+# Carregar bibliotecas compartilhadas
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
+    # Fallback se bibliotecas não estiverem disponíveis
+    log_info() { echo "[ INFO ] $*"; }
+    log_success() { echo "[ OK ] $*"; }
+    log_error() { echo "[ ERRO ] $*"; }
+    log_warning() { echo "[ AVISO ] $*"; }
+    log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
-log_success() {
-    echo -e "${GREEN}$LOG_PREFIX${NC} [ ✓ ] $1"
-}
+# Carregar notificações se disponível
+source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
 
-log_error() {
-    echo -e "${RED}$LOG_PREFIX${NC} [ ✗ ] $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}$LOG_PREFIX${NC} [ ⚠ ] $1"
-}
-
-log_section() {
-    echo ""
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}  $1${NC}"
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-    echo ""
-}
+# Carregar biblioteca de retenção se disponível
+source "$SCRIPT_DIR/../lib/backup-retention.sh" 2>/dev/null || true
 
 ### ========== CONFIGURAÇÃO ==========
-
 BACKUP_ALL=false
-OUTPUT_DIR="/root/volume-backups"
+OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-/var/backups/vpsguardian/volumes}"
+AUTO_MODE=false
 AUTO_RESTART=true
+STRATEGY="double-check"  # Padrão: double-check (mais moderno)
 BATCH_ID=$(date +%Y%m%d_%H%M%S)
+DRY_RUN=false
 
-# Parse argumentos
+### ========== PARSE ARGUMENTOS ==========
 while [[ $# -gt 0 ]]; do
     case $1 in
         --all)
@@ -65,465 +52,661 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        --auto|--cron)
+            AUTO_MODE=true
+            shift
+            ;;
         --no-restart)
             AUTO_RESTART=false
             shift
             ;;
+        --strategy=*)
+            STRATEGY="${1#*=}"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --all              Backup all Docker volumes"
-            echo "  --output=DIR       Output directory (default: /root/volume-backups)"
-            echo "  --no-restart       Don't restart containers after backup"
-            echo "  -h, --help         Show this help"
-            echo ""
-            echo "Examples:"
-            echo "  $0 --all"
-            echo "  $0 --all --output=/backups --no-restart"
+            cat << 'EOF'
+BACKUP DE VOLUMES DOCKER - VPS Guardian
+
+USO:
+  ./backup-volumes.sh [OPÇÕES]
+
+OPÇÕES:
+  --all                  Backup de TODOS os volumes Docker
+  --output=DIR           Diretório de saída (padrão: /var/backups/vpsguardian/volumes)
+  --auto, --cron         Modo automático sem confirmações (para cron)
+  --no-restart           Não reiniciar containers após backup (só slow-shutdown)
+  --strategy=MODE        Estratégia de backup:
+                           slow-shutdown  Para containers antes (mais seguro)
+                           double-check   Dump SQL + Snapshot (padrão, sem downtime)
+  --dry-run              Simular sem executar
+  -h, --help             Mostrar esta ajuda
+
+ESTRATÉGIAS:
+
+  slow-shutdown (recomendado para migração):
+    1. Configura innodb_fast_shutdown=0 (MySQL/MariaDB)
+    2. Executa CHECKPOINT (PostgreSQL)
+    3. Para containers graciosamente
+    4. Faz backup dos volumes
+    5. Reinicia containers (opcional)
+
+    Vantagem: Dados 100% consistentes
+    Desvantagem: Downtime durante backup
+
+  double-check (recomendado para cron):
+    1. Faz dump SQL (MySQL, PostgreSQL, MongoDB)
+    2. Faz snapshot do volume (sem parar container)
+    3. Mantém ambos como redundância
+
+    Vantagem: Sem downtime
+    Desvantagem: Snapshot pode ter transações pendentes
+
+EXEMPLOS:
+  # Backup interativo de todos os volumes (slow-shutdown)
+  ./backup-volumes.sh --all --strategy=slow-shutdown
+
+  # Backup automático para cron (double-check)
+  ./backup-volumes.sh --all --auto
+
+  # Backup sem reiniciar containers
+  ./backup-volumes.sh --all --strategy=slow-shutdown --no-restart
+
+  # Backup em diretório específico
+  ./backup-volumes.sh --all --output=/mnt/backups
+
+EOF
             exit 0
             ;;
         *)
-            log_error "Unknown option: $1"
-            exit 1
+            log_error "Opção desconhecida: $1"
+            log_info "Use --help para ver as opções disponíveis"
+            exit 2
             ;;
     esac
 done
 
-### ========== APRESENTAÇÃO ==========
-echo ""
-echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}                                                               ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}        ${GREEN}🔒 SAFE DOCKER VOLUME BACKUP AGENT 🔒${NC}             ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}          ${YELLOW}Estratégia do \"Desligamento Perfeito\"${NC}             ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}                                                               ${CYAN}║${NC}"
-echo -e "${CYAN}╚═══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
+# Validar estratégia
+if [[ ! "$STRATEGY" =~ ^(slow-shutdown|double-check)$ ]]; then
+    log_error "Estratégia inválida: $STRATEGY"
+    log_info "Use: slow-shutdown ou double-check"
+    exit 2
+fi
 
-log_info "Este script implementa a técnica de 'Slow Shutdown' para bancos de dados"
-log_info "Garante integridade total dos dados durante backup de volumes"
-echo ""
-
-### ========== CRIAR DIRETÓRIO DE BACKUP ==========
-mkdir -p "$OUTPUT_DIR"
-log_success "Diretório de backup: $OUTPUT_DIR"
-log_info "Batch ID: $BATCH_ID"
-echo ""
-
-### ========== DETECTAR CONTAINERS DE BANCO DE DADOS ==========
-log_section "DETECÇÃO DE BANCOS DE DADOS"
-
+### ========== ARRAYS E VARIÁVEIS GLOBAIS ==========
 declare -A DB_CONTAINERS
 declare -A DB_TYPES
 declare -A DB_VOLUMES
 declare -A DB_WAS_RUNNING
+declare -A DB_CREDENTIALS
 
-# Detectar MySQL/MariaDB
-log_info "Procurando containers MySQL/MariaDB..."
-MYSQL_CONTAINERS=$(docker ps --filter "ancestor=mysql" --filter "ancestor=mariadb" --format "{{.Names}}" 2>/dev/null || true)
-MYSQL_BY_NAME=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -iE "mysql|mariadb" || true)
-ALL_MYSQL=$(echo -e "$MYSQL_CONTAINERS\n$MYSQL_BY_NAME" | sort -u | grep -v "^$" || true)
+SUCCESSFUL_BACKUPS=0
+FAILED_BACKUPS=0
 
-for container in $ALL_MYSQL; do
-    if [ -n "$container" ]; then
-        IMAGE=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
-        if echo "$IMAGE" | grep -qE "mysql|mariadb"; then
+### ========== FUNÇÕES DE DETECÇÃO ==========
+
+# Detecta tipo de banco de dados por imagem Docker
+detect_database_type() {
+    local container_id="$1"
+    local image=$(docker inspect --format='{{.Config.Image}}' "$container_id" 2>/dev/null)
+
+    if [[ "$image" =~ mysql|mariadb ]]; then
+        echo "mysql"
+    elif [[ "$image" =~ postgres|postgresql ]]; then
+        echo "postgres"
+    elif [[ "$image" =~ mongo ]]; then
+        echo "mongodb"
+    elif [[ "$image" =~ redis ]]; then
+        echo "redis"
+    else
+        echo "unknown"
+    fi
+}
+
+# Obtém credenciais de banco de dados de variáveis de ambiente
+get_db_credentials() {
+    local container_id="$1"
+    local db_type="$2"
+
+    local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container_id" 2>/dev/null)
+
+    case "$db_type" in
+        mysql)
+            local root_pass=$(echo "$env_vars" | grep -E '^(MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD)=' | head -1 | cut -d'=' -f2-)
+            local db_name=$(echo "$env_vars" | grep -E '^MYSQL_DATABASE=' | cut -d'=' -f2)
+            echo "root:${root_pass}:${db_name:-all}"
+            ;;
+        postgres)
+            local pg_pass=$(echo "$env_vars" | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2)
+            local pg_user=$(echo "$env_vars" | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
+            local pg_db=$(echo "$env_vars" | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
+            echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+            ;;
+        mongodb)
+            local mongo_pass=$(echo "$env_vars" | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2)
+            local mongo_user=$(echo "$env_vars" | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2)
+            echo "${mongo_user:-root}:${mongo_pass}:admin"
+            ;;
+        *)
+            echo ":::"
+            ;;
+    esac
+}
+
+# Verifica se container está rodando
+is_container_running() {
+    local container_id="$1"
+    local state=$(docker inspect --format='{{.State.Status}}' "$container_id" 2>/dev/null)
+    [ "$state" = "running" ]
+}
+
+# Lista containers que usam um volume
+get_containers_using_volume() {
+    local volume_name="$1"
+    docker ps -a --filter "volume=${volume_name}" --format '{{.ID}}:{{.Names}}:{{.State}}' 2>/dev/null
+}
+
+### ========== FUNÇÕES DE DUMP SQL ==========
+
+dump_mysql() {
+    local container_id="$1"
+    local output_file="$2"
+    local credentials="$3"
+
+    local user=$(echo "$credentials" | cut -d':' -f1)
+    local password=$(echo "$credentials" | cut -d':' -f2)
+    local database=$(echo "$credentials" | cut -d':' -f3)
+
+    log_info "  Executando mysqldump..."
+
+    local dump_opts="--single-transaction --quick --lock-tables=false"
+
+    if [ "$database" = "all" ]; then
+        docker exec "$container_id" mysqldump -u "$user" -p"$password" --all-databases $dump_opts > "$output_file" 2>/dev/null
+    else
+        docker exec "$container_id" mysqldump -u "$user" -p"$password" $dump_opts "$database" > "$output_file" 2>/dev/null
+    fi
+}
+
+dump_postgres() {
+    local container_id="$1"
+    local output_file="$2"
+    local credentials="$3"
+
+    local user=$(echo "$credentials" | cut -d':' -f1)
+    local password=$(echo "$credentials" | cut -d':' -f2)
+    local database=$(echo "$credentials" | cut -d':' -f3)
+
+    log_info "  Executando pg_dump..."
+
+    docker exec -e PGPASSWORD="$password" "$container_id" pg_dump \
+        -U "$user" -d "$database" --clean --if-exists > "$output_file" 2>/dev/null
+}
+
+dump_mongodb() {
+    local container_id="$1"
+    local output_dir="$2"
+    local credentials="$3"
+
+    local user=$(echo "$credentials" | cut -d':' -f1)
+    local password=$(echo "$credentials" | cut -d':' -f2)
+
+    log_info "  Executando mongodump..."
+
+    mkdir -p "$output_dir"
+
+    docker exec "$container_id" mongodump \
+        --username="$user" --password="$password" \
+        --authenticationDatabase=admin --out=/tmp/mongodump >/dev/null 2>&1
+
+    if [ $? -eq 0 ]; then
+        docker cp "$container_id:/tmp/mongodump/." "$output_dir/" >/dev/null 2>&1
+        docker exec "$container_id" rm -rf /tmp/mongodump >/dev/null 2>&1
+        return 0
+    fi
+    return 1
+}
+
+### ========== FUNÇÕES DE BACKUP ==========
+
+# Detectar todos os bancos de dados
+detect_databases() {
+    log_section "Detectando Bancos de Dados"
+
+    # MySQL/MariaDB
+    log_info "Procurando MySQL/MariaDB..."
+    local mysql_containers=$(docker ps --format "{{.Names}}" 2>/dev/null | while read name; do
+        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        if [[ "$image" =~ mysql|mariadb ]]; then
+            echo "$name"
+        fi
+    done)
+
+    for container in $mysql_containers; do
+        if [ -n "$container" ]; then
             DB_CONTAINERS[$container]=1
-            if echo "$IMAGE" | grep -q "mariadb"; then
+            local image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
+            if [[ "$image" =~ mariadb ]]; then
                 DB_TYPES[$container]="mariadb"
             else
                 DB_TYPES[$container]="mysql"
             fi
-
-            # Detectar volumes
-            VOLUMES=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
-            DB_VOLUMES[$container]="$VOLUMES"
-
+            DB_VOLUMES[$container]=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
+            DB_CREDENTIALS[$container]=$(get_db_credentials "$container" "mysql")
             log_success "Detectado: $container (${DB_TYPES[$container]})"
-            [ -n "$VOLUMES" ] && log_info "  Volumes: $VOLUMES"
         fi
-    fi
-done
+    done
 
-# Detectar PostgreSQL
-log_info "Procurando containers PostgreSQL..."
-PG_CONTAINERS=$(docker ps --filter "ancestor=postgres" --format "{{.Names}}" 2>/dev/null || true)
-PG_BY_NAME=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -iE "postgres|pg" || true)
-ALL_PG=$(echo -e "$PG_CONTAINERS\n$PG_BY_NAME" | sort -u | grep -v "^$" || true)
+    # PostgreSQL
+    log_info "Procurando PostgreSQL..."
+    local pg_containers=$(docker ps --format "{{.Names}}" 2>/dev/null | while read name; do
+        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        if [[ "$image" =~ postgres ]]; then
+            echo "$name"
+        fi
+    done)
 
-for container in $ALL_PG; do
-    if [ -n "$container" ]; then
-        IMAGE=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
-        if echo "$IMAGE" | grep -q "postgres"; then
+    for container in $pg_containers; do
+        if [ -n "$container" ]; then
             DB_CONTAINERS[$container]=1
             DB_TYPES[$container]="postgres"
-
-            VOLUMES=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
-            DB_VOLUMES[$container]="$VOLUMES"
-
+            DB_VOLUMES[$container]=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
+            DB_CREDENTIALS[$container]=$(get_db_credentials "$container" "postgres")
             log_success "Detectado: $container (postgres)"
-            [ -n "$VOLUMES" ] && log_info "  Volumes: $VOLUMES"
         fi
+    done
+
+    # MongoDB
+    log_info "Procurando MongoDB..."
+    local mongo_containers=$(docker ps --format "{{.Names}}" 2>/dev/null | while read name; do
+        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        if [[ "$image" =~ mongo ]]; then
+            echo "$name"
+        fi
+    done)
+
+    for container in $mongo_containers; do
+        if [ -n "$container" ]; then
+            DB_CONTAINERS[$container]=1
+            DB_TYPES[$container]="mongodb"
+            DB_VOLUMES[$container]=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
+            DB_CREDENTIALS[$container]=$(get_db_credentials "$container" "mongodb")
+            log_success "Detectado: $container (mongodb)"
+        fi
+    done
+
+    # Redis
+    log_info "Procurando Redis..."
+    local redis_containers=$(docker ps --format "{{.Names}}" 2>/dev/null | while read name; do
+        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
+        if [[ "$image" =~ redis ]]; then
+            echo "$name"
+        fi
+    done)
+
+    for container in $redis_containers; do
+        if [ -n "$container" ]; then
+            DB_CONTAINERS[$container]=1
+            DB_TYPES[$container]="redis"
+            DB_VOLUMES[$container]=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container" 2>/dev/null)
+            log_success "Detectado: $container (redis)"
+        fi
+    done
+
+    local db_count=${#DB_CONTAINERS[@]}
+    log_info "Total de bancos detectados: $db_count"
+}
+
+# Estratégia Slow Shutdown
+strategy_slow_shutdown() {
+    local container="$1"
+    local db_type="${DB_TYPES[$container]}"
+
+    log_info "Preparando slow shutdown: $container ($db_type)"
+
+    # Verificar se está rodando
+    if ! is_container_running "$container"; then
+        log_info "  Container já estava parado"
+        DB_WAS_RUNNING[$container]="false"
+        return 0
     fi
-done
 
-# Contar bancos detectados (protegido contra array vazio)
-if [ -v DB_CONTAINERS ] && [ ${#DB_CONTAINERS[@]} -gt 0 ]; then
-    DB_COUNT=${#DB_CONTAINERS[@]}
-else
-    DB_COUNT=0
-fi
-log_info "Total de bancos de dados detectados: $DB_COUNT"
-echo ""
+    DB_WAS_RUNNING[$container]="true"
 
-### ========== PREPARAÇÃO: DESLIGAMENTO PERFEITO ==========
+    case "$db_type" in
+        mysql|mariadb)
+            log_info "  Configurando innodb_fast_shutdown=0..."
+            local creds="${DB_CREDENTIALS[$container]}"
+            local password=$(echo "$creds" | cut -d':' -f2)
 
-if [ $DB_COUNT -gt 0 ]; then
-    log_section "PREPARAÇÃO: DESLIGAMENTO PERFEITO"
+            if [ -n "$password" ]; then
+                docker exec "$container" mysql -u root -p"$password" \
+                    -e "SET GLOBAL innodb_fast_shutdown = 0;" 2>/dev/null
+                if [ $? -eq 0 ]; then
+                    log_success "  innodb_fast_shutdown=0 configurado"
+                else
+                    log_warning "  Falha ao configurar innodb_fast_shutdown"
+                fi
+            fi
+            ;;
+        postgres)
+            log_info "  Executando CHECKPOINT..."
+            docker exec "$container" psql -U postgres -c "CHECKPOINT;" 2>/dev/null || \
+                log_warning "  Falha ao executar checkpoint"
+            log_success "  PostgreSQL checkpoint executado"
+            ;;
+        redis)
+            log_info "  Executando BGSAVE..."
+            docker exec "$container" redis-cli BGSAVE 2>/dev/null || true
+            sleep 2
+            ;;
+    esac
 
-    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}║${NC}  ${GREEN}Estratégia do \"Desligamento Perfeito\"${NC}                      ${YELLOW}║${NC}"
-    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo "  Para garantir integridade dos dados, vamos:"
-    echo ""
-    echo "  1️⃣  Forçar flush de buffers no MySQL/MariaDB (innodb_fast_shutdown=0)"
-    echo "  2️⃣  Executar checkpoint no PostgreSQL"
-    echo "  3️⃣  Parar containers graciosamente (tempo para fechar)"
-    echo "  4️⃣  Aguardar confirmação de parada completa"
-    echo "  5️⃣  Fazer backup dos volumes com dados 'limpos'"
-    if [ "$AUTO_RESTART" = true ]; then
-        echo "  6️⃣  Reiniciar containers automaticamente"
+    # Parar container graciosamente
+    log_info "  Parando container (timeout: 60s)..."
+    docker stop -t 60 "$container" >/dev/null 2>&1
+
+    if ! docker ps --filter "name=^${container}$" --format "{{.Names}}" | grep -q "^${container}$"; then
+        log_success "  Container parado com sucesso"
+    else
+        log_error "  Falha ao parar container"
+        return 1
     fi
-    echo ""
-    echo -e "${GREEN}  ✅ Sem corrupção de redo logs${NC}"
-    echo -e "${GREEN}  ✅ Sem transações pendentes${NC}"
-    echo -e "${GREEN}  ✅ Volumes prontos para migração${NC}"
-    echo ""
+}
 
-    read -p "Continuar com Desligamento Perfeito? (yes/no): " CONFIRM
+# Backup de volume individual
+backup_volume() {
+    local volume_name="$1"
+    local is_database="$2"
+    local db_type="$3"
+    local container_id="$4"
 
-    if [ "$CONFIRM" != "yes" ]; then
-        log_info "Operação cancelada pelo usuário"
-        exit 0
+    log_info "Backup: $volume_name"
+
+    # Verificar se volume existe
+    if ! docker volume inspect "$volume_name" >/dev/null 2>&1; then
+        log_error "  Volume não existe: $volume_name"
+        return 1
     fi
 
-    echo ""
+    if [ "$DRY_RUN" = true ]; then
+        log_info "  [DRY-RUN] Simulando backup..."
+        return 0
+    fi
 
-    ### ========== FASE 1: SLOW SHUTDOWN ==========
-    log_section "FASE 1: SLOW SHUTDOWN (Preparação)"
+    local dump_success=false
+    local volume_success=false
 
-    for container in "${!DB_CONTAINERS[@]}"; do
-        DB_TYPE="${DB_TYPES[$container]}"
+    # Double-Check: Dump SQL primeiro (se aplicável)
+    if [ "$STRATEGY" = "double-check" ] && [ "$is_database" = true ] && [ -n "$container_id" ]; then
+        if is_container_running "$container_id"; then
+            local credentials="${DB_CREDENTIALS[$container_id]}"
+            local dump_file="$OUTPUT_DIR/${volume_name}-dump-${BATCH_ID}.sql"
 
-        log_info "Preparando: $container ($DB_TYPE)"
-
-        # Verificar se está rodando
-        IS_RUNNING=$(docker inspect --format='{{.State.Running}}' "$container" 2>/dev/null)
-        DB_WAS_RUNNING[$container]=$IS_RUNNING
-
-        if [ "$IS_RUNNING" = "true" ]; then
-            case "$DB_TYPE" in
+            case "$db_type" in
                 mysql|mariadb)
-                    log_info "  Configurando innodb_fast_shutdown=0 (flush completo)..."
-
-                    # Detectar senha do MySQL/MariaDB das variáveis de ambiente
-                    MYSQL_ROOT_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MYSQL_ROOT_PASSWORD=' | cut -d'=' -f2-)
-                    MARIADB_ROOT_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MARIADB_ROOT_PASSWORD=' | cut -d'=' -f2-)
-
-                    # Usar a senha que foi encontrada
-                    DB_PASSWORD="${MYSQL_ROOT_PASSWORD:-$MARIADB_ROOT_PASSWORD}"
-
-                    if [ -n "$DB_PASSWORD" ]; then
-                        log_info "  ✓ Senha MySQL detectada (via MYSQL_ROOT_PASSWORD ou MARIADB_ROOT_PASSWORD)"
-
-                        # Tentar com senha e capturar erro
-                        DB_ERROR=$(docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SET GLOBAL innodb_fast_shutdown = 0;\"" 2>&1)
-                        DB_EXIT_CODE=$?
-
-                        if [ $DB_EXIT_CODE -eq 0 ]; then
-                            log_success "  ✅ innodb_fast_shutdown=0 configurado com sucesso"
-
-                            # Verificar se foi aplicado
-                            CURRENT_VALUE=$(docker exec "$container" sh -c "mysql -u root -p'$DB_PASSWORD' -e \"SHOW VARIABLES LIKE 'innodb_fast_shutdown';\"" 2>/dev/null | grep innodb_fast_shutdown | awk '{print $2}')
-                            log_info "  Valor atual de innodb_fast_shutdown: $CURRENT_VALUE"
-                        else
-                            log_warning "  ⚠️  Falha ao configurar innodb_fast_shutdown"
-                            log_warning "  Erro: $DB_ERROR"
-                            log_warning "  Continuando sem slow shutdown (backup pode ter redo logs inconsistentes)"
-                        fi
-                    else
-                        log_warning "  ⚠️  Senha MySQL não detectada nas variáveis de ambiente"
-                        log_info "  Tentando sem senha (caso raro)..."
-
-                        # Tentar sem senha (caso raro)
-                        DB_ERROR=$(docker exec "$container" sh -c 'mysql -u root -e "SET GLOBAL innodb_fast_shutdown = 0;"' 2>&1)
-                        DB_EXIT_CODE=$?
-
-                        if [ $DB_EXIT_CODE -eq 0 ]; then
-                            log_success "  ✅ innodb_fast_shutdown=0 configurado sem senha"
-                        else
-                            log_error "  ❌ Não foi possível configurar innodb_fast_shutdown"
-                            log_error "  Erro: $DB_ERROR"
-                            log_error "  ATENÇÃO: Backup será feito SEM slow shutdown!"
-                            log_error "  Risco: Redo logs podem estar inconsistentes após migração"
-                        fi
+                    if dump_mysql "$container_id" "$dump_file" "$credentials"; then
+                        dump_success=true
+                        local size=$(du -h "$dump_file" 2>/dev/null | cut -f1)
+                        log_success "  Dump SQL: $size"
                     fi
-
-                    log_success "  MySQL/MariaDB preparado para shutdown"
                     ;;
-
                 postgres)
-                    log_info "  Executando checkpoint no PostgreSQL..."
-                    docker exec "$container" psql -U postgres -c "CHECKPOINT;" 2>/dev/null || \
-                    log_warning "  Não foi possível executar checkpoint (pode precisar de credenciais)"
-
-                    log_success "  PostgreSQL checkpoint executado"
+                    if dump_postgres "$container_id" "$dump_file" "$credentials"; then
+                        dump_success=true
+                        local size=$(du -h "$dump_file" 2>/dev/null | cut -f1)
+                        log_success "  Dump SQL: $size"
+                    fi
+                    ;;
+                mongodb)
+                    local mongo_dir="$OUTPUT_DIR/${volume_name}-mongodump-${BATCH_ID}"
+                    if dump_mongodb "$container_id" "$mongo_dir" "$credentials"; then
+                        tar -czf "$OUTPUT_DIR/${volume_name}-mongodump-${BATCH_ID}.tar.gz" \
+                            -C "$OUTPUT_DIR" "$(basename "$mongo_dir")" 2>/dev/null
+                        rm -rf "$mongo_dir"
+                        dump_success=true
+                        log_success "  MongoDB dump criado"
+                    fi
                     ;;
             esac
 
-            # Parar container graciosamente (timeout de 60s)
-            log_info "  Parando container graciosamente (timeout: 60s)..."
-            docker stop -t 60 "$container" >/dev/null 2>&1
-
-            # Aguardar parada completa
-            sleep 3
-
-            # Verificar se parou
-            if docker ps --filter "name=$container" --format "{{.Names}}" | grep -q "^$container$"; then
-                log_error "  Falha ao parar $container"
-                exit 1
-            else
-                log_success "  Container parado com sucesso"
+            if [ "$dump_success" = false ]; then
+                log_warning "  Dump SQL falhou (continuando com snapshot)"
             fi
-        else
-            log_info "  Container já estava parado"
         fi
+    fi
 
-        echo ""
+    # Pausar Redis temporariamente (double-check)
+    local paused=false
+    if [ "$STRATEGY" = "double-check" ] && [ "$db_type" = "redis" ] && [ -n "$container_id" ]; then
+        if is_container_running "$container_id"; then
+            docker pause "$container_id" >/dev/null 2>&1 && paused=true
+        fi
+    fi
+
+    # Snapshot do volume
+    local backup_file="${volume_name}-backup-${BATCH_ID}.tar.gz"
+    log_info "  Criando snapshot..."
+
+    docker run --rm \
+        -v "$volume_name":/source:ro \
+        -v "$OUTPUT_DIR":/backup \
+        busybox tar -czf "/backup/${backup_file}" -C /source . 2>/dev/null
+
+    if [ $? -eq 0 ] && [ -f "$OUTPUT_DIR/$backup_file" ]; then
+        volume_success=true
+        local size=$(du -h "$OUTPUT_DIR/$backup_file" | cut -f1)
+        log_success "  Snapshot: $size"
+    else
+        log_error "  Falha no snapshot"
+    fi
+
+    # Despausar Redis
+    if [ "$paused" = true ]; then
+        docker unpause "$container_id" >/dev/null 2>&1
+    fi
+
+    # Criar metadata
+    cat > "$OUTPUT_DIR/${volume_name}-backup-${BATCH_ID}.meta" <<EOF
+VOLUME_NAME=$volume_name
+BATCH_ID=$BATCH_ID
+BACKUP_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+STRATEGY=$STRATEGY
+IS_DATABASE=$is_database
+DB_TYPE=$db_type
+CONTAINER_ID=$container_id
+DUMP_SUCCESS=$dump_success
+VOLUME_SUCCESS=$volume_success
+HOSTNAME=$(hostname)
+EOF
+
+    # Determinar sucesso
+    if [ "$volume_success" = true ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Reiniciar containers (slow-shutdown)
+restart_containers() {
+    if [ "$AUTO_RESTART" = false ]; then
+        log_warning "Containers NÃO foram reiniciados (--no-restart)"
+        return
+    fi
+
+    log_section "Reiniciando Containers"
+
+    for container in "${!DB_CONTAINERS[@]}"; do
+        if [ "${DB_WAS_RUNNING[$container]}" = "true" ]; then
+            log_info "Reiniciando: $container"
+            docker start "$container" >/dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                log_success "  Container reiniciado"
+            else
+                log_error "  Falha ao reiniciar"
+            fi
+        fi
     done
+}
 
-    log_success "Todos os bancos foram preparados e parados graciosamente"
+### ========== MAIN ==========
+
+# Banner
+if [ "$AUTO_MODE" = false ]; then
+    echo ""
+    echo "╔═══════════════════════════════════════════════════════════════╗"
+    echo "║       VPS Guardian - Backup Inteligente de Volumes            ║"
+    echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
 fi
 
-### ========== LISTAR VOLUMES PARA BACKUP ==========
-log_section "VOLUMES PARA BACKUP"
+log_section "Iniciando Backup de Volumes"
+log_info "Batch ID: $BATCH_ID"
+log_info "Estratégia: $STRATEGY"
+log_info "Modo: $([ "$AUTO_MODE" = true ] && echo "Automático" || echo "Interativo")"
+log_info "Diretório: $OUTPUT_DIR"
 
-ALL_VOLUMES=$(docker volume ls --quiet)
-VOLUME_COUNT=$(echo "$ALL_VOLUMES" | wc -l)
+# Criar diretório de saída
+mkdir -p "$OUTPUT_DIR"
 
-log_info "Total de volumes Docker: $VOLUME_COUNT"
-echo ""
+# Detectar bancos de dados
+detect_databases
 
-# Criar array de volumes para backup
-VOLUMES_TO_BACKUP=()
+# Listar volumes para backup
+log_section "Volumes para Backup"
 
 if [ "$BACKUP_ALL" = true ]; then
-    log_info "Modo: Backup de TODOS os volumes"
-
-    while IFS= read -r volume; do
-        if [ -n "$volume" ]; then
-            VOLUMES_TO_BACKUP+=("$volume")
-        fi
-    done <<< "$ALL_VOLUMES"
+    VOLUMES_TO_BACKUP=($(docker volume ls -q))
+    log_info "Modo: Todos os volumes (${#VOLUMES_TO_BACKUP[@]})"
 else
-    # Modo interativo: selecionar volumes
-    log_info "Modo: Seleção interativa de volumes"
-    echo ""
-
-    # TODO: Implementar seleção interativa se necessário
-    # Por enquanto, apenas backup de volumes de DBs
+    # Apenas volumes de bancos de dados
+    VOLUMES_TO_BACKUP=()
     for container in "${!DB_CONTAINERS[@]}"; do
-        VOLUMES="${DB_VOLUMES[$container]}"
-        for vol in $VOLUMES; do
+        for vol in ${DB_VOLUMES[$container]}; do
             if [ -n "$vol" ]; then
                 VOLUMES_TO_BACKUP+=("$vol")
             fi
         done
     done
+    log_info "Modo: Volumes de bancos de dados (${#VOLUMES_TO_BACKUP[@]})"
 fi
 
-# Contar volumes para backup (sempre funciona, mesmo se array vazio)
-BACKUP_COUNT=${#VOLUMES_TO_BACKUP[@]}
-log_info "Volumes selecionados para backup: $BACKUP_COUNT"
-
-if [ $BACKUP_COUNT -eq 0 ]; then
-    log_error "Nenhum volume para backup"
-    exit 1
+if [ ${#VOLUMES_TO_BACKUP[@]} -eq 0 ]; then
+    log_warning "Nenhum volume para backup"
+    exit 0
 fi
 
-echo ""
+# Confirmação (modo interativo)
+if [ "$AUTO_MODE" = false ] && [ "$STRATEGY" = "slow-shutdown" ]; then
+    echo ""
+    log_warning "ATENÇÃO: Estratégia slow-shutdown irá PARAR os containers!"
+    echo ""
+    echo "  O que vai acontecer:"
+    echo "  1. Flush de buffers (MySQL/MariaDB)"
+    echo "  2. Checkpoint (PostgreSQL)"
+    echo "  3. Containers serão PARADOS"
+    echo "  4. Backup dos volumes"
+    if [ "$AUTO_RESTART" = true ]; then
+        echo "  5. Containers serão reiniciados"
+    fi
+    echo ""
+    read -p "Continuar? (yes/no): " CONFIRM
+    if [ "$CONFIRM" != "yes" ]; then
+        log_info "Operação cancelada"
+        exit 0
+    fi
+fi
 
-### ========== FASE 2: BACKUP DOS VOLUMES ==========
-log_section "FASE 2: BACKUP DOS VOLUMES"
+# Executar slow shutdown se necessário
+if [ "$STRATEGY" = "slow-shutdown" ]; then
+    log_section "Fase 1: Slow Shutdown"
+    for container in "${!DB_CONTAINERS[@]}"; do
+        strategy_slow_shutdown "$container"
+    done
+fi
 
-SUCCESSFUL_BACKUPS=0
-FAILED_BACKUPS=0
+# Backup dos volumes
+log_section "Fase 2: Backup dos Volumes"
 
 for volume in "${VOLUMES_TO_BACKUP[@]}"; do
-    echo ""
-    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_info "Fazendo backup do volume: $volume"
-    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-    # Verificar se volume existe
-    if ! docker volume inspect "$volume" >/dev/null 2>&1; then
-        log_error "  ❌ ERRO: Volume '$volume' não existe!"
-        ((FAILED_BACKUPS++)) || true
-        continue
-    fi
-
-    # Obter informações do volume
-    VOLUME_DRIVER=$(docker volume inspect --format='{{.Driver}}' "$volume" 2>/dev/null)
-    VOLUME_MOUNTPOINT=$(docker volume inspect --format='{{.Mountpoint}}' "$volume" 2>/dev/null)
-    log_info "  Driver: $VOLUME_DRIVER"
-    log_info "  Mountpoint: $VOLUME_MOUNTPOINT"
-
-    # Verificar espaço em disco
-    AVAILABLE_SPACE=$(df -BG "$OUTPUT_DIR" | tail -1 | awk '{print $4}' | tr -d 'G')
-    log_info "  Espaço disponível: ${AVAILABLE_SPACE}GB"
-
-    if [ "$AVAILABLE_SPACE" -lt 1 ]; then
-        log_error "  ❌ ERRO: Espaço em disco insuficiente (< 1GB)!"
-        ((FAILED_BACKUPS++)) || true
-        continue
-    fi
-
-    BACKUP_FILE="${volume}-backup-${BATCH_ID}.tar.gz"
-    BACKUP_ERROR_FILE="/tmp/backup-error-$$.txt"
-
-    log_info "  Iniciando compactação..."
-
-    # Executar backup com captura de erro
-    docker run --rm \
-        -v "$volume":/volume:ro \
-        -v "$OUTPUT_DIR":/backup \
-        busybox \
-        tar czf /backup/"$BACKUP_FILE" -C /volume . 2>"$BACKUP_ERROR_FILE"
-
-    BACKUP_EXIT_CODE=$?
-
-    if [ $BACKUP_EXIT_CODE -eq 0 ]; then
-        if [ -f "$OUTPUT_DIR/$BACKUP_FILE" ]; then
-            BACKUP_SIZE=$(du -h "$OUTPUT_DIR/$BACKUP_FILE" | cut -f1)
-            FILE_COUNT=$(tar -tzf "$OUTPUT_DIR/$BACKUP_FILE" 2>/dev/null | wc -l)
-            log_success "  ✅ Backup criado com sucesso!"
-            log_success "     Arquivo: $BACKUP_FILE"
-            log_success "     Tamanho: $BACKUP_SIZE"
-            log_success "     Arquivos: $FILE_COUNT"
-            ((SUCCESSFUL_BACKUPS++)) || true
-        else
-            log_error "  ❌ ERRO: Arquivo de backup não foi criado!"
-            log_error "     Esperado: $OUTPUT_DIR/$BACKUP_FILE"
-            ((FAILED_BACKUPS++)) || true
-        fi
-    else
-        log_error "  ❌ FALHA no backup de $volume (exit code: $BACKUP_EXIT_CODE)"
-
-        # Mostrar erro detalhado
-        if [ -f "$BACKUP_ERROR_FILE" ] && [ -s "$BACKUP_ERROR_FILE" ]; then
-            log_error "  Mensagem de erro:"
-            while IFS= read -r line; do
-                log_error "    $line"
-            done < "$BACKUP_ERROR_FILE"
-        fi
-
-        # Diagnosticar causa provável
-        log_error "  Possíveis causas:"
-        log_error "    1. Volume vazio ou sem permissão de leitura"
-        log_error "    2. Espaço em disco insuficiente"
-        log_error "    3. Volume corrompido ou em uso exclusivo"
-        log_error "    4. Problema com o Docker daemon"
-
-        ((FAILED_BACKUPS++)) || true
-    fi
-
-    # Limpar arquivo de erro temporário
-    rm -f "$BACKUP_ERROR_FILE"
-done
-
-### ========== CRIAR METADATA DO LOTE ==========
-BATCH_META_FILE="$OUTPUT_DIR/.batch-${BATCH_ID}.meta"
-
-cat > "$BATCH_META_FILE" << EOF
-# Batch Metadata
-BATCH_ID="$BATCH_ID"
-CREATED="$(date '+%Y-%m-%d %H:%M:%S')"
-TOTAL_VOLUMES=$BACKUP_COUNT
-SUCCESSFUL_BACKUPS=$SUCCESSFUL_BACKUPS
-FAILED_BACKUPS=$FAILED_BACKUPS
-DB_CONTAINERS_COUNT=$DB_COUNT
-SLOW_SHUTDOWN_USED=$([ $DB_COUNT -gt 0 ] && echo "true" || echo "false")
-EOF
-
-log_success "Metadata do lote criada: .batch-${BATCH_ID}.meta"
-echo ""
-
-### ========== FASE 3: REINICIAR CONTAINERS (OPCIONAL) ==========
-
-if [ "$AUTO_RESTART" = true ] && [ $DB_COUNT -gt 0 ]; then
-    log_section "FASE 3: REINICIANDO CONTAINERS"
+    # Detectar se é volume de banco de dados
+    is_db=false
+    db_type=""
+    container_id=""
 
     for container in "${!DB_CONTAINERS[@]}"; do
-        WAS_RUNNING="${DB_WAS_RUNNING[$container]}"
-
-        if [ "$WAS_RUNNING" = "true" ]; then
-            log_info "Reiniciando: $container"
-            docker start "$container" >/dev/null 2>&1
-
-            if [ $? -eq 0 ]; then
-                log_success "  Container reiniciado"
-            else
-                log_error "  Falha ao reiniciar $container"
-            fi
-        else
-            log_info "Não reiniciando $container (estava parado antes)"
+        if [[ " ${DB_VOLUMES[$container]} " =~ " $volume " ]]; then
+            is_db=true
+            db_type="${DB_TYPES[$container]}"
+            container_id="$container"
+            break
         fi
     done
 
+    if backup_volume "$volume" "$is_db" "$db_type" "$container_id"; then
+        ((SUCCESSFUL_BACKUPS++))
+    else
+        ((FAILED_BACKUPS++))
+    fi
     echo ""
-    log_success "Todos os containers foram reiniciados"
-else
-    if [ $DB_COUNT -gt 0 ]; then
-        log_warning "Containers NÃO foram reiniciados (use sem --no-restart para reiniciar)"
-        echo ""
-        echo "  Para reiniciar manualmente:"
-        for container in "${!DB_CONTAINERS[@]}"; do
-            echo "    docker start $container"
-        done
-        echo ""
+done
+
+# Reiniciar containers (slow-shutdown)
+if [ "$STRATEGY" = "slow-shutdown" ] && [ ${#DB_CONTAINERS[@]} -gt 0 ]; then
+    restart_containers
+fi
+
+# Aplicar retenção
+if type apply_retention &>/dev/null 2>&1; then
+    log_section "Aplicando Política de Retenção"
+    local antes=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
+    apply_retention "$OUTPUT_DIR" "${BACKUP_RETENTION_STRATEGY:-gfs}" true 2>/dev/null || true
+    local depois=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
+    local removidos=$((antes - depois))
+    if [ "$removidos" -gt 0 ]; then
+        log_success "$removidos backups antigos removidos"
     fi
 fi
 
-### ========== SUMÁRIO FINAL ==========
-log_section "BACKUP COMPLETO"
+# Criar metadata do batch
+cat > "$OUTPUT_DIR/.batch-${BATCH_ID}.meta" <<EOF
+BATCH_ID=$BATCH_ID
+CREATED=$(date '+%Y-%m-%d %H:%M:%S')
+STRATEGY=$STRATEGY
+TOTAL_VOLUMES=${#VOLUMES_TO_BACKUP[@]}
+SUCCESSFUL_BACKUPS=$SUCCESSFUL_BACKUPS
+FAILED_BACKUPS=$FAILED_BACKUPS
+HOSTNAME=$(hostname)
+DOCKER_VERSION=$(docker --version 2>/dev/null | head -1)
+EOF
 
+# Resumo final
+log_section "Backup Concluído"
 echo ""
-echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${GREEN}║${NC}                                                               ${GREEN}║${NC}"
-echo -e "${GREEN}║${NC}          ✅ BACKUP CONCLUÍDO COM SUCESSO! ✅                  ${GREEN}║${NC}"
-echo -e "${GREEN}║${NC}                                                               ${GREEN}║${NC}"
-echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo "  📦 Batch ID: $BATCH_ID"
-echo "  📂 Localização: $OUTPUT_DIR"
-echo "  ✅ Backups bem-sucedidos: $SUCCESSFUL_BACKUPS"
-if [ $FAILED_BACKUPS -gt 0 ]; then echo "  ❌ Backups falhados: $FAILED_BACKUPS"; fi
-echo "  🗄️  Bancos de dados: $DB_COUNT (Slow Shutdown aplicado)"
-echo ""
-echo "  Arquivos criados:"
-for volume in "${VOLUMES_TO_BACKUP[@]}"; do
-    BACKUP_FILE="${volume}-backup-${BATCH_ID}.tar.gz"
-    if [ -f "$OUTPUT_DIR/$BACKUP_FILE" ]; then
-        SIZE=$(du -h "$OUTPUT_DIR/$BACKUP_FILE" | cut -f1)
-        echo "    • $BACKUP_FILE ($SIZE)"
-    fi
-done
-echo ""
-echo "  💾 Metadata: .batch-${BATCH_ID}.meta"
-echo ""
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+echo "  Batch ID: $BATCH_ID"
+echo "  Estratégia: $STRATEGY"
+echo "  Sucesso: $SUCCESSFUL_BACKUPS volumes"
+if [ $FAILED_BACKUPS -gt 0 ]; then
+    echo "  Falha: $FAILED_BACKUPS volumes"
+fi
+echo "  Diretório: $OUTPUT_DIR"
 echo ""
 
-exit 0
+# Notificação
+if [ $FAILED_BACKUPS -eq 0 ]; then
+    notify_backup_success "Volumes" "$(du -sh "$OUTPUT_DIR" 2>/dev/null | cut -f1)" "$SUCCESSFUL_BACKUPS volumes" 2>/dev/null || true
+else
+    notify_backup_error "Volumes" "$FAILED_BACKUPS volumes falharam" 2>/dev/null || true
+fi
+
+# Exit code
+if [ $FAILED_BACKUPS -gt 0 ]; then
+    exit 1
+else
+    exit 0
+fi

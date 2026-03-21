@@ -567,6 +567,13 @@ else
             log_info "   cd /data/coolify/source && docker compose up -d --force-recreate"
         fi
 
+        # ========== APLICAÇÕES EM STANDBY ==========
+        # As aplicações NÃO são iniciadas automaticamente após restauração
+        # O usuário deve fazer deploy manualmente de cada aplicação no Coolify
+        log_success "✅ Aplicações em STANDBY (não iniciadas automaticamente)"
+        log_info "   Acesse o Coolify para fazer deploy manualmente de cada aplicação"
+        log_info "   Os dados das aplicações foram restaurados no banco de dados"
+
         log_success "Coolify restaurado"
     else
         # Usar script de restauração completo

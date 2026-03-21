@@ -27,9 +27,17 @@ log_error() { echo -e "${RED}✗${NC} $*"; }
 log_warning() { echo -e "${YELLOW}⚠${NC} $*"; }
 log_section() { echo ""; echo -e "${BLUE}========== $* ==========${NC}"; echo ""; }
 
+### ========== CARREGAR CONFIGURAÇÃO SALVA ==========
+BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+if [ -f "$BACKUP_DEST_CONFIG" ]; then
+    source "$BACKUP_DEST_CONFIG"
+fi
+
 ### ========== CONFIGURAÇÃO ==========
-S3_BUCKET=""
-S3_PREFIX="backups"
+# Usa valores do arquivo de config como padrão, se existirem
+S3_BUCKET="${S3_BUCKET:-}"
+S3_PREFIX="${S3_PREFIX:-backups}"
+S3_ENDPOINT="${S3_ENDPOINT:-}"  # Para Cloudflare R2 ou S3-compatible
 BACKUP_LOCAL_DIR="/var/backups/vpsguardian"
 AWS_PROFILE="default"
 SKIP_COOLIFY_INSTALL=false
@@ -49,6 +57,18 @@ while [[ $# -gt 0 ]]; do
         --profile=*)
             AWS_PROFILE="${1#*=}"
             shift
+            ;;
+        --endpoint=*)
+            S3_ENDPOINT="${1#*=}"
+            shift
+            ;;
+        --r2)
+            # Atalho para Cloudflare R2
+            echo "Para usar Cloudflare R2, use:"
+            echo "  --endpoint=https://ACCOUNT_ID.r2.cloudflarestorage.com"
+            echo ""
+            echo "Encontre seu Account ID em: Cloudflare Dashboard > R2 > Overview"
+            exit 0
             ;;
         --skip-coolify-install)
             SKIP_COOLIFY_INSTALL=true
@@ -74,14 +94,19 @@ OPÇÕES:
   --bucket=NOME          Nome do bucket S3 (OBRIGATÓRIO)
   --prefix=PATH          Prefixo/pasta no S3 (padrão: backups)
   --profile=NOME         Perfil AWS CLI (padrão: default)
+  --endpoint=URL         Endpoint S3-compatible (Cloudflare R2, MinIO, etc)
   --skip-coolify-install Não instalar Coolify (já instalado)
   --dry-run              Apenas simular (não baixar/restaurar)
   -h, --help             Mostrar esta ajuda
 
 EXEMPLOS:
 
-  # Restauração básica
+  # Restauração básica (AWS S3)
   ./restaurar-do-s3.sh --bucket=meu-bucket-backups
+
+  # Cloudflare R2
+  ./restaurar-do-s3.sh --bucket=meu-bucket \
+    --endpoint=https://ACCOUNT_ID.r2.cloudflarestorage.com
 
   # Com prefixo customizado
   ./restaurar-do-s3.sh --bucket=meu-bucket --prefix=vps-guardian/backups
@@ -94,8 +119,9 @@ EXEMPLOS:
 
 PRÉ-REQUISITOS:
   • AWS CLI instalado (apt install awscli)
-  • Credenciais AWS configuradas (aws configure)
-  • Permissões S3: s3:GetObject, s3:ListBucket
+  • Credenciais configuradas (aws configure)
+  • Para R2: Access Key ID e Secret do Cloudflare R2
+  • Permissões: s3:GetObject, s3:ListBucket
 
 ESTRUTURA NO S3:
   s3://MEU-BUCKET/backups/
@@ -125,10 +151,20 @@ if [ -z "$S3_BUCKET" ]; then
     exit 1
 fi
 
+### ========== CONSTRUIR COMANDO AWS ==========
+# Se endpoint customizado (R2, MinIO, etc), adiciona --endpoint-url
+AWS_CMD="aws"
+if [ -n "$S3_ENDPOINT" ]; then
+    AWS_CMD="aws --endpoint-url $S3_ENDPOINT"
+fi
+
 ### ========== BANNER ==========
 log_section "VPS Guardian - Restauração do S3"
 echo "Bucket: s3://$S3_BUCKET/$S3_PREFIX"
 echo "Perfil AWS: $AWS_PROFILE"
+if [ -n "$S3_ENDPOINT" ]; then
+    echo "Endpoint: $S3_ENDPOINT (S3-compatible)"
+fi
 if [ "$DRY_RUN" = true ]; then
     log_warning "MODO DRY-RUN (simulação, nada será baixado/restaurado)"
 fi
@@ -155,7 +191,7 @@ fi
 
 # Verificar credenciais AWS
 log_info "Testando credenciais AWS (perfil: $AWS_PROFILE)..."
-if ! aws s3 ls s3://$S3_BUCKET --profile $AWS_PROFILE >/dev/null 2>&1; then
+if ! $AWS_CMD s3 ls s3://$S3_BUCKET --profile $AWS_PROFILE >/dev/null 2>&1; then
     log_error "Falha ao acessar S3"
     echo ""
     echo "Possíveis causas:"
@@ -174,10 +210,10 @@ echo ""
 log_section "Listando Backups no S3"
 
 log_info "Verificando backups do Coolify..."
-COOLIFY_BACKUPS=$(aws s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
+COOLIFY_BACKUPS=$($AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
 
 log_info "Verificando backups de volumes..."
-VOLUME_BACKUPS=$(aws s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
+VOLUME_BACKUPS=$($AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
 
 echo ""
 log_success "Backups encontrados no S3:"
@@ -193,7 +229,7 @@ echo ""
 
 # Listar backups disponíveis
 log_info "Backups do Coolify disponíveis no S3:"
-aws s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE | grep ".tar.gz" | awk '{print "  • " $4 " (" $3 ")"}'
+$AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE | grep ".tar.gz" | awk '{print "  • " $4 " (" $3 ")"}'
 
 echo ""
 
@@ -222,11 +258,11 @@ mkdir -p $BACKUP_LOCAL_DIR/volumes
 
 if [ "$DRY_RUN" = true ]; then
     log_info "DRY-RUN: Simulando download..."
-    aws s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE --recursive
-    aws s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE --recursive
+    $AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE --recursive
+    $AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE --recursive
 else
     log_info "Baixando backups do Coolify..."
-    aws s3 sync s3://$S3_BUCKET/$S3_PREFIX/coolify/ \
+    $AWS_CMD s3 sync s3://$S3_BUCKET/$S3_PREFIX/coolify/ \
         $BACKUP_LOCAL_DIR/coolify/ \
         --profile $AWS_PROFILE \
         --no-progress
@@ -235,7 +271,7 @@ else
 
     if [ "$VOLUME_BACKUPS" -gt 0 ]; then
         log_info "Baixando backups de volumes..."
-        aws s3 sync s3://$S3_BUCKET/$S3_PREFIX/volumes/ \
+        $AWS_CMD s3 sync s3://$S3_BUCKET/$S3_PREFIX/volumes/ \
             $BACKUP_LOCAL_DIR/volumes/ \
             --profile $AWS_PROFILE \
             --no-progress

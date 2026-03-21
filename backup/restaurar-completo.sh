@@ -409,13 +409,40 @@ if [ "$MODE" = "local" ]; then
     # ========== RESTAURAR SSH KEYS ==========
     SSH_KEYS_DIR=$(find "$BACKUP_EXTRACTED_DIR" -maxdepth 1 -type d -name "ssh-keys" | head -1)
     if [ -d "$SSH_KEYS_DIR" ]; then
-        log_info "Restaurando SSH keys..."
+        log_info "Restaurando SSH keys privadas..."
         mkdir -p /data/coolify/ssh/keys
         cp -r "$SSH_KEYS_DIR"/* /data/coolify/ssh/keys/ 2>/dev/null || true
         chmod 600 /data/coolify/ssh/keys/* 2>/dev/null || true
-        log_success "SSH keys restauradas"
+        log_success "SSH keys privadas restauradas"
     else
         log_warning "SSH keys não encontradas no backup"
+    fi
+
+    # ========== RESTAURAR AUTHORIZED_KEYS ==========
+    # Necessário para o Coolify poder conectar via SSH ao servidor
+    AUTHORIZED_KEYS_FILE=$(find "$BACKUP_EXTRACTED_DIR" -maxdepth 1 -name "authorized_keys" -type f | head -1)
+    if [ -f "$AUTHORIZED_KEYS_FILE" ]; then
+        log_info "Restaurando authorized_keys..."
+        mkdir -p /root/.ssh
+        chmod 700 /root/.ssh
+
+        # Fazer backup do atual
+        if [ -f /root/.ssh/authorized_keys ]; then
+            cp /root/.ssh/authorized_keys /root/.ssh/authorized_keys.before-restore 2>/dev/null || true
+        fi
+
+        # Adicionar chaves do backup (merge, não sobrescrever)
+        cat "$AUTHORIZED_KEYS_FILE" >> /root/.ssh/authorized_keys
+
+        # Remover duplicatas mantendo ordem
+        sort -u /root/.ssh/authorized_keys > /root/.ssh/authorized_keys.tmp
+        mv /root/.ssh/authorized_keys.tmp /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+
+        log_success "authorized_keys restaurado (SSH do Coolify funcionará)"
+    else
+        log_warning "authorized_keys não encontrado no backup"
+        log_warning "O Coolify pode não conseguir conectar ao servidor via SSH"
     fi
 
     # ========== RESTAURAR PROXY CONFIG (certificados SSL) ==========

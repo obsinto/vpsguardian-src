@@ -326,12 +326,7 @@ show_backup_menu() {
     echo -e "  ${GREEN}9${NC} → 📊 Ver Status dos Backups Automáticos"
     echo -e "       ${GRAY}(Destinos configurados, cron jobs, últimos backups)${NC}"
     echo ""
-    echo -e "  ${MAGENTA}CONFIGURAÇÃO${NC}"
-    echo -e "  ${GREEN}10${NC} → ⚙️  Configurar Destinos de Backup"
-    echo -e "       ${GRAY}(Local, Google Drive, S3, SSH)${NC}"
-    echo -e "       ${GRAY}(Define onde backups automáticos vão)${NC}"
-    echo ""
-    echo -e "  ${GREEN}11${NC} → 🚀 Executar Tarefas do Cron AGORA"
+    echo -e "  ${GREEN}10${NC} → 🚀 Executar Tarefas do Cron AGORA"
     echo -e "       ${GRAY}(Executa exatamente o que os crons fazem)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
@@ -430,23 +425,27 @@ show_config_menu() {
     echo -e "${WHITE}⚙️  CONFIGURAÇÃO${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "  ${GREEN}1${NC} → ⏰ Configurar Tarefas Agendadas (Cron)"
+    echo -e "  ${GREEN}1${NC} → ☁️  Configurar Destinos de Backup"
+    echo -e "       ${GRAY}(Local, S3, R2, Google Drive, SSH)${NC}"
+    echo -e "       ${GRAY}(Onde os backups automáticos vão)${NC}"
+    echo ""
+    echo -e "  ${GREEN}2${NC} → ⏰ Configurar Tarefas Agendadas (Cron)"
     echo -e "       ${GRAY}(Agendar backups e manutenções automáticas)${NC}"
     echo ""
-    echo -e "  ${GREEN}2${NC} → 📝 Editar Configurações (config.env)"
+    echo -e "  ${GREEN}3${NC} → 📝 Editar Configurações (config.env)"
     echo -e "       ${GRAY}(Alterar variáveis de ambiente do sistema)${NC}"
     echo -e "       ${GRAY}(Paths, retenção, notificações)${NC}"
     echo ""
-    echo -e "  ${GREEN}3${NC} → 🛡️  Configurar Firewall (UFW)"
+    echo -e "  ${GREEN}4${NC} → 🛡️  Configurar Firewall (UFW)"
     echo -e "       ${GRAY}(Modo rápido ou personalizado)${NC}"
     echo -e "       ${GRAY}(SSH, HTTP, HTTPS, Cloudflare Tunnel)${NC}"
     echo ""
-    echo -e "  ${GREEN}4${NC} → 🔐 Configurar Cloudflare Tunnel"
+    echo -e "  ${GREEN}5${NC} → 🔐 Configurar Cloudflare Tunnel"
     echo -e "       ${GRAY}(SSH seguro via Zero Trust)${NC}"
     echo -e "       ${GRAY}(Ver status e documentação)${NC}"
     echo ""
-    echo -e "  ${GREEN}5${NC} → 📋 Mostrar Configurações Atuais"
-    echo -e "       ${GRAY}(Cron jobs, firewall, variáveis)${NC}"
+    echo -e "  ${GREEN}6${NC} → 📋 Mostrar Configurações Atuais"
+    echo -e "       ${GRAY}(Cron jobs, firewall, destinos de backup)${NC}"
     echo -e "       ${GRAY}(Visualização completa do sistema)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
@@ -626,12 +625,6 @@ handle_backup_menu() {
                 run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
                 ;;
             10)
-                # Configurar Destinos de Backup
-                if confirm "Configurar destinos de backup automático (Local, Google Drive, S3, SSH)?"; then
-                    run_script "$SCRIPT_DIR/backup/configurar-backup-destinos.sh" "Configurar Destinos de Backup"
-                fi
-                ;;
-            11)
                 # Executar Backup Completo AGORA
                 run_script "$SCRIPT_DIR/scripts-auxiliares/backup-completo-agora.sh" "Backup Completo"
                 ;;
@@ -902,9 +895,13 @@ handle_config_menu() {
 
         case $option in
             1)
-                run_script "$SCRIPT_DIR/scripts-auxiliares/configurar-cron.sh" "Configurar Cron"
+                # Configurar Destinos de Backup (S3, R2, Google Drive, SSH)
+                run_script "$SCRIPT_DIR/backup/configurar-backup-destinos.sh" "Configurar Destinos de Backup"
                 ;;
             2)
+                run_script "$SCRIPT_DIR/scripts-auxiliares/configurar-cron.sh" "Configurar Cron"
+                ;;
+            3)
                 if [ -f "$SCRIPT_DIR/config/config.env" ]; then
                     nano "$SCRIPT_DIR/config/config.env"
                     log_execution "Edição de config.env"
@@ -913,10 +910,10 @@ handle_config_menu() {
                     pause
                 fi
                 ;;
-            3)
+            4)
                 handle_firewall_menu
                 ;;
-            4)
+            5)
                 clear_screen
                 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
                 echo -e "${WHITE}Configuração do Cloudflare Tunnel${NC}"
@@ -935,11 +932,26 @@ handle_config_menu() {
                 echo ""
                 pause
                 ;;
-            5)
+            6)
                 clear_screen
                 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
                 echo -e "${WHITE}Configurações Atuais${NC}"
                 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+                echo ""
+                echo -e "${MAGENTA}▶ Destinos de Backup:${NC}"
+                if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+                    source "/opt/vpsguardian/config/backup-destinations.conf"
+                    [ "$BACKUP_DEST_LOCAL" = "true" ] && echo "  ✅ Local" || echo "  ❌ Local"
+                    [ "$BACKUP_DEST_SSH" = "true" ] && echo "  ✅ SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER" || echo "  ❌ SSH"
+                    [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo "  ✅ Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo "  ❌ Google Drive"
+                    if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
+                        [ -n "$S3_ENDPOINT" ] && echo "  ✅ S3/R2 → s3://${S3_BUCKET} (${S3_ENDPOINT})" || echo "  ✅ AWS S3 → s3://${S3_BUCKET}"
+                    else
+                        echo "  ❌ AWS S3 / R2"
+                    fi
+                else
+                    echo "  Não configurado (execute opção 1)"
+                fi
                 echo ""
                 echo -e "${MAGENTA}▶ Cron Jobs:${NC}"
                 crontab -l 2>/dev/null | grep -v "^#" | grep -v "^$" || echo "  Nenhum cron job configurado"

@@ -202,7 +202,7 @@ if [ "$SOURCE" = "s3" ] || [ "$SOURCE" = "gdrive" ] || [ "$SOURCE" = "ssh" ]; th
     log_section "Restauração de Origem Remota ($SOURCE)"
 
     # Usar script existente de restaurar dumps remotos
-    RESTORE_REMOTE_SCRIPT="$SCRIPT_DIR/../migrar/restaurar-dumps-remotos.sh"
+    RESTORE_REMOTE_SCRIPT="$SCRIPT_DIR/restaurar-dumps-remotos.sh"
 
     if [ -x "$RESTORE_REMOTE_SCRIPT" ]; then
         exec "$RESTORE_REMOTE_SCRIPT" --source="$SOURCE"

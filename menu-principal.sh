@@ -777,7 +777,7 @@ handle_migration_menu() {
                 # Restaurar Dumps de Origem Remota
                 if confirm \
                     "Baixar dumps de S3/Google Drive/SSH e restaurar?\n\nVocê terá controle total sobre o que restaurar:\n• Tudo (incluindo Coolify)\n• Tudo EXCETO Coolify (recomendado)\n• Dumps específicos"; then
-                    run_script "$SCRIPT_DIR/migrar/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
+                    run_script "$SCRIPT_DIR/backup/restaurar-dumps-remotos.sh" "Restaurar Dumps Remotos"
                 fi
                 ;;
             7)

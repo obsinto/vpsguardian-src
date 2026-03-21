@@ -79,7 +79,27 @@ AUTO_REBOOT=${AUTO_REBOOT:-n}
 read -p "$LOG_PREFIX [ INPUT ] Horário para reinício automático (padrão: 03:00): " REBOOT_TIME
 REBOOT_TIME=${REBOOT_TIME:-03:00}
 
-read -p "$LOG_PREFIX [ INPUT ] Email para notificações (deixe vazio para não enviar): " EMAIL_ADDRESS
+read -p "$LOG_PREFIX [ INPUT ] Email para notificações (deixe vazio para pular): " EMAIL_ADDRESS
+
+echo ""
+
+# Verificar se webhook Discord está configurado
+WEBHOOK_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+WEBHOOK_URL=""
+if [ -f "$WEBHOOK_CONFIG" ]; then
+    source "$WEBHOOK_CONFIG"
+fi
+
+ENABLE_DISCORD="n"
+if [ -n "$WEBHOOK_URL" ] && [[ "$WEBHOOK_URL" == *"discord.com"* ]]; then
+    log_info "🔔 Webhook Discord detectado nas configurações!"
+    read -p "$LOG_PREFIX [ INPUT ] Enviar notificações de updates para Discord? (Y/n): " ENABLE_DISCORD
+    ENABLE_DISCORD=${ENABLE_DISCORD:-y}
+else
+    log_info "💡 Dica: Configure um webhook Discord em:"
+    log_info "   Menu → Configurações → Destinos de Backup → Webhook"
+    echo ""
+fi
 
 echo ""
 
@@ -187,6 +207,7 @@ log_info "Configurações escolhidas:"
 log_info "  - Updates regulares: $([ "$INCLUDE_UPDATES" = "y" ] && echo "SIM" || echo "NÃO")"
 log_info "  - Reinício automático: $([ "$AUTO_REBOOT" = "y" ] && echo "SIM às $REBOOT_TIME" || echo "NÃO")"
 log_info "  - Email notificações: ${EMAIL_ADDRESS:-Nenhum}"
+log_info "  - Discord notificações: $([ "$ENABLE_DISCORD" = "y" ] && echo "SIM" || echo "NÃO")"
 echo ""
 log_info "Pacotes na BLACKLIST (protegidos de updates):"
 
@@ -418,6 +439,42 @@ systemctl restart unattended-upgrades
 log_success "Serviços habilitados e iniciados"
 echo ""
 
+# Configurar notificações Discord se habilitado
+if [[ "$ENABLE_DISCORD" =~ ^[Yy]$ ]]; then
+    log_info "========== CONFIGURANDO NOTIFICAÇÕES DISCORD =========="
+    echo ""
+
+    # Verificar se script de notificação existe
+    NOTIF_SCRIPT="/opt/vpsguardian/manutencao/notificar-updates.sh"
+    if [ -f "$NOTIF_SCRIPT" ]; then
+        chmod +x "$NOTIF_SCRIPT"
+
+        # Criar hook do apt para notificar após updates
+        APT_HOOK="/etc/apt/apt.conf.d/99vpsguardian-notify"
+        cat > "$APT_HOOK" << EOF
+// VPS Guardian - Notificações Discord após updates
+DPkg::Post-Invoke { "$NOTIF_SCRIPT check || true"; };
+EOF
+        log_success "Hook de notificação criado: $APT_HOOK"
+
+        # Adicionar cron para relatório diário (se não existir)
+        if ! crontab -l 2>/dev/null | grep -q "notificar-updates.sh daily"; then
+            log_info "Adicionando relatório diário ao cron..."
+            (crontab -l 2>/dev/null; echo "# Relatório diário de updates (Discord)"; echo "0 10 * * * $NOTIF_SCRIPT daily >> /var/log/vpsguardian/cron-updates-notify.log 2>&1") | crontab -
+            log_success "Relatório diário agendado para 10:00"
+        fi
+
+        # Testar notificação
+        log_info "Enviando notificação de teste..."
+        "$NOTIF_SCRIPT" test
+        echo ""
+    else
+        log "WARN" "Script de notificação não encontrado: $NOTIF_SCRIPT"
+        log_info "Instale o VPS Guardian para habilitar notificações Discord"
+    fi
+    echo ""
+fi
+
 # Testar configuração
 log_info "========== TESTANDO CONFIGURAÇÃO =========="
 echo ""
@@ -441,9 +498,16 @@ echo "  ✅ Remoção de kernels antigos: HABILITADA"
 echo ""
 
 if [ -n "$EMAIL_ADDRESS" ]; then
-    echo "  📧 Notificações enviadas para: $EMAIL_ADDRESS"
-    echo ""
+    echo "  📧 Email: $EMAIL_ADDRESS"
 fi
+
+if [[ "$ENABLE_DISCORD" =~ ^[Yy]$ ]]; then
+    echo "  🔔 Discord: Webhook configurado"
+    echo "     • Notificação após cada update"
+    echo "     • Relatório diário às 10:00"
+fi
+
+echo ""
 
 echo "  📁 Arquivos de configuração:"
 echo "     • $CONFIG_FILE"

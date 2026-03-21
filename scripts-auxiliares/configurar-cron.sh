@@ -331,6 +331,25 @@ fi
 
 echo ""
 
+# Updates automáticos de segurança
+echo "8️⃣  UPDATES AUTOMÁTICOS DE SEGURANÇA"
+echo ""
+echo "O sistema pode ser configurado para instalar updates de segurança automaticamente."
+echo "Isso usa o 'unattended-upgrades' do Ubuntu/Debian."
+echo ""
+
+# Verificar se já está configurado
+UPDATES_CONFIGURED=false
+if systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+    UPDATES_CONFIGURED=true
+    log_success "Updates automáticos JÁ estão configurados"
+fi
+
+read -p "$LOG_PREFIX [ INPUT ] Configurar updates automáticos de segurança? (Y/n): " ENABLE_AUTO_UPDATES
+ENABLE_AUTO_UPDATES=${ENABLE_AUTO_UPDATES:-y}
+
+echo ""
+
 # Resumo das configurações
 log "INFO" "========== RESUMO DAS CONFIGURAÇÕES =========="
 echo ""
@@ -400,6 +419,13 @@ if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     echo ""
 fi
 
+if [[ "$ENABLE_AUTO_UPDATES" =~ ^[Yy]$ ]]; then
+    echo "🔄 Updates Automáticos de Segurança:"
+    echo "   • Status: Será configurado após confirmação"
+    echo "   • Tipo: Updates de segurança (unattended-upgrades)"
+    echo ""
+fi
+
 read -p "$LOG_PREFIX [ INPUT ] Confirmar configuração? (Y/n): " CONFIRM
 CONFIRM=${CONFIRM:-y}
 
@@ -409,6 +435,25 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 echo ""
+
+# Configurar updates automáticos se solicitado
+if [[ "$ENABLE_AUTO_UPDATES" =~ ^[Yy]$ ]]; then
+    log "INFO" "========== CONFIGURANDO UPDATES AUTOMÁTICOS =========="
+    echo ""
+
+    UPDATES_SCRIPT="$INSTALL_ROOT/manutencao/configurar-updates-automaticos.sh"
+    if [ -x "$UPDATES_SCRIPT" ]; then
+        log "INFO" "Iniciando configuração de updates automáticos..."
+        echo ""
+        bash "$UPDATES_SCRIPT"
+        echo ""
+        log_success "Configuração de updates concluída"
+    else
+        log "WARN" "Script de updates não encontrado: $UPDATES_SCRIPT"
+        log "INFO" "Execute manualmente: sudo bash manutencao/configurar-updates-automaticos.sh"
+    fi
+    echo ""
+fi
 
 # Backup do crontab atual
 log "INFO" "========== BACKUP DO CRONTAB ATUAL =========="

@@ -130,11 +130,13 @@ if [ "$UPLOAD_DEST" != "local" ]; then
         echo ""
 
         # Chamar backup-destinos.sh com o tarball
+        # Usar --prefix=databases para manter estrutura padronizada:
+        # bucket/databases/, bucket/coolify/, bucket/volumes/
         DESTINOS_SCRIPT="$SCRIPT_DIR/backup-destinos.sh"
 
         if [ -x "$DESTINOS_SCRIPT" ]; then
-            log_info "Executando: $DESTINOS_SCRIPT $TARBALL --dest=$UPLOAD_DEST"
-            bash "$DESTINOS_SCRIPT" "$TARBALL" --dest="$UPLOAD_DEST"
+            log_info "Executando: $DESTINOS_SCRIPT $TARBALL --dest=$UPLOAD_DEST --prefix=databases"
+            bash "$DESTINOS_SCRIPT" "$TARBALL" --dest="$UPLOAD_DEST" --prefix=databases
 
             if [ $? -eq 0 ]; then
                 log_success "Upload concluído com sucesso"

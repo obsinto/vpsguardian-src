@@ -43,12 +43,19 @@ fi
 # Verificar argumentos
 BACKUP_FILE=""
 DEST_AUTO=""
+PREFIX_OVERRIDE=""
+TYPE_OVERRIDE=""
 
 for arg in "$@"; do
     case $arg in
         --dest=*)
             DEST_AUTO="${arg#*=}"
-            shift
+            ;;
+        --prefix=*)
+            PREFIX_OVERRIDE="${arg#*=}"
+            ;;
+        --type=*)
+            TYPE_OVERRIDE="${arg#*=}"
             ;;
         *)
             if [ -z "$BACKUP_FILE" ]; then
@@ -225,17 +232,25 @@ if [ "$UPLOAD_SELFHOSTED" = true ]; then
     fi
 
     if [ "$UPLOAD_SELFHOSTED" = true ]; then
+        # Aplicar PREFIX_OVERRIDE se definido
+        if [ -n "$PREFIX_OVERRIDE" ]; then
+            REMOTE_UPLOAD_DIR="$REMOTE_DIR/$PREFIX_OVERRIDE"
+            log_info "Usando prefixo override: $REMOTE_UPLOAD_DIR"
+        else
+            REMOTE_UPLOAD_DIR="$REMOTE_DIR"
+        fi
+
         log_info "Testando conexão SSH..."
         if ssh -p "$REMOTE_PORT" -o ConnectTimeout=10 "$REMOTE_USER@$REMOTE_IP" "exit" 2>/dev/null; then
             log_success "Conexão SSH estabelecida"
 
             # Criar diretório remoto se não existir
             log_info "Criando diretório remoto se necessário..."
-            ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_DIR"
+            ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_UPLOAD_DIR"
 
             # Upload do arquivo
-            log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_DIR..."
-            if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_DIR/"; then
+            log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_UPLOAD_DIR..."
+            if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_UPLOAD_DIR/"; then
                 log_success "Upload self-hosted concluído!"
                 notify_upload_success "$BACKUP_FILENAME" "SSH ($REMOTE_IP)" "$BACKUP_SIZE"
                 ((SUCCESS_COUNT++))
@@ -293,9 +308,16 @@ if [ "$UPLOAD_GDRIVE" = true ]; then
         # Se configuração existe, fazer upload
         if rclone listremotes | grep -q "${RCLONE_REMOTE}:"; then
             if [ "$AUTO_MODE" = true ]; then
-                # Usar configuração do arquivo
-                GDRIVE_UPLOAD_DIR="${GDRIVE_DIR:-backups/vpsguardian}"
-                log_info "Usando configuração: ${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR"
+                # Usar prefixo override se fornecido, senão usar configurado
+                if [ -n "$PREFIX_OVERRIDE" ]; then
+                    # Substituir última parte do path pelo override
+                    GDRIVE_BASE=$(dirname "${GDRIVE_DIR:-backups/vpsguardian}")
+                    GDRIVE_UPLOAD_DIR="$GDRIVE_BASE/$PREFIX_OVERRIDE"
+                    log_info "Usando prefixo override: ${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR"
+                else
+                    GDRIVE_UPLOAD_DIR="${GDRIVE_DIR:-backups/vpsguardian}"
+                    log_info "Usando configuração: ${RCLONE_REMOTE}:$GDRIVE_UPLOAD_DIR"
+                fi
             else
                 read -p "$LOG_PREFIX [ INPUT ] Diretório no Google Drive (padrão: backups/coolify): " GDRIVE_UPLOAD_DIR
                 GDRIVE_UPLOAD_DIR=${GDRIVE_UPLOAD_DIR:-backups/coolify}
@@ -371,8 +393,14 @@ if [ "$UPLOAD_S3" = true ]; then
                     S3_UPLOAD_READY=false
                 else
                     log_info "Usando bucket configurado: $S3_BUCKET"
-                    S3_PREFIX="${S3_PREFIX:-backups/vpsguardian}"
-                    log_info "Usando prefixo configurado: $S3_PREFIX"
+                    # Usar prefixo override se fornecido, senão usar configurado
+                    if [ -n "$PREFIX_OVERRIDE" ]; then
+                        S3_PREFIX="$PREFIX_OVERRIDE"
+                        log_info "Usando prefixo override: $S3_PREFIX"
+                    else
+                        S3_PREFIX="${S3_PREFIX:-backups/vpsguardian}"
+                        log_info "Usando prefixo configurado: $S3_PREFIX"
+                    fi
                     S3_UPLOAD_READY=true
                 fi
             else

@@ -5,6 +5,17 @@
 # Uso: ./backup-volume-interativo.sh [volume-name] [backup-dir]
 ################################################################################
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Diretório padrão padronizado com o resto do sistema
+DEFAULT_BACKUP_DIR="/var/backups/vpsguardian/volumes"
+
+# Carregar configurações de destino
+BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+if [ -f "$BACKUP_DEST_CONFIG" ]; then
+    source "$BACKUP_DEST_CONFIG"
+fi
+
 # === INPUT PROMPTS ===
 
 # Se o volume não foi passado como parâmetro, perguntar
@@ -28,8 +39,8 @@ fi
 
 # Se o diretório não foi passado como parâmetro, perguntar
 if [ -z "$2" ]; then
-    read -p "[ Backup Agent ] [ INPUT ] Please enter the directory to save the backup (Optional: press enter to use /root/volume-backups): " BACKUP_DIR
-    BACKUP_DIR=${BACKUP_DIR:-/root/volume-backups}
+    read -p "[ Backup Agent ] [ INPUT ] Please enter the directory to save the backup (Optional: press enter to use $DEFAULT_BACKUP_DIR): " BACKUP_DIR
+    BACKUP_DIR=${BACKUP_DIR:-$DEFAULT_BACKUP_DIR}
 else
     BACKUP_DIR="$2"
 fi
@@ -79,6 +90,40 @@ BACKUP_SIZE=$(du -h "$BACKUP_DIR/$BACKUP_FILE" | cut -f1)
 echo "[ Backup Agent ] [ SUCCESS ] Backup completed!"
 echo "[ Backup Agent ] [ INFO ] Backup file: $BACKUP_DIR/$BACKUP_FILE"
 echo "[ Backup Agent ] [ INFO ] Backup size: $BACKUP_SIZE"
+
+BACKUP_FILE_PATH="$BACKUP_DIR/$BACKUP_FILE"
+
+# === ENVIAR PARA DESTINOS REMOTOS ===
+echo ""
+echo "[ Backup Agent ] [ INFO ] ========== Upload para Destinos Remotos =========="
+
+# Verificar se há destinos remotos habilitados
+HAS_REMOTE_DEST=false
+[ "$BACKUP_DEST_SSH" = "true" ] && HAS_REMOTE_DEST=true
+[ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && HAS_REMOTE_DEST=true
+[ "$BACKUP_DEST_AWS_S3" = "true" ] && HAS_REMOTE_DEST=true
+
+if [ "$HAS_REMOTE_DEST" = "true" ] && [ -f "$BACKUP_FILE_PATH" ]; then
+    echo "[ Backup Agent ] [ INFO ] Enviando backup para destinos configurados..."
+
+    # Chamar script de upload com prefixo 'volumes'
+    if [ -x "$SCRIPT_DIR/backup-destinos.sh" ]; then
+        "$SCRIPT_DIR/backup-destinos.sh" "$BACKUP_FILE_PATH" --dest=all --prefix=volumes
+
+        if [ $? -eq 0 ]; then
+            echo "[ Backup Agent ] [ SUCCESS ] Backup enviado para destinos remotos"
+        else
+            echo "[ Backup Agent ] [ WARNING ] Alguns uploads falharam"
+        fi
+    else
+        echo "[ Backup Agent ] [ WARNING ] Script backup-destinos.sh não encontrado"
+    fi
+else
+    if [ "$HAS_REMOTE_DEST" != "true" ]; then
+        echo "[ Backup Agent ] [ INFO ] Nenhum destino remoto configurado"
+        echo "[ Backup Agent ] [ INFO ] Configure em: Menu → Configuração → Configurar Destinos de Backup"
+    fi
+fi
 
 # Listar backups existentes deste volume
 echo ""

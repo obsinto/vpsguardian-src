@@ -454,8 +454,35 @@ if [ "$SKIP_TO_SSH" != "true" ] && [ "$SKIP_TO_GDRIVE" != "true" ] && [ "$SKIP_T
     BACKUP_DEST_LOCAL=$([[ "$KEEP_LOCAL" =~ ^[Yy]$ ]] && echo "true" || echo "false")
 
     if [ "$BACKUP_DEST_LOCAL" = "true" ]; then
-        read -p "$(echo -e ${BLUE}Retenção local em dias \(padrão: 30\):${NC} )" RETENTION
-        LOCAL_BACKUP_RETENTION_DAYS=${RETENTION:-30}
+        echo ""
+        echo "Estratégia de retenção:"
+        echo "  1) simple - Deleta backups mais antigos que X dias"
+        echo "  2) count  - Mantém últimos X backups (independente da idade)"
+        echo "  3) gfs    - Grandfather-Father-Son (7 diários + 4 semanais + 12 mensais)"
+        echo ""
+        read -p "$(echo -e ${BLUE}Escolha a estratégia \(1-3, padrão: 1\):${NC} )" STRATEGY_CHOICE
+        STRATEGY_CHOICE=${STRATEGY_CHOICE:-1}
+
+        case "$STRATEGY_CHOICE" in
+            2)
+                BACKUP_RETENTION_STRATEGY="count"
+                read -p "$(echo -e ${BLUE}Quantidade de backups a manter \(padrão: 10\):${NC} )" RETENTION_COUNT
+                BACKUP_RETENTION_COUNT=${RETENTION_COUNT:-10}
+                BACKUP_RETENTION_DAYS=30  # fallback
+                ;;
+            3)
+                BACKUP_RETENTION_STRATEGY="gfs"
+                BACKUP_RETENTION_DAYS=30  # não usado em GFS
+                BACKUP_RETENTION_COUNT=10 # não usado em GFS
+                log_info "GFS: 7 diários + 4 semanais + 12 mensais"
+                ;;
+            *)
+                BACKUP_RETENTION_STRATEGY="simple"
+                read -p "$(echo -e ${BLUE}Retenção em dias \(padrão: 30\):${NC} )" RETENTION
+                BACKUP_RETENTION_DAYS=${RETENTION:-30}
+                BACKUP_RETENTION_COUNT=10 # fallback
+                ;;
+        esac
     fi
     echo ""
 fi
@@ -574,93 +601,168 @@ else
         BACKUP_DEST_GOOGLE_DRIVE=false
     fi
 fi
+
+# Se estava editando apenas Google Drive, salvar e sair
+if [ "$SKIP_TO_GDRIVE" = "true" ]; then
+    save_config
+    log_success "Configuração Google Drive salva!"
+    exit 0
+fi
+
+fi  # Fecha o if [ "$SKIP_TO_S3" != "true" ] da linha 549
+
 echo ""
 
-# ========== AWS S3 ==========
+# ========== AWS S3 / Cloudflare R2 ==========
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${YELLOW}4️⃣  AWS S3${NC}"
+echo -e "${YELLOW}4️⃣  AWS S3 / Cloudflare R2 / S3-Compatible${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
 # Verificar se aws-cli está instalado
 if ! command -v aws &> /dev/null; then
     log_warning "AWS CLI não está instalado"
-    echo "Instale com o instalador oficial (AWS CLI v2):"
-    echo "  sudo apt update && sudo apt install unzip -y"
-    echo "  curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
-    echo "  unzip awscliv2.zip && sudo ./aws/install"
-    echo "Configure com: aws configure"
-    S3_ENABLED=false
-    BACKUP_DEST_AWS_S3=false
-else
-    # Verificar se AWS está configurado
-    if [ ! -f ~/.aws/credentials ]; then
-        log_warning "AWS CLI não está configurado"
-        echo "Execute: aws configure"
-        S3_ENABLED=false
-        BACKUP_DEST_AWS_S3=false
-    else
-        read -p "$(echo -e ${BLUE}Habilitar backup no AWS S3? \(y/N\):${NC} )" ENABLE_S3
-        ENABLE_S3=${ENABLE_S3:-N}
+    echo ""
+    echo "Instale com:"
+    echo "  sudo apt update && sudo apt install awscli -y"
+    echo ""
+    read -p "$(echo -e ${BLUE}Instalar AWS CLI agora? \(Y/n\):${NC} )" INSTALL_AWS
+    INSTALL_AWS=${INSTALL_AWS:-Y}
 
-        if [[ "$ENABLE_S3" =~ ^[Yy]$ ]]; then
-            S3_ENABLED=true
-            BACKUP_DEST_AWS_S3=true
-
-            read -p "$(echo -e ${BLUE}Nome do bucket S3 \(sem s3://\):${NC} )" S3_BUCKET_NAME
-            S3_BUCKET="$S3_BUCKET_NAME"
-
-            read -p "$(echo -e ${BLUE}Prefixo/pasta \(padrão: backups/vpsguardian/databases\):${NC} )" S3_PATH
-            S3_PREFIX=${S3_PATH:-backups/vpsguardian/databases}
-
-            read -p "$(echo -e ${BLUE}Região \(padrão: us-east-1\):${NC} )" S3_REG
-            S3_REGION=${S3_REG:-us-east-1}
-
-            read -p "$(echo -e ${BLUE}Storage Class \(STANDARD/STANDARD_IA/GLACIER, padrão: STANDARD_IA\):${NC} )" S3_CLASS
-            S3_STORAGE_CLASS=${S3_CLASS:-STANDARD_IA}
-
-            # Endpoint customizado (para Cloudflare R2, MinIO, Backblaze, etc)
-            echo ""
-            echo -e "${YELLOW}Endpoint customizado (para Cloudflare R2, MinIO, Backblaze B2, etc)${NC}"
-            echo "Deixe vazio para usar AWS S3 padrão."
-            echo "Cloudflare R2: https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
-            echo ""
-            read -p "$(echo -e ${BLUE}Endpoint URL \(vazio = AWS S3\):${NC} )" S3_ENDPOINT_INPUT
-            S3_ENDPOINT=${S3_ENDPOINT_INPUT:-}
-
-            # Testar acesso ao bucket
-            log_info "Testando acesso ao bucket S3..."
-            if [ -n "$S3_ENDPOINT" ]; then
-                # Com endpoint customizado (R2, MinIO, etc)
-                if aws s3 ls "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1; then
-                    log_success "Acesso ao bucket confirmado! (endpoint: $S3_ENDPOINT)"
-                else
-                    log_error "Falha ao acessar bucket. Verifique credenciais, bucket e endpoint."
-                    read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
-                    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-                        S3_ENABLED=false
-                        BACKUP_DEST_AWS_S3=false
-                    fi
-                fi
-            else
-                # AWS S3 padrão
-                if aws s3 ls "s3://$S3_BUCKET" --region "$S3_REGION" >/dev/null 2>&1; then
-                    log_success "Acesso ao bucket S3 confirmado!"
-                else
-                    log_error "Falha ao acessar bucket. Verifique credenciais e nome do bucket."
-                    read -p "Deseja continuar mesmo assim? (y/N): " CONTINUE
-                    if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-                        S3_ENABLED=false
-                        BACKUP_DEST_AWS_S3=false
-                    fi
-                fi
-            fi
+    if [[ "$INSTALL_AWS" =~ ^[Yy]$ ]]; then
+        apt update && apt install awscli -y
+        if command -v aws &> /dev/null; then
+            log_success "AWS CLI instalado!"
         else
+            log_error "Falha na instalação"
             S3_ENABLED=false
             BACKUP_DEST_AWS_S3=false
         fi
+    else
+        S3_ENABLED=false
+        BACKUP_DEST_AWS_S3=false
     fi
 fi
+
+# Se AWS CLI está disponível, continuar configuração
+if command -v aws &> /dev/null; then
+    read -p "$(echo -e ${BLUE}Habilitar backup S3/R2? \(y/N\):${NC} )" ENABLE_S3
+    ENABLE_S3=${ENABLE_S3:-N}
+
+    if [[ "$ENABLE_S3" =~ ^[Yy]$ ]]; then
+        S3_ENABLED=true
+        BACKUP_DEST_AWS_S3=true
+
+        # Perguntar tipo primeiro para guiar melhor
+        echo ""
+        echo "Qual serviço você usa?"
+        echo "  1) AWS S3"
+        echo "  2) Cloudflare R2"
+        echo "  3) Outro (MinIO, Backblaze B2, etc)"
+        read -p "$(echo -e ${BLUE}Escolha \(1-3\):${NC} )" S3_TYPE
+        echo ""
+
+        read -p "$(echo -e ${BLUE}Nome do bucket \(sem s3://\):${NC} )" S3_BUCKET_NAME
+        S3_BUCKET="$S3_BUCKET_NAME"
+
+        read -p "$(echo -e ${BLUE}Prefixo/pasta \(padrão: backups\):${NC} )" S3_PATH
+        S3_PREFIX=${S3_PATH:-backups}
+
+        # Configurar baseado no tipo
+        case "$S3_TYPE" in
+            2)
+                # Cloudflare R2
+                S3_REGION="auto"
+                S3_STORAGE_CLASS="STANDARD"
+                echo ""
+                echo -e "${YELLOW}Para R2, você precisa do Account ID do Cloudflare.${NC}"
+                echo "Encontre em: Cloudflare Dashboard → R2 → Overview (lado direito)"
+                echo ""
+                read -p "$(echo -e ${BLUE}Account ID do Cloudflare:${NC} )" CF_ACCOUNT_ID
+                S3_ENDPOINT="https://${CF_ACCOUNT_ID}.r2.cloudflarestorage.com"
+                echo ""
+                log_info "Endpoint configurado: $S3_ENDPOINT"
+                ;;
+            3)
+                # Outro S3-compatible
+                read -p "$(echo -e ${BLUE}Região \(padrão: us-east-1\):${NC} )" S3_REG
+                S3_REGION=${S3_REG:-us-east-1}
+                S3_STORAGE_CLASS="STANDARD"
+                echo ""
+                read -p "$(echo -e ${BLUE}Endpoint URL completo:${NC} )" S3_ENDPOINT
+                ;;
+            *)
+                # AWS S3 padrão
+                read -p "$(echo -e ${BLUE}Região \(padrão: us-east-1\):${NC} )" S3_REG
+                S3_REGION=${S3_REG:-us-east-1}
+                read -p "$(echo -e ${BLUE}Storage Class \(STANDARD/STANDARD_IA/GLACIER, padrão: STANDARD_IA\):${NC} )" S3_CLASS
+                S3_STORAGE_CLASS=${S3_CLASS:-STANDARD_IA}
+                S3_ENDPOINT=""
+                ;;
+        esac
+
+        # Verificar se credenciais existem
+        if [ ! -f ~/.aws/credentials ]; then
+            echo ""
+            log_warning "Credenciais AWS não configuradas ainda"
+            echo ""
+            echo "Você precisa configurar as credenciais para o serviço escolhido."
+            if [ "$S3_TYPE" = "2" ]; then
+                echo ""
+                echo -e "${YELLOW}Para Cloudflare R2:${NC}"
+                echo "1. Vá em Cloudflare Dashboard → R2 → Manage R2 API Tokens"
+                echo "2. Crie um token com permissão de leitura/escrita"
+                echo "3. Use o Access Key ID e Secret Access Key gerados"
+            fi
+            echo ""
+            read -p "$(echo -e ${BLUE}Configurar credenciais agora? \(Y/n\):${NC} )" CONFIG_CREDS
+            CONFIG_CREDS=${CONFIG_CREDS:-Y}
+
+            if [[ "$CONFIG_CREDS" =~ ^[Yy]$ ]]; then
+                aws configure
+            fi
+        fi
+
+        # Testar acesso ao bucket
+        echo ""
+        log_info "Testando acesso ao bucket..."
+        if [ -n "$S3_ENDPOINT" ]; then
+            if aws s3 ls "s3://$S3_BUCKET" --endpoint-url "$S3_ENDPOINT" >/dev/null 2>&1; then
+                log_success "Acesso ao bucket confirmado!"
+            else
+                log_error "Falha ao acessar bucket."
+                echo "Verifique: credenciais, nome do bucket, endpoint"
+                read -p "Salvar configuração mesmo assim? (y/N): " CONTINUE
+                if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                    S3_ENABLED=false
+                    BACKUP_DEST_AWS_S3=false
+                fi
+            fi
+        else
+            if aws s3 ls "s3://$S3_BUCKET" --region "$S3_REGION" >/dev/null 2>&1; then
+                log_success "Acesso ao bucket S3 confirmado!"
+            else
+                log_error "Falha ao acessar bucket."
+                read -p "Salvar configuração mesmo assim? (y/N): " CONTINUE
+                if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
+                    S3_ENABLED=false
+                    BACKUP_DEST_AWS_S3=false
+                fi
+            fi
+        fi
+    else
+        S3_ENABLED=false
+        BACKUP_DEST_AWS_S3=false
+    fi
+fi
+
+# Se estava editando apenas S3/R2, salvar e sair
+if [ "$SKIP_TO_S3" = "true" ]; then
+    save_config
+    log_success "Configuração S3/R2 salva!"
+    exit 0
+fi
+
 echo ""
 
 # ========== OPÇÕES ADICIONAIS ==========
@@ -784,5 +886,3 @@ echo -e "${CYAN}Para agendar backups automáticos:${NC}"
 echo "  Execute o menu principal → Configuração → Configurar Cron"
 echo "  ou execute: sudo $SCRIPT_DIR/../scripts-auxiliares/configurar-cron.sh"
 echo ""
-
-fi  # Fecha o if [ "$SKIP_TO_S3" != "true" ]

@@ -260,12 +260,62 @@ if [ $? -eq 0 ]; then
     # Remover diretório não compactado para economizar espaço
     rm -rf "$BACKUP_DIR"
     log_info "Diretório descompactado removido"
+
+    BACKUP_FILE_PATH="$BACKUP_BASE_DIR/${BACKUP_BASENAME}.tar.gz"
 else
     log_error "Falha ao compactar backup"
+    BACKUP_FILE_PATH=""
 fi
 
 ################################################################################
-# 8. LIMPEZA DE BACKUPS ANTIGOS
+# 8. ENVIAR PARA DESTINOS REMOTOS (S3, Google Drive, SSH)
+################################################################################
+
+log_section "Upload para Destinos Remotos"
+
+# Carregar configurações de destino
+BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+if [ -f "$BACKUP_DEST_CONFIG" ]; then
+    source "$BACKUP_DEST_CONFIG"
+fi
+
+# Verificar se há destinos remotos habilitados
+HAS_REMOTE_DEST=false
+[ "$BACKUP_DEST_SSH" = "true" ] && HAS_REMOTE_DEST=true
+[ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && HAS_REMOTE_DEST=true
+[ "$BACKUP_DEST_AWS_S3" = "true" ] && HAS_REMOTE_DEST=true
+
+if [ "$HAS_REMOTE_DEST" = "true" ] && [ -n "$BACKUP_FILE_PATH" ] && [ -f "$BACKUP_FILE_PATH" ]; then
+    log_info "Enviando backup para destinos configurados..."
+
+    # Chamar script de upload com prefixo 'coolify' para separar dos backups de databases
+    if [ -x "$SCRIPT_DIR/backup-destinos.sh" ]; then
+        "$SCRIPT_DIR/backup-destinos.sh" "$BACKUP_FILE_PATH" --dest=all --prefix=coolify
+        UPLOAD_RESULT=$?
+
+        if [ $UPLOAD_RESULT -eq 0 ]; then
+            log_success "Backup enviado para destinos remotos"
+            UPLOAD_SUCCESS=true
+        else
+            log_warning "Alguns uploads falharam (código: $UPLOAD_RESULT)"
+            UPLOAD_SUCCESS=false
+        fi
+    else
+        log_warning "Script backup-destinos.sh não encontrado, backup mantido apenas localmente"
+        UPLOAD_SUCCESS=false
+    fi
+else
+    if [ "$HAS_REMOTE_DEST" != "true" ]; then
+        log_info "Nenhum destino remoto configurado"
+        log_info "Configure em: Menu → Configuração → Configurar Destinos de Backup"
+    elif [ -z "$BACKUP_FILE_PATH" ]; then
+        log_warning "Backup não foi criado, upload ignorado"
+    fi
+    UPLOAD_SUCCESS=false
+fi
+
+################################################################################
+# 9. LIMPEZA DE BACKUPS ANTIGOS
 ################################################################################
 
 log_section "Limpeza de Backups Antigos"

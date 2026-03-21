@@ -209,11 +209,14 @@ echo ""
 ### ========== LISTAR BACKUPS DISPONÍVEIS NO S3 ==========
 log_section "Listando Backups no S3"
 
-log_info "Verificando backups do Coolify..."
-COOLIFY_BACKUPS=$($AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
+# Backups do Coolify ficam em /coolify/ (separado do prefixo de databases)
+COOLIFY_S3_PATH="s3://$S3_BUCKET/coolify/"
+
+log_info "Verificando backups do Coolify em $COOLIFY_S3_PATH..."
+COOLIFY_BACKUPS=$($AWS_CMD s3 ls "$COOLIFY_S3_PATH" --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
 
 log_info "Verificando backups de volumes..."
-VOLUME_BACKUPS=$($AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
+VOLUME_BACKUPS=$($AWS_CMD s3 ls s3://$S3_BUCKET/volumes/ --profile $AWS_PROFILE 2>/dev/null | grep ".tar.gz" | wc -l)
 
 echo ""
 log_success "Backups encontrados no S3:"
@@ -222,6 +225,14 @@ echo "  • Volumes: $VOLUME_BACKUPS backup(s)"
 
 if [ "$COOLIFY_BACKUPS" -eq 0 ]; then
     log_error "Nenhum backup do Coolify encontrado no S3"
+    echo ""
+    echo "Verifique se:"
+    echo "  1. O backup do Coolify foi executado (Menu 2 → Opção 1)"
+    echo "  2. O backup foi enviado para o S3 (verifique os logs)"
+    echo "  3. O caminho está correto: $COOLIFY_S3_PATH"
+    echo ""
+    echo "Listando conteúdo do bucket:"
+    $AWS_CMD s3 ls s3://$S3_BUCKET/ --profile $AWS_PROFILE 2>/dev/null | head -10
     exit 1
 fi
 
@@ -229,7 +240,7 @@ echo ""
 
 # Listar backups disponíveis
 log_info "Backups do Coolify disponíveis no S3:"
-$AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE | grep ".tar.gz" | awk '{print "  • " $4 " (" $3 ")"}'
+$AWS_CMD s3 ls "$COOLIFY_S3_PATH" --profile $AWS_PROFILE | grep ".tar.gz" | awk '{print "  • " $4 " (" $3 ")"}'
 
 echo ""
 
@@ -258,11 +269,11 @@ mkdir -p $BACKUP_LOCAL_DIR/volumes
 
 if [ "$DRY_RUN" = true ]; then
     log_info "DRY-RUN: Simulando download..."
-    $AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/coolify/ --profile $AWS_PROFILE --recursive
-    $AWS_CMD s3 ls s3://$S3_BUCKET/$S3_PREFIX/volumes/ --profile $AWS_PROFILE --recursive
+    $AWS_CMD s3 ls s3://$S3_BUCKET/coolify/ --profile $AWS_PROFILE --recursive
+    $AWS_CMD s3 ls s3://$S3_BUCKET/volumes/ --profile $AWS_PROFILE --recursive
 else
     log_info "Baixando backups do Coolify..."
-    $AWS_CMD s3 sync s3://$S3_BUCKET/$S3_PREFIX/coolify/ \
+    $AWS_CMD s3 sync s3://$S3_BUCKET/coolify/ \
         $BACKUP_LOCAL_DIR/coolify/ \
         --profile $AWS_PROFILE \
         --no-progress
@@ -271,7 +282,7 @@ else
 
     if [ "$VOLUME_BACKUPS" -gt 0 ]; then
         log_info "Baixando backups de volumes..."
-        $AWS_CMD s3 sync s3://$S3_BUCKET/$S3_PREFIX/volumes/ \
+        $AWS_CMD s3 sync s3://$S3_BUCKET/volumes/ \
             $BACKUP_LOCAL_DIR/volumes/ \
             --profile $AWS_PROFILE \
             --no-progress

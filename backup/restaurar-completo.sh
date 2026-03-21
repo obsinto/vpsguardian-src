@@ -181,63 +181,6 @@ if [ "$MODE" = "local" ]; then
 
     echo ""
 
-    ### STEP 0: Perguntar se deseja remover instalação atual
-    log_section "Tipo de Restauração"
-    echo ""
-    echo "Como deseja restaurar?"
-    echo ""
-    echo "  [1] Restauração COMPLETA (Disaster Recovery)"
-    echo "      - Remove Coolify completamente (containers, volumes, /data/coolify)"
-    echo "      - Reinstala Coolify do zero"
-    echo "      - Restaura backup sobre instalação limpa"
-    echo "      - Recomendado para: testes de DR, migração, problemas graves"
-    echo ""
-    echo "  [2] Restauração SOBRE instalação existente"
-    echo "      - Mantém instalação atual"
-    echo "      - Sobrescreve apenas dados (DB, SSH keys, .env)"
-    echo "      - Recomendado para: corrigir dados corrompidos"
-    echo ""
-    read -p "Escolha (1 ou 2): " restore_type
-
-    if [ "$restore_type" = "1" ]; then
-        log_section "Removendo Instalação Atual"
-        echo ""
-        log_warning "Removendo Coolify completamente..."
-
-        # Chamar script de remoção
-        if [ -x "$SCRIPT_DIR/remove-coolify.sh" ]; then
-            "$SCRIPT_DIR/remove-coolify.sh" --force
-        else
-            # Fallback inline se script não existir
-            log_info "Parando containers..."
-            docker stop $(docker ps -q --filter "name=coolify") 2>/dev/null || true
-            docker rm $(docker ps -aq --filter "name=coolify") 2>/dev/null || true
-
-            log_info "Removendo volumes..."
-            docker volume rm coolify-db coolify-redis 2>/dev/null || true
-
-            log_info "Removendo diretório de dados..."
-            rm -rf /data/coolify
-        fi
-
-        log_success "Instalação anterior removida"
-        echo ""
-
-        log_section "Reinstalando Coolify"
-        echo ""
-        log_info "Baixando e instalando Coolify..."
-        curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
-
-        log_success "Coolify reinstalado"
-        echo ""
-
-        # Aguardar Coolify inicializar
-        log_info "Aguardando Coolify inicializar..."
-        sleep 15
-    fi
-
-    echo ""
-
     ### STEP 1: Verificar backups disponíveis
     log_section "Step 1/4: Verificar Backups Disponíveis"
 

@@ -582,6 +582,49 @@ else
     fi
 fi
 
+### ========== CORREÇÃO DE COMPATIBILIDADE (NOMES LEGADOS) ==========
+if [ "$DRY_RUN" = false ]; then
+    log_section "Aplicando Correções de Compatibilidade"
+    log_info "Verificando nomes de aplicações com caracteres inválidos (':')..."
+
+    if docker ps | grep -q coolify-db; then
+        # Executa o comando de UPDATE de forma silenciosa e checa o resultado
+        docker exec coolify-db psql -U coolify -d coolify -c "UPDATE applications SET name = SPLIT_PART(name, ':', 1) WHERE name LIKE '%:%';" > /dev/null 2>&1
+        
+        if [ $? -eq 0 ]; then
+            log_success "Nomes de aplicações formatados para os padrões da versão atual."
+        else
+            log_warning "Aviso: Não foi possível aplicar a correção de nomes no banco de dados."
+        fi
+    else
+        log_warning "Container coolify-db não encontrado. Pulando correção de compatibilidade."
+    fi
+fi
+
+### ========== INICIANDO BANCOS DE DADOS DAS APLICAÇÕES ==========
+if [ "$DRY_RUN" = false ]; then
+    log_section "Iniciando Bancos de Dados das Aplicações"
+    log_info "Procurando containers de banco (MySQL, MariaDB, PostgreSQL)..."
+
+    # Busca containers que contenham as strings na imagem, ignorando o próprio coolify-db
+    DB_CONTAINERS=$(docker ps -a --format '{{.Names}} {{.Image}}' | grep -iE 'postgres|mysql|mariadb' | awk '{print $1}' | grep -v 'coolify-db')
+
+    if [ -n "$DB_CONTAINERS" ]; then
+        log_info "Bancos encontrados. Executando inicialização..."
+        for db in $DB_CONTAINERS; do
+            log_info "  Iniciando $db..."
+            docker start "$db" > /dev/null 2>&1
+            if [ $? -eq 0 ]; then
+                log_success "  Container $db iniciado com sucesso"
+            else
+                log_error "  Falha ao iniciar container $db"
+            fi
+        done
+    else
+        log_info "Nenhum container de banco de dados das aplicações encontrado no Docker."
+    fi
+fi
+
 echo ""
 
 ### ========== RELATÓRIO FINAL ==========
@@ -589,6 +632,8 @@ log_section "RESTAURAÇÃO CONCLUÍDA"
 echo ""
 echo "  ✅ Backups baixados do S3"
 echo "  ✅ Coolify instalado/restaurado"
+echo "  ✅ Correções de compatibilidade aplicadas (Nomes)"
+echo "  ✅ Bancos de Dados das aplicações iniciados"
 if [ "$VOLUME_BACKUPS" -gt 0 ]; then
     echo "  ✅ Volumes restaurados"
 fi

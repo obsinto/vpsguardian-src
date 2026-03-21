@@ -3,12 +3,6 @@
 # Script: restaurar-dumps-remotos.sh
 # Propósito: Baixar dumps SQL de S3/Google Drive e restaurar usando restore-databases-dump.sh
 # Uso: ./restaurar-dumps-remotos.sh [--source=s3|gdrive]
-#
-# Este script:
-#   1. Lista lotes de dumps disponíveis no S3 ou Google Drive
-#   2. Permite escolher qual lote baixar
-#   3. Baixa o lote selecionado
-#   4. Chama restore-databases-dump.sh com menu interativo completo
 ################################################################################
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,11 +24,13 @@ SOURCE=""  # s3, gdrive, ou ssh
 TEMP_DIR="/tmp/restore-dumps-$$"
 LOCAL_RESTORE_DIR="/var/backups/vpsguardian/restore-remote"
 AUTO_CLEANUP=true
+S3_ENDPOINT="${S3_ENDPOINT:-}"
 
 ### ========== PARSE ARGUMENTOS ==========
 while [[ $# -gt 0 ]]; do
     case $1 in
         --source=*) SOURCE="${1#*=}"; shift ;;
+        --endpoint=*) S3_ENDPOINT="${1#*=}"; shift ;;
         --no-cleanup) AUTO_CLEANUP=false; shift ;;
         -h|--help)
             cat << 'EOF'
@@ -43,8 +39,13 @@ while [[ $# -gt 0 ]]; do
 ╚════════════════════════════════════════════════════════════════╝
 
 DESCRIÇÃO:
-  Baixa lotes de dumps SQL de S3/Google Drive e restaura usando
-  o menu interativo do restore-databases-dump.sh
+  Baixa lotes de dumps SQL/Redis de S3/Google Drive e restaura usando
+  o menu interativo do restore-databases-dump.sh.
+
+  IMPORTANTE: Este script restaura APENAS dumps de bancos de dados de aplicações.
+  Para restaurar o Coolify completo (banco + SSH + .env), use:
+    - restaurar-coolify.sh (interface unificada)
+    - restaurar-do-s3.sh (direto do S3)
 
 USO:
   ./restaurar-dumps-remotos.sh [--source=ORIGEM]
@@ -53,30 +54,9 @@ OPÇÕES:
   --source=s3          Baixar do AWS S3
   --source=gdrive      Baixar do Google Drive (rclone)
   --source=ssh         Baixar de servidor SSH
+  --endpoint=URL       Endpoint S3-compatible (Cloudflare R2, MinIO)
   --no-cleanup         Não deletar arquivos baixados após restore
   -h, --help           Mostrar esta ajuda
-
-EXEMPLOS:
-  # Via menu interativo (escolhe a origem)
-  ./restaurar-dumps-remotos.sh
-
-  # Direto do S3
-  ./restaurar-dumps-remotos.sh --source=s3
-
-  # Direto do Google Drive
-  ./restaurar-dumps-remotos.sh --source=gdrive
-
-PRÉ-REQUISITOS:
-  • AWS S3: AWS CLI instalado e configurado
-  • Google Drive: rclone instalado e configurado
-  • SSH: Chave SSH configurada
-
-IMPORTANTE:
-  Após baixar, você terá controle total no restore:
-  - Restaurar tudo
-  - Restaurar tudo EXCETO Coolify
-  - Escolher dumps específicos
-
 EOF
             exit 0
             ;;
@@ -84,21 +64,26 @@ EOF
     esac
 done
 
+### ========== CONSTRUIR COMANDO AWS (SUPORTE R2) ==========
+AWS_CMD="aws"
+if [ -n "$S3_ENDPOINT" ]; then 
+    AWS_CMD="aws --endpoint-url $S3_ENDPOINT"
+fi
+
 ### ========== APRESENTAÇÃO ==========
 clear
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║       RESTAURAR DUMPS SQL DE ORIGEM REMOTA                     ║"
+echo "║        RESTAURAR DUMPS SQL DE ORIGEM REMOTA                    ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
 ### ========== ESCOLHER ORIGEM ==========
 if [ -z "$SOURCE" ]; then
     log_section "Escolha a Origem dos Dumps"
-
     echo "De onde você deseja baixar os dumps SQL?"
     echo ""
-    echo "  [1] AWS S3"
+    echo "  [1] AWS S3 / Cloudflare R2"
     echo "  [2] Google Drive (rclone)"
     echo "  [3] Servidor SSH (rsync/scp)"
     echo "  [0] Cancelar"
@@ -122,86 +107,79 @@ case "$SOURCE" in
     s3)
         if ! command -v aws &> /dev/null; then
             log_error "AWS CLI não está instalado"
-            echo "Instale com o instalador oficial (AWS CLI v2):"
-            echo "  sudo apt update && sudo apt install unzip -y"
-            echo "  curl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\""
-            echo "  unzip awscliv2.zip && sudo ./aws/install"
-            echo "Configure com: aws configure"
-            exit 1
-        fi
-
-        if [ ! -f ~/.aws/credentials ]; then
-            log_error "AWS CLI não está configurado"
-            echo "Configure com: aws configure"
             exit 1
         fi
 
         # Usar configuração ou perguntar
         if [ -z "$S3_BUCKET" ]; then
-            read -p "Nome do bucket S3: " S3_BUCKET
+            read -p "Nome do bucket S3/R2: " S3_BUCKET
             read -p "Prefixo/pasta (padrão: backups/vpsguardian/databases): " S3_PREFIX
             S3_PREFIX=${S3_PREFIX:-backups/vpsguardian/databases}
         fi
 
-        log_info "Testando acesso ao S3..."
-        if ! aws s3 ls "s3://$S3_BUCKET/$S3_PREFIX/" >/dev/null 2>&1; then
-            log_error "Falha ao acessar s3://$S3_BUCKET/$S3_PREFIX/"
-            echo "Verifique o nome do bucket e as credenciais AWS"
+        # Tratar S3_PREFIX para evitar barras duplas e construir a URL alvo
+        S3_TARGET="s3://$S3_BUCKET"
+        if [ -n "$S3_PREFIX" ]; then
+            CLEAN_PREFIX=$(echo "$S3_PREFIX" | sed 's/^\/*//;s/\/*$//')
+            if [ -n "$CLEAN_PREFIX" ]; then
+                S3_TARGET="s3://$S3_BUCKET/$CLEAN_PREFIX"
+            fi
+        fi
+
+        log_info "Testando acesso ao bucket..."
+        if [ -n "$S3_ENDPOINT" ]; then
+            log_info "Usando Endpoint: $S3_ENDPOINT"
+        fi
+        
+        if ! $AWS_CMD s3 ls "s3://$S3_BUCKET" >/dev/null 2>&1; then
+            log_error "Falha ao acessar o bucket s3://$S3_BUCKET"
+            echo "Verifique o nome do bucket, as credenciais e o endpoint"
             exit 1
         fi
 
-        log_success "AWS S3 configurado: s3://$S3_BUCKET/$S3_PREFIX/"
+        log_success "Conexão S3/R2 configurada. Alvo: $S3_TARGET/"
         ;;
 
     gdrive)
         if ! command -v rclone &> /dev/null; then
             log_error "rclone não está instalado"
-            echo "Instale com: curl https://rclone.org/install.sh | sudo bash"
             exit 1
         fi
 
-        # Usar configuração ou perguntar
         if [ -z "$GDRIVE_REMOTE_NAME" ]; then
-            echo "Remotes disponíveis:"
-            rclone listremotes
-            echo ""
             read -p "Nome do remote (padrão: gdrive): " GDRIVE_REMOTE_NAME
             GDRIVE_REMOTE_NAME=${GDRIVE_REMOTE_NAME:-gdrive}
         fi
 
         if [ -z "$GDRIVE_DIR" ]; then
-            read -p "Diretório no Google Drive (padrão: backups/vpsguardian/databases): " GDRIVE_DIR
+            read -p "Diretório no Google Drive: " GDRIVE_DIR
             GDRIVE_DIR=${GDRIVE_DIR:-backups/vpsguardian/databases}
         fi
 
         log_info "Testando acesso ao Google Drive..."
         if ! rclone lsd "${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" >/dev/null 2>&1; then
             log_error "Falha ao acessar ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}"
-            echo "Verifique a configuração do rclone"
             exit 1
         fi
-
         log_success "Google Drive configurado: ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}"
         ;;
 
     ssh)
-        # Usar configuração ou perguntar
         if [ -z "$SSH_REMOTE_SERVER" ]; then
             read -p "IP/Hostname do servidor remoto: " SSH_REMOTE_SERVER
             read -p "Usuário SSH (padrão: root): " SSH_REMOTE_USER
             SSH_REMOTE_USER=${SSH_REMOTE_USER:-root}
             read -p "Porta SSH (padrão: 22): " SSH_REMOTE_PORT
             SSH_REMOTE_PORT=${SSH_REMOTE_PORT:-22}
-            read -p "Diretório remoto (padrão: /var/backups/vpsguardian/databases): " SSH_REMOTE_DIR
+            read -p "Diretório remoto: " SSH_REMOTE_DIR
             SSH_REMOTE_DIR=${SSH_REMOTE_DIR:-/var/backups/vpsguardian/databases}
         fi
 
         log_info "Testando conexão SSH..."
         if ! ssh -p "$SSH_REMOTE_PORT" -o ConnectTimeout=10 "$SSH_REMOTE_USER@$SSH_REMOTE_SERVER" "exit" 2>/dev/null; then
-            log_error "Falha na conexão SSH com $SSH_REMOTE_USER@$SSH_REMOTE_SERVER:$SSH_REMOTE_PORT"
+            log_error "Falha na conexão SSH"
             exit 1
         fi
-
         log_success "SSH configurado: $SSH_REMOTE_USER@$SSH_REMOTE_SERVER:$SSH_REMOTE_DIR"
         ;;
 esac
@@ -219,30 +197,28 @@ log_info "Buscando lotes disponíveis..."
 
 case "$SOURCE" in
     s3)
-        # Listar arquivos .tar.gz no S3
         while IFS= read -r line; do
             if [[ "$line" =~ lote-.*\.tar\.gz$ ]]; then
                 filename=$(echo "$line" | awk '{print $4}')
                 size=$(echo "$line" | awk '{print $3}')
                 date=$(echo "$line" | awk '{print $1" "$2}')
-
+                
+                size_mb=$((size / 1024 / 1024))
+                
                 LOTE_NAMES+=("$filename")
-                LOTE_SIZES+=("$size")
+                LOTE_SIZES+=("${size_mb}MB")
                 LOTE_DATES+=("$date")
             fi
-        done < <(aws s3 ls "s3://$S3_BUCKET/$S3_PREFIX/" 2>/dev/null)
+        done < <($AWS_CMD s3 ls "$S3_TARGET/" 2>/dev/null)
         ;;
 
     gdrive)
-        # Listar arquivos .tar.gz no Google Drive
         while IFS= read -r line; do
             if [[ "$line" =~ lote-.*\.tar\.gz$ ]]; then
-                # rclone lsl retorna: size date time filename
                 size=$(echo "$line" | awk '{print $1}')
                 date=$(echo "$line" | awk '{print $2" "$3}')
                 filename=$(echo "$line" | awk '{print $4}')
 
-                # Converter size para formato legível
                 size_mb=$((size / 1024 / 1024))
                 size="${size_mb}M"
 
@@ -254,7 +230,6 @@ case "$SOURCE" in
         ;;
 
     ssh)
-        # Listar arquivos .tar.gz no servidor SSH
         while IFS= read -r line; do
             if [[ "$line" =~ lote-.*\.tar\.gz$ ]]; then
                 filename=$(basename "$line")
@@ -312,13 +287,11 @@ echo ""
 
 case "$SOURCE" in
     s3)
-        aws s3 cp "s3://$S3_BUCKET/$S3_PREFIX/$SELECTED_LOTE" "$DOWNLOAD_FILE" --progress
+        $AWS_CMD s3 cp "$S3_TARGET/$SELECTED_LOTE" "$DOWNLOAD_FILE"
         ;;
-
     gdrive)
         rclone copy "${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}/$SELECTED_LOTE" "$LOCAL_RESTORE_DIR/" --progress
         ;;
-
     ssh)
         scp -P "$SSH_REMOTE_PORT" \
             "$SSH_REMOTE_USER@$SSH_REMOTE_SERVER:$SSH_REMOTE_DIR/$SELECTED_LOTE" \
@@ -360,9 +333,13 @@ log_info "Chamando restore-databases-dump.sh com menu interativo..."
 echo ""
 echo "════════════════════════════════════════════════════════════════"
 echo "  Você terá CONTROLE TOTAL sobre o que restaurar:"
-echo "  • Opção 1: Restaurar TUDO (incluindo Coolify)"
-echo "  • Opção 2: Restaurar TUDO EXCETO Coolify ⭐ RECOMENDADO"
+echo "  • Opção 1: Restaurar TUDO (incluindo banco do Coolify)"
+echo "  • Opção 2: Restaurar TUDO EXCETO banco do Coolify ⭐ RECOMENDADO"
 echo "  • Opção 3: Escolher dumps específicos"
+echo ""
+echo "  NOTA: Este script restaura apenas DUMPS SQL/Redis de aplicações."
+echo "        Para restaurar o Coolify completo (DB + SSH + .env + volumes),"
+echo "        use: restaurar-coolify.sh ou restaurar-do-s3.sh"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
 read -p "Pressione ENTER para continuar..."
@@ -375,7 +352,8 @@ if [ ! -x "$RESTORE_SCRIPT" ]; then
     exit 1
 fi
 
-bash "$RESTORE_SCRIPT" --dir="$EXTRACT_DIR"
+# CORREÇÃO AQUI: Passando o diretório pai para o script escanear corretamente
+bash "$RESTORE_SCRIPT" --dir="$LOCAL_RESTORE_DIR"
 RESTORE_EXIT_CODE=$?
 
 echo ""

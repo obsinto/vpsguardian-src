@@ -959,6 +959,31 @@ handle_config_menu() {
                 echo -e "${MAGENTA}▶ Portas Abertas (UFW):${NC}"
                 ufw status 2>/dev/null | grep ALLOW || echo "  UFW não configurado"
                 echo ""
+                echo -e "${MAGENTA}▶ Updates Automáticos:${NC}"
+                if systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+                    echo "  ✅ unattended-upgrades: ativo"
+                    # Verificar configuração
+                    if [ -f "/etc/apt/apt.conf.d/50unattended-upgrades" ]; then
+                        if grep -q "Automatic-Reboot \"true\"" /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null; then
+                            REBOOT_TIME=$(grep "Automatic-Reboot-Time" /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null | grep -oP '"\K[^"]+' | head -1)
+                            echo "  ✅ Reboot automático: ${REBOOT_TIME:-03:00}"
+                        else
+                            echo "  ❌ Reboot automático: desabilitado"
+                        fi
+                    fi
+                    # Verificar notificações Discord
+                    if [ -f "/etc/apt/apt.conf.d/99vpsguardian-notify" ]; then
+                        echo "  ✅ Notificações Discord: configuradas"
+                    fi
+                    # Verificar se precisa reboot
+                    if [ -f /var/run/reboot-required ]; then
+                        echo -e "  ${YELLOW}⚠️  Reboot pendente${NC}"
+                    fi
+                else
+                    echo "  ❌ unattended-upgrades: não configurado"
+                    echo "     Configure em: Menu → Configurações → Tarefas Agendadas"
+                fi
+                echo ""
                 if [ -f "$SCRIPT_DIR/config/config.env" ]; then
                     echo -e "${MAGENTA}▶ Configurações (config.env):${NC}"
                     cat "$SCRIPT_DIR/config/config.env"

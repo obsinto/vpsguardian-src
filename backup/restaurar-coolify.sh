@@ -13,7 +13,8 @@
 # Versão: 1.0.0
 ################################################################################
 
-set -e
+# Não usar set -e para permitir fallbacks em scripts chamados
+# set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {

@@ -12,7 +12,8 @@
 # Versão: 1.0.0
 ################################################################################
 
-set -e
+# Não usar set -e para permitir fallbacks e tratamento manual de erros
+# set -e
 
 # Cores
 RED='\033[0;31m'
@@ -258,53 +259,6 @@ if [ "$DRY_RUN" = false ]; then
         exit 0
     fi
     echo ""
-
-    ### TIPO DE RESTAURAÇÃO (Disaster Recovery vs Sobre instalação existente)
-    log_section "Tipo de Restauração"
-    echo ""
-    echo "Como deseja restaurar?"
-    echo ""
-    echo "  [1] Restauração COMPLETA (Disaster Recovery)"
-    echo "      - Remove Coolify completamente (containers, volumes, /data/coolify)"
-    echo "      - Reinstala Coolify do zero"
-    echo "      - Restaura backup sobre instalação limpa"
-    echo "      - Recomendado para: testes de DR, migração, problemas graves"
-    echo ""
-    echo "  [2] Restauração SOBRE instalação existente"
-    echo "      - Mantém instalação atual"
-    echo "      - Sobrescreve apenas dados (DB, SSH keys, .env)"
-    echo "      - Recomendado para: corrigir dados corrompidos"
-    echo ""
-    read -p "Escolha (1 ou 2): " restore_type
-
-    if [ "$restore_type" = "1" ]; then
-        log_section "Removendo Instalação Atual"
-        echo ""
-        log_warning "Removendo Coolify completamente..."
-
-        # Chamar script de remoção
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        if [ -x "$SCRIPT_DIR/remove-coolify.sh" ]; then
-            "$SCRIPT_DIR/remove-coolify.sh" --force
-        else
-            # Fallback inline se script não existir
-            log_info "Parando containers..."
-            docker stop $(docker ps -q --filter "name=coolify") 2>/dev/null || true
-            docker rm $(docker ps -aq --filter "name=coolify") 2>/dev/null || true
-
-            log_info "Removendo volumes..."
-            docker volume rm coolify-db coolify-redis 2>/dev/null || true
-
-            log_info "Removendo diretório de dados..."
-            rm -rf /data/coolify
-        fi
-
-        log_success "Instalação anterior removida"
-        echo ""
-
-        # Marcar para reinstalar Coolify
-        SKIP_COOLIFY_INSTALL=false
-    fi
 fi
 
 ### ========== DOWNLOAD DOS BACKUPS ==========
@@ -402,36 +356,189 @@ else
         mkdir -p $TEMP_DIR
         tar -xzf $LATEST_BACKUP -C $TEMP_DIR
 
-        # Restaurar banco
-        DB_DUMP=$(find $TEMP_DIR -name "coolify-db-*.dmp" | head -1)
-        if [ -f "$DB_DUMP" ]; then
-            docker start coolify-db 2>/dev/null || true
-            sleep 5
+        # ==============================================================================
+        # EXTRAÇÃO DE APP_KEY E APP_PREVIOUS_KEYS (CRÍTICO!)
+        # Mesmo método usado em migrar-coolify.sh que funciona perfeitamente
+        # ==============================================================================
+        log_info "🔍 Localizando chaves de criptografia no backup..."
 
-            docker cp "$DB_DUMP" coolify-db:/tmp/restore.dmp
-            docker exec coolify-db pg_restore -U coolify -d coolify -c /tmp/restore.dmp 2>/dev/null
-            docker exec coolify-db rm /tmp/restore.dmp
+        BACKUP_APP_KEY=""
+        BACKUP_PREV_KEYS=""
 
-            log_success "Banco de dados restaurado"
+        # 1. BUSCA INTELIGENTE: Procurar .env recursivamente no backup extraído
+        FOUND_ENV_FILE=$(find "$TEMP_DIR" -name ".env" -type f | head -n 1)
+
+        if [ -n "$FOUND_ENV_FILE" ]; then
+            log_success "✅ Arquivo .env encontrado no backup!"
+            log_info "   Localização: ${FOUND_ENV_FILE#$TEMP_DIR/}"
+
+            BACKUP_APP_KEY=$(grep "^APP_KEY=" "$FOUND_ENV_FILE" | cut -d '=' -f2-)
+            BACKUP_PREV_KEYS=$(grep "^APP_PREVIOUS_KEYS=" "$FOUND_ENV_FILE" | cut -d '=' -f2-)
+
+            if [ -n "$BACKUP_APP_KEY" ]; then
+                log_success "✅ APP_KEY encontrada no backup"
+                log_info "   Preview: ${BACKUP_APP_KEY:0:30}..."
+            fi
+
+            if [ -n "$BACKUP_PREV_KEYS" ]; then
+                KEY_COUNT=$(echo "$BACKUP_PREV_KEYS" | tr ',' '\n' | wc -l)
+                log_success "✅ APP_PREVIOUS_KEYS encontrado ($KEY_COUNT chaves antigas)"
+            fi
+        else
+            log_warning "⚠️  Arquivo .env não encontrado no backup extraído"
         fi
 
-        # Restaurar SSH keys
-        if [ -d "$TEMP_DIR/ssh-keys" ]; then
-            rm -rf /data/coolify/ssh/keys
-            cp -r "$TEMP_DIR/ssh-keys" /data/coolify/ssh/keys
+        # 2. VALIDAÇÃO FINAL
+        if [ -z "$BACKUP_APP_KEY" ]; then
+            log_error "❌ ERRO CRÍTICO: Nenhuma APP_KEY encontrada no backup!"
+            log_error "Isso causará erro 'The MAC is invalid' no Coolify"
+            log_error "Verifique se o backup está completo"
+        else
+            # 3. APLICAR APP_KEY NO .ENV DO SISTEMA
+            log_info "Aplicando chaves de criptografia..."
+
+            ENV_FILE="/data/coolify/source/.env"
+
+            # Criar backup do .env atual
+            if [ -f "$ENV_FILE" ]; then
+                cp "$ENV_FILE" "${ENV_FILE}.before-restore-$(date +%Y%m%d_%H%M%S)"
+            fi
+
+            # Garantir que o arquivo existe
+            mkdir -p /data/coolify/source
+            touch "$ENV_FILE"
+
+            # Remover linhas antigas de APP_KEY e APP_PREVIOUS_KEYS
+            sed -i '/^APP_KEY=/d' "$ENV_FILE"
+            sed -i '/^APP_PREVIOUS_KEYS=/d' "$ENV_FILE"
+
+            # Aplicar APP_KEY do backup usando printf (evita problemas com caracteres especiais)
+            printf 'APP_KEY=%s\n' "$BACKUP_APP_KEY" >> "$ENV_FILE"
+
+            # Aplicar APP_PREVIOUS_KEYS se existir
+            if [ -n "$BACKUP_PREV_KEYS" ]; then
+                printf 'APP_PREVIOUS_KEYS=%s\n' "$BACKUP_PREV_KEYS" >> "$ENV_FILE"
+            fi
+
+            # Limpar linhas vazias
+            sed -i '/^$/d' "$ENV_FILE"
+
+            chmod 600 "$ENV_FILE"
+            log_success "✅ APP_KEY aplicada com sucesso!"
+            log_info "   APP_KEY: ${BACKUP_APP_KEY:0:30}..."
+        fi
+
+        # Encontrar o diretório extraído para outros arquivos
+        BACKUP_EXTRACTED_DIR=$(find $TEMP_DIR -maxdepth 1 -type d -name "[0-9]*" | head -1)
+        if [ -z "$BACKUP_EXTRACTED_DIR" ]; then
+            BACKUP_EXTRACTED_DIR="$TEMP_DIR"
+        fi
+
+        # ========== RESTAURAR SSH KEYS ==========
+        SSH_KEYS_DIR=$(find $BACKUP_EXTRACTED_DIR -maxdepth 1 -type d -name "ssh-keys" | head -1)
+        if [ -d "$SSH_KEYS_DIR" ]; then
+            log_info "Restaurando SSH keys..."
+            mkdir -p /data/coolify/ssh/keys
+            cp -r "$SSH_KEYS_DIR"/* /data/coolify/ssh/keys/ 2>/dev/null || true
+            chmod 600 /data/coolify/ssh/keys/* 2>/dev/null || true
             log_success "SSH keys restauradas"
+        else
+            log_warning "SSH keys não encontradas no backup"
         fi
 
-        # Restaurar .env
-        if [ -f "$TEMP_DIR/.env" ]; then
-            cp "$TEMP_DIR/.env" /data/coolify/source/.env
-            log_success "Configurações restauradas"
+        # ========== RESTAURAR PROXY CONFIG (certificados SSL) ==========
+        PROXY_CONFIG_DIR=$(find $BACKUP_EXTRACTED_DIR -maxdepth 1 -type d -name "proxy-config" | head -1)
+        if [ -d "$PROXY_CONFIG_DIR" ]; then
+            log_info "Restaurando configuração do proxy (certificados SSL)..."
+            mkdir -p /data/coolify/proxy
+            cp -r "$PROXY_CONFIG_DIR"/* /data/coolify/proxy/ 2>/dev/null || true
+            log_success "Configuração do proxy restaurada"
         fi
 
+        # ========== RESTAURAR BANCO DE DADOS ==========
+        DB_DUMP=$(find $BACKUP_EXTRACTED_DIR -name "coolify-db-*.dmp" -o -name "coolify-db-*.sql" | head -1)
+        if [ -f "$DB_DUMP" ]; then
+            log_info "Iniciando container do banco de dados..."
+            docker start coolify-db 2>/dev/null || true
+
+            # Aguardar banco ficar pronto
+            log_info "Aguardando banco de dados ficar pronto..."
+            for i in {1..30}; do
+                if docker exec coolify-db pg_isready -U coolify >/dev/null 2>&1; then
+                    log_success "Banco de dados pronto"
+                    break
+                fi
+                sleep 1
+            done
+
+            log_info "Copiando dump para container..."
+            docker cp "$DB_DUMP" coolify-db:/tmp/restore.dmp
+
+            # Tentar pg_restore primeiro (formato custom), se falhar, tentar psql (formato SQL)
+            log_info "Restaurando banco de dados..."
+            if docker exec coolify-db pg_restore -U coolify -d coolify -c --if-exists /tmp/restore.dmp 2>/dev/null; then
+                log_success "Banco de dados restaurado (pg_restore)"
+            elif docker exec coolify-db psql -U coolify -d coolify -f /tmp/restore.dmp 2>/dev/null; then
+                log_success "Banco de dados restaurado (psql)"
+            else
+                log_warning "Restauração do banco teve avisos (pode ser normal em instalação nova)"
+                # Tentar novamente sem o -c (clean) flag
+                docker exec coolify-db pg_restore -U coolify -d coolify /tmp/restore.dmp 2>&1 || true
+            fi
+
+            docker exec coolify-db rm -f /tmp/restore.dmp
+        else
+            log_warning "Dump do banco de dados não encontrado no backup"
+        fi
+
+        # Limpar diretório temporário
         rm -rf $TEMP_DIR
 
-        # Reiniciar Coolify
-        docker start $(docker ps -aq --filter "name=coolify") 2>/dev/null || true
+        # ========== RECRIAR CONTAINERS DO COOLIFY ==========
+        # IMPORTANTE: Usar --force-recreate para que os containers
+        # carreguem a nova APP_KEY do .env (docker start NÃO recarrega env vars!)
+        log_section "Recriando Containers do Coolify"
+
+        log_info "Parando containers existentes..."
+        docker stop coolify coolify-db coolify-redis coolify-realtime coolify-proxy coolify-sentinel 2>/dev/null || true
+
+        log_info "Removendo containers para recriar com nova APP_KEY..."
+        docker rm coolify coolify-realtime coolify-sentinel coolify-proxy 2>/dev/null || true
+
+        log_info "Recriando containers com docker compose..."
+        cd /data/coolify/source
+
+        # Usar --force-recreate para garantir que as env vars sejam recarregadas
+        if docker compose up -d --force-recreate 2>/dev/null; then
+            log_success "Containers recriados com nova APP_KEY"
+        else
+            log_warning "docker compose falhou, tentando método alternativo..."
+            # Fallback: iniciar containers restantes
+            docker start coolify-db coolify-redis 2>/dev/null || true
+            sleep 5
+
+            # Rodar script de upgrade do Coolify que recria containers corretamente
+            if [ -f "/data/coolify/source/upgrade.sh" ]; then
+                log_info "Usando upgrade.sh do Coolify..."
+                bash /data/coolify/source/upgrade.sh 2>/dev/null || true
+            fi
+        fi
+
+        # Aguardar containers iniciarem
+        log_info "Aguardando Coolify inicializar (30s)..."
+        sleep 30
+
+        # Verificar se APP_KEY foi aplicada corretamente
+        CONTAINER_APP_KEY=$(docker exec coolify env 2>/dev/null | grep "^APP_KEY=" | cut -d'=' -f2-)
+        if [ "$CONTAINER_APP_KEY" = "$BACKUP_APP_KEY" ]; then
+            log_success "✅ APP_KEY verificada - container usando chave correta!"
+        else
+            log_warning "⚠️  APP_KEY no container pode estar diferente"
+            log_info "   Esperado: ${BACKUP_APP_KEY:0:30}..."
+            log_info "   Atual:    ${CONTAINER_APP_KEY:0:30}..."
+            log_info "   Se houver erro 'MAC is invalid', execute manualmente:"
+            log_info "   cd /data/coolify/source && docker compose up -d --force-recreate"
+        fi
 
         log_success "Coolify restaurado"
     else

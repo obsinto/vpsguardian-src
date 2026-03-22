@@ -28,6 +28,16 @@ source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
 # Carregar biblioteca de retenção se disponível
 source "$SCRIPT_DIR/../lib/backup-retention.sh" 2>/dev/null || true
 
+# Carregar configurações de destino de backup (inclui Coolify API)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+
+# Carregar biblioteca de API do Coolify
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
+
 ### ========== CONFIGURAÇÃO ==========
 BACKUP_ALL=false
 OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-/var/backups/vpsguardian/volumes}"
@@ -406,8 +416,18 @@ strategy_slow_shutdown() {
             ;;
     esac
 
-    # Parar container graciosamente
+    # Parar container graciosamente - usar API se disponível
     log_info "  Parando container (timeout: 60s)..."
+
+    # Tentar via Coolify API primeiro (graceful)
+    if type smart_stop_container &>/dev/null 2>&1; then
+        if smart_stop_container "$container" "database"; then
+            log_success "  Container parado via API (graceful)"
+            return 0
+        fi
+    fi
+
+    # Fallback: docker stop
     docker stop -t 60 "$container" >/dev/null 2>&1
 
     if ! docker ps --filter "name=^${container}$" --format "{{.Names}}" | grep -q "^${container}$"; then
@@ -544,6 +564,16 @@ restart_containers() {
     for container in "${!DB_CONTAINERS[@]}"; do
         if [ "${DB_WAS_RUNNING[$container]}" = "true" ]; then
             log_info "Reiniciando: $container"
+
+            # Tentar via Coolify API primeiro (graceful)
+            if type smart_start_container &>/dev/null 2>&1; then
+                if smart_start_container "$container" "database"; then
+                    log_success "  Container reiniciado via API"
+                    continue
+                fi
+            fi
+
+            # Fallback: docker start
             docker start "$container" >/dev/null 2>&1
             if [ $? -eq 0 ]; then
                 log_success "  Container reiniciado"

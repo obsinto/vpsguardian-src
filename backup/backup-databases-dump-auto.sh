@@ -44,12 +44,14 @@ UPLOAD_DEST="${1:-local}"
 BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="/var/log/vpsguardian/backup-databases-auto-${TIMESTAMP}.log"
+PROJECT_FILTER=""
 
 # Parse argumentos
 while [[ $# -gt 0 ]]; do
     case $1 in
         --dest=*) UPLOAD_DEST="${1#*=}"; shift ;;
         --include-coolify) INCLUDE_COOLIFY=true; shift ;;
+        --project=*) PROJECT_FILTER="${1#*=}"; shift ;;
         *) shift ;;
     esac
 done
@@ -65,10 +67,15 @@ echo "╚═══════════════════════�
 echo ""
 log_info "Iniciado em: $(date '+%Y-%m-%d %H:%M:%S')"
 log_info "Destino: $UPLOAD_DEST"
+if [ -n "$PROJECT_FILTER" ]; then
+    log_info "Projeto: $PROJECT_FILTER"
+fi
 echo ""
 
 # Notificar início
-notify_backup_start "Databases (Dumps SQL)" "Destino: $UPLOAD_DEST | Coolify: ${BACKUP_INCLUDE_COOLIFY:-true}"
+PROJECT_INFO=""
+[ -n "$PROJECT_FILTER" ] && PROJECT_INFO=" | Projeto: $PROJECT_FILTER"
+notify_backup_start "Databases (Dumps SQL)" "Destino: $UPLOAD_DEST | Coolify: ${BACKUP_INCLUDE_COOLIFY:-true}${PROJECT_INFO}"
 
 ### ========== EXECUTAR DUMP ==========
 log_section "Criando Dumps SQL"
@@ -90,9 +97,16 @@ else
     log_info "Configuração: Coolify será INCLUÍDO no backup"
 fi
 
+# Determinar filtro de projeto
+PROJECT_FLAG=""
+if [ -n "$PROJECT_FILTER" ]; then
+    PROJECT_FLAG="--project=$PROJECT_FILTER"
+    log_info "Configuração: Filtrado por projeto '$PROJECT_FILTER'"
+fi
+
 # Executar em modo automático (--auto) para não pedir confirmação
-log_info "Executando: $DUMP_SCRIPT --auto $COOLIFY_FLAG"
-bash "$DUMP_SCRIPT" --target=local --auto $COOLIFY_FLAG
+log_info "Executando: $DUMP_SCRIPT --auto $COOLIFY_FLAG $PROJECT_FLAG"
+bash "$DUMP_SCRIPT" --target=local --auto $COOLIFY_FLAG $PROJECT_FLAG
 
 if [ $? -ne 0 ]; then
     log_error "Falha ao criar dumps"

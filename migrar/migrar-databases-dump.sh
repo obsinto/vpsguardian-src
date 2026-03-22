@@ -32,6 +32,16 @@ elif [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
     source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
 fi
 
+# Carregar configurações de destino de backup (inclui Coolify API)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+
+# Carregar biblioteca de API do Coolify
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
+
 ### ========== CONFIGURAÇÃO ==========
 TARGET_SERVER="${TARGET_SERVER:-}"
 TARGET_USER="${TARGET_USER:-root}"
@@ -39,6 +49,7 @@ TARGET_PORT="${TARGET_PORT:-22}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 AUTO_MODE=false
 INCLUDE_COOLIFY=""  # vazio = perguntar, true = incluir, false = excluir
+PROJECT_FILTER=""   # vazio = todos, ou UUID/nome do projeto
 DUMP_DIR="/tmp/database-dumps-$$"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
@@ -52,6 +63,8 @@ while [[ $# -gt 0 ]]; do
         --auto) AUTO_MODE=true; shift ;;
         --include-coolify) INCLUDE_COOLIFY=true; shift ;;
         --exclude-coolify) INCLUDE_COOLIFY=false; shift ;;
+        --project=*) PROJECT_FILTER="${1#*=}"; shift ;;
+        --list-projects) LIST_PROJECTS_ONLY=true; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -65,17 +78,130 @@ while [[ $# -gt 0 ]]; do
             echo "  --auto              Modo automático (sem confirmações)"
             echo "  --include-coolify   Incluir banco do Coolify (coolify-db)"
             echo "  --exclude-coolify   Excluir banco do Coolify (coolify-db)"
+            echo "  --project=ID        Filtrar por projeto (UUID ou nome)"
+            echo "  --list-projects     Listar projetos disponíveis e sair"
             echo "  -h, --help          Mostrar esta ajuda"
             echo ""
             echo "Exemplo:"
             echo "  $0 --target=192.168.1.100"
             echo "  $0 --auto --include-coolify --target=local"
+            echo "  $0 --project=meu-projeto --target=local"
+            echo "  $0 --list-projects"
             echo ""
             exit 0
             ;;
         *) log_error "Opção desconhecida: $1"; exit 1 ;;
     esac
 done
+
+### ========== FUNÇÕES DE DETECÇÃO VIA COOLIFY API ==========
+
+# Flag para indicar se estamos usando API
+USING_COOLIFY_API=false
+
+# Arrays para armazenar dados da API
+declare -A API_DB_CREDENTIALS
+declare -A API_DB_TYPES
+
+# Detectar databases via API do Coolify
+detect_databases_via_api() {
+    if ! coolify_api_available 2>/dev/null; then
+        return 1
+    fi
+
+    log_info "Usando API do Coolify para descoberta de databases..."
+
+    local databases
+
+    # Se filtro de projeto foi especificado, usar função específica
+    if [ -n "$PROJECT_FILTER" ]; then
+        log_info "Filtrando por projeto: $PROJECT_FILTER"
+        databases=$(coolify_list_project_databases "$PROJECT_FILTER" 2>/dev/null)
+
+        if [ -z "$databases" ]; then
+            log_warning "Nenhum database encontrado no projeto '$PROJECT_FILTER'"
+            log_info "Use --list-projects para ver projetos disponíveis"
+            return 1
+        fi
+    else
+        databases=$(coolify_discover_databases 2>/dev/null)
+    fi
+
+    if [ -z "$databases" ]; then
+        log_warning "API disponível mas nenhum database encontrado"
+        return 1
+    fi
+
+    USING_COOLIFY_API=true
+
+    # Processar databases da API
+    while IFS='|' read -r uuid name type status container url; do
+        if [ -z "$uuid" ]; then continue; fi
+
+        # Normalizar tipo
+        local normalized_type=""
+        case "$type" in
+            postgresql|postgres) normalized_type="postgres" ;;
+            mysql|mariadb) normalized_type="mysql" ;;
+            mongodb|mongo) normalized_type="mongodb" ;;
+            redis) normalized_type="redis" ;;
+            *) normalized_type="$type" ;;
+        esac
+
+        # Armazenar informações
+        API_DB_TYPES["$container"]="$normalized_type"
+
+        # Extrair credenciais da URL se disponível
+        if [ -n "$url" ] && [ "$url" != "null" ]; then
+            API_DB_CREDENTIALS["$container"]="$url"
+        fi
+
+        # Adicionar ao array apropriado
+        case "$normalized_type" in
+            mysql|mariadb)
+                echo "$container" >> /tmp/api_mysql_containers.$$
+                ;;
+            postgres)
+                echo "$container" >> /tmp/api_postgres_containers.$$
+                ;;
+            mongodb)
+                echo "$container" >> /tmp/api_mongodb_containers.$$
+                ;;
+        esac
+
+        log_success "  API: $name ($normalized_type) → container: $container"
+    done <<< "$databases"
+
+    return 0
+}
+
+# Obter credenciais via API (fallback para método Docker)
+get_credentials_from_api() {
+    local container="$1"
+    local url="${API_DB_CREDENTIALS[$container]}"
+
+    if [ -n "$url" ] && [ "$url" != "null" ]; then
+        # Parse URL: protocol://user:pass@host:port/db
+        local user pass db
+
+        # Extrair user:pass
+        local userpass=$(echo "$url" | sed -n 's|.*://\([^@]*\)@.*|\1|p')
+        user=$(echo "$userpass" | cut -d: -f1)
+        pass=$(echo "$userpass" | cut -d: -f2-)
+
+        # Extrair database
+        db=$(echo "$url" | sed -n 's|.*/\([^?]*\).*|\1|p')
+
+        if [ -n "$user" ] && [ -n "$pass" ]; then
+            echo "$user"
+            echo "$pass"
+            echo "${db:-all}"
+            return 0
+        fi
+    fi
+
+    return 1
+}
 
 ### ========== FUNÇÕES DE DETECÇÃO (Tripla Checagem) ==========
 
@@ -137,9 +263,21 @@ detect_mongodb_containers() {
 
 get_mysql_credentials() {
     local container="$1"
+
+    # Tentar via API primeiro
+    if [ "$USING_COOLIFY_API" = true ]; then
+        local api_creds
+        api_creds=$(get_credentials_from_api "$container")
+        if [ -n "$api_creds" ]; then
+            echo "$api_creds"
+            return 0
+        fi
+    fi
+
+    # Fallback: Docker inspect
     local root_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local db_name=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^(MYSQL|MARIADB)_DATABASE=' | cut -d'=' -f2 | head -n1)
-    
+
     echo "root"
     echo "$root_pass"
     echo "${db_name:-all}"
@@ -147,10 +285,22 @@ get_mysql_credentials() {
 
 get_postgres_credentials() {
     local container="$1"
+
+    # Tentar via API primeiro
+    if [ "$USING_COOLIFY_API" = true ]; then
+        local api_creds
+        api_creds=$(get_credentials_from_api "$container")
+        if [ -n "$api_creds" ]; then
+            echo "$api_creds"
+            return 0
+        fi
+    fi
+
+    # Fallback: Docker inspect
     local pg_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local pg_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_USER=' | cut -d'=' -f2 | head -n1)
     local pg_db=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^POSTGRES_DB=' | cut -d'=' -f2 | head -n1)
-    
+
     echo "${pg_user:-postgres}"
     echo "$pg_pass"
     echo "${pg_db:-postgres}"
@@ -158,9 +308,21 @@ get_postgres_credentials() {
 
 get_mongodb_credentials() {
     local container="$1"
+
+    # Tentar via API primeiro
+    if [ "$USING_COOLIFY_API" = true ]; then
+        local api_creds
+        api_creds=$(get_credentials_from_api "$container")
+        if [ -n "$api_creds" ]; then
+            echo "$api_creds"
+            return 0
+        fi
+    fi
+
+    # Fallback: Docker inspect
     local mongo_pass=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2 | head -n1)
     local mongo_user=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2 | head -n1)
-    
+
     echo "${mongo_user:-root}"
     echo "$mongo_pass"
     echo "admin"
@@ -269,12 +431,102 @@ if ! docker ps >/dev/null 2>&1; then
     exit 1
 fi
 
+### ========== LISTAR PROJETOS (se solicitado) ==========
+if [ "${LIST_PROJECTS_ONLY:-false}" = true ]; then
+    log_section "Projetos Disponíveis (via Coolify API)"
+
+    if ! coolify_api_available 2>/dev/null; then
+        log_error "API do Coolify não está disponível"
+        log_info "Configure a API com: scripts-auxiliares/configurar-coolify-api.sh"
+        exit 1
+    fi
+
+    local projects
+    projects=$(coolify_list_project_names 2>/dev/null)
+
+    if [ -z "$projects" ]; then
+        log_warning "Nenhum projeto encontrado"
+        exit 0
+    fi
+
+    echo ""
+    printf "  %-36s  %-30s  %s\n" "UUID" "NOME" "DESCRIÇÃO"
+    printf "  %-36s  %-30s  %s\n" "------------------------------------" "------------------------------" "----------"
+
+    echo "$projects" | while IFS='|' read -r uuid name desc; do
+        printf "  %-36s  %-30s  %s\n" "$uuid" "$name" "${desc:0:40}"
+    done
+
+    echo ""
+    log_info "Use: $0 --project=NOME_OU_UUID para filtrar por projeto"
+    exit 0
+fi
+
+### ========== SELEÇÃO DE PROJETO (Interativo) ==========
+# Se API disponível, modo interativo e sem filtro de projeto, oferecer seleção
+if [ "$AUTO_MODE" = false ] && [ -z "$PROJECT_FILTER" ] && coolify_api_available 2>/dev/null; then
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC:-}"
+
+    # Listar projetos disponíveis
+    local projects_list
+    projects_list=$(coolify_list_project_names 2>/dev/null)
+
+    if [ -n "$projects_list" ]; then
+        echo ""
+        echo "  Projetos disponíveis (via Coolify API):"
+        echo ""
+
+        local idx=1
+        declare -a PROJECT_OPTIONS
+        while IFS='|' read -r uuid name desc; do
+            printf "    ${GREEN:-}%2d${NC:-} → %s" "$idx" "$name"
+            if [ -n "$desc" ]; then
+                printf " ${GRAY:-}(%s)${NC:-}" "${desc:0:30}"
+            fi
+            echo ""
+            PROJECT_OPTIONS[$idx]="$uuid|$name"
+            ((idx++))
+        done <<< "$projects_list"
+
+        echo ""
+        printf "    ${GREEN:-}%2d${NC:-} → Todos os bancos (sem filtro)\n" "0"
+        echo ""
+        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC:-}"
+
+        read -p "Escolha um projeto (0-$((idx-1))): " project_choice
+
+        if [ -n "$project_choice" ] && [ "$project_choice" != "0" ] && [ -n "${PROJECT_OPTIONS[$project_choice]}" ]; then
+            PROJECT_FILTER=$(echo "${PROJECT_OPTIONS[$project_choice]}" | cut -d'|' -f1)
+            local project_name=$(echo "${PROJECT_OPTIONS[$project_choice]}" | cut -d'|' -f2)
+            log_info "Projeto selecionado: $project_name"
+        else
+            log_info "Backup de todos os bancos (sem filtro de projeto)"
+        fi
+        echo ""
+    fi
+fi
+
 ### ========== DETECTAR BANCOS DE DADOS ==========
 log_section "Detectando Bancos de Dados"
 
-MYSQL_CONTAINERS=($(detect_mysql_containers))
-POSTGRES_CONTAINERS=($(detect_postgres_containers))
-MONGODB_CONTAINERS=($(detect_mongodb_containers))
+# Limpar arquivos temporários
+rm -f /tmp/api_mysql_containers.$$ /tmp/api_postgres_containers.$$ /tmp/api_mongodb_containers.$$
+
+# Tentar usar API do Coolify primeiro
+if detect_databases_via_api 2>/dev/null; then
+    # Carregar containers dos arquivos temporários
+    MYSQL_CONTAINERS=($(cat /tmp/api_mysql_containers.$$ 2>/dev/null | sort -u))
+    POSTGRES_CONTAINERS=($(cat /tmp/api_postgres_containers.$$ 2>/dev/null | sort -u))
+    MONGODB_CONTAINERS=($(cat /tmp/api_mongodb_containers.$$ 2>/dev/null | sort -u))
+    rm -f /tmp/api_mysql_containers.$$ /tmp/api_postgres_containers.$$ /tmp/api_mongodb_containers.$$
+else
+    # Fallback: detecção via Docker
+    log_info "Usando detecção via Docker (API não disponível)"
+    MYSQL_CONTAINERS=($(detect_mysql_containers))
+    POSTGRES_CONTAINERS=($(detect_postgres_containers))
+    MONGODB_CONTAINERS=($(detect_mongodb_containers))
+fi
 
 TOTAL_DBS=0
 

@@ -293,40 +293,44 @@ show_backup_menu() {
     echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB - inclui Coolify)${NC}"
     echo -e "       ${GRAY}(Escolha destino: Local, Google Drive, S3, SSH)${NC}"
     echo ""
-    echo -e "  ${GREEN}3${NC} → 📁 Backup de Volume Docker Específico"
+    echo -e "  ${GREEN}3${NC} → 🎯 Backup por Projeto (Coolify API)"
+    echo -e "       ${GRAY}(Selecionar projeto específico para backup)${NC}"
+    echo -e "       ${GRAY}(Requer API do Coolify configurada)${NC}"
+    echo ""
+    echo -e "  ${GREEN}4${NC} → 📁 Backup de Volume Docker Específico"
     echo -e "       ${GRAY}(Selecione volume manualmente)${NC}"
     echo -e "       ${GRAY}(Útil para backups pontuais)${NC}"
     echo ""
-    echo -e "  ${GREEN}4${NC} → 📤 Enviar Backups para Destinos Remotos"
+    echo -e "  ${GREEN}5${NC} → 📤 Enviar Backups para Destinos Remotos"
     echo -e "       ${GRAY}(S3, Google Drive, servidor SSH)${NC}"
     echo -e "       ${GRAY}(AWS, Backblaze, rsync, rclone)${NC}"
     echo ""
     echo -e "  ${MAGENTA}RESTAURAR BACKUPS${NC}"
-    echo -e "  ${GREEN}5${NC} → 🔄 Restaurar Coolify Completo"
+    echo -e "  ${GREEN}6${NC} → 🔄 Restaurar Coolify Completo"
     echo -e "       ${GRAY}(Instalação + dados do Coolify)${NC}"
     echo -e "       ${GRAY}(Escolha origem: Local / S3 / Google Drive)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve instalação atual)${NC}"
     echo ""
-    echo -e "  ${GREEN}6${NC} → 🗄️  Restaurar Bancos de Dados"
+    echo -e "  ${GREEN}7${NC} → 🗄️  Restaurar Bancos de Dados"
     echo -e "       ${GRAY}(Dumps SQL dos seus projetos)${NC}"
     echo -e "       ${GRAY}(Escolha origem: Local / S3 / Google Drive / SSH)${NC}"
     echo -e "       ${GRAY}(Controle: tudo, exceto Coolify, ou específico)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados dos bancos selecionados)${NC}"
     echo ""
-    echo -e "  ${GREEN}7${NC} → 📦 Restaurar Volume Docker"
+    echo -e "  ${GREEN}8${NC} → 📦 Restaurar Volume Docker"
     echo -e "       ${GRAY}(Dados persistentes de containers)${NC}"
     echo -e "       ${GRAY}(De backup local em /var/backups/vpsguardian)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
     echo ""
     echo -e "  ${MAGENTA}VALIDAÇÃO E DIAGNÓSTICO${NC}"
-    echo -e "  ${GREEN}8${NC} → 🏥 Validar Saúde dos Bancos de Dados"
+    echo -e "  ${GREEN}9${NC} → 🏥 Validar Saúde dos Bancos de Dados"
     echo -e "       ${GRAY}(Verificar integridade após restore)${NC}"
     echo -e "       ${GRAY}(Teste de conectividade e queries)${NC}"
     echo ""
-    echo -e "  ${GREEN}9${NC} → 📊 Ver Status dos Backups Automáticos"
+    echo -e "  ${GREEN}10${NC} → 📊 Ver Status dos Backups Automáticos"
     echo -e "       ${GRAY}(Destinos configurados, cron jobs, últimos backups)${NC}"
     echo ""
-    echo -e "  ${GREEN}10${NC} → 🚀 Executar Tarefas do Cron AGORA"
+    echo -e "  ${GREEN}11${NC} → 🚀 Executar Tarefas do Cron AGORA"
     echo -e "       ${GRAY}(Executa exatamente o que os crons fazem)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
@@ -444,7 +448,11 @@ show_config_menu() {
     echo -e "       ${GRAY}(SSH seguro via Zero Trust)${NC}"
     echo -e "       ${GRAY}(Ver status e documentação)${NC}"
     echo ""
-    echo -e "  ${GREEN}6${NC} → 📋 Mostrar Configurações Atuais"
+    echo -e "  ${GREEN}6${NC} → 🔌 Configurar API do Coolify"
+    echo -e "       ${GRAY}(Descoberta automática de databases)${NC}"
+    echo -e "       ${GRAY}(Stop/Start graceful via API)${NC}"
+    echo ""
+    echo -e "  ${GREEN}7${NC} → 📋 Mostrar Configurações Atuais"
     echo -e "       ${GRAY}(Cron jobs, firewall, destinos de backup)${NC}"
     echo -e "       ${GRAY}(Visualização completa do sistema)${NC}"
     echo ""
@@ -554,14 +562,99 @@ handle_backup_menu() {
                 fi
                 ;;
             3)
-                run_script "$SCRIPT_DIR/backup/backup-volume-interativo.sh" "Backup de Volume Interativo"
+                # Backup por Projeto (Coolify API)
+                echo ""
+                echo -e "${CYAN}🎯 BACKUP POR PROJETO (Coolify API)${NC}"
+                echo ""
+
+                # Verificar se API está disponível
+                source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
+                source "$SCRIPT_DIR/lib/coolify-api.sh" 2>/dev/null
+
+                if [ "$COOLIFY_API_ENABLED" != "true" ] || [ -z "$COOLIFY_API_TOKEN" ]; then
+                    echo -e "${RED}✗ API do Coolify não está configurada${NC}"
+                    echo ""
+                    echo "Para usar backup por projeto, configure a API primeiro:"
+                    echo "  Menu → Configuração → Configurar API do Coolify"
+                    echo ""
+                    pause
+                    continue
+                fi
+
+                # Listar projetos
+                echo "Carregando projetos..."
+                if type coolify_list_project_names &>/dev/null; then
+                    PROJECTS=$(coolify_list_project_names 2>/dev/null)
+                else
+                    echo -e "${RED}✗ Biblioteca coolify-api.sh não carregada${NC}"
+                    pause
+                    continue
+                fi
+
+                if [ -z "$PROJECTS" ]; then
+                    echo -e "${YELLOW}⚠ Nenhum projeto encontrado via API${NC}"
+                    pause
+                    continue
+                fi
+
+                echo ""
+                echo "Projetos disponíveis:"
+                echo ""
+
+                IDX=1
+                declare -a PROJ_OPTS
+                while IFS='|' read -r uuid name desc; do
+                    printf "  ${GREEN}%2d${NC} → %s" "$IDX" "$name"
+                    [ -n "$desc" ] && printf " ${GRAY}(%s)${NC}" "${desc:0:30}"
+                    echo ""
+                    PROJ_OPTS[$IDX]="$uuid"
+                    ((IDX++))
+                done <<< "$PROJECTS"
+
+                echo ""
+                read -p "Escolha um projeto (1-$((IDX-1)), ou 0 para cancelar): " proj_choice
+
+                if [ "$proj_choice" = "0" ] || [ -z "$proj_choice" ]; then
+                    continue
+                fi
+
+                SELECTED_PROJECT="${PROJ_OPTS[$proj_choice]}"
+                if [ -z "$SELECTED_PROJECT" ]; then
+                    echo -e "${RED}Opção inválida${NC}"
+                    sleep 1
+                    continue
+                fi
+
+                echo ""
+                echo "Onde deseja salvar o backup?"
+                echo "  1) Local apenas"
+                echo "  2) Local + Google Drive"
+                echo "  3) Local + AWS S3"
+                echo "  0) Cancelar"
+                echo ""
+                read -p "Escolha (0-3): " backup_dest_choice
+
+                case $backup_dest_choice in
+                    1) DEST="local" ;;
+                    2) DEST="google-drive" ;;
+                    3) DEST="aws-s3" ;;
+                    0) continue ;;
+                    *) DEST="local" ;;
+                esac
+
+                if confirm "Executar backup do projeto selecionado?"; then
+                    run_script "$SCRIPT_DIR/backup/backup-databases-dump-auto.sh" "Backup por Projeto" "--dest=$DEST" "--project=$SELECTED_PROJECT"
+                fi
                 ;;
             4)
+                run_script "$SCRIPT_DIR/backup/backup-volume-interativo.sh" "Backup de Volume Interativo"
+                ;;
+            5)
                 if confirm "Enviar backups para destinos remotos?"; then
                     run_script "$SCRIPT_DIR/backup/backup-destinos.sh" "Enviar Backups"
                 fi
                 ;;
-            5)
+            6)
                 # Restaurar Coolify Completo (unificado)
                 if confirm_critical \
                     "🔄 RESTAURAR COOLIFY COMPLETO" \
@@ -571,7 +664,7 @@ handle_backup_menu() {
                     run_script "$SCRIPT_DIR/backup/restaurar-coolify.sh" "Restaurar Coolify"
                 fi
                 ;;
-            6)
+            7)
                 # Restaurar Bancos de Dados (unificado)
                 if confirm_critical \
                     "🗄️  RESTAURAR BANCOS DE DADOS" \
@@ -581,7 +674,7 @@ handle_backup_menu() {
                     run_script "$SCRIPT_DIR/backup/restaurar-databases.sh" "Restaurar Bancos de Dados"
                 fi
                 ;;
-            7)
+            8)
                 # Restaurar Volume Docker Específico
                 if confirm_critical \
                     "📦 RESTAURAR VOLUME DOCKER" \
@@ -591,7 +684,7 @@ handle_backup_menu() {
                     run_script "$SCRIPT_DIR/backup/restaurar-volume-interativo.sh" "Restaurar Volume"
                 fi
                 ;;
-            8)
+            9)
                 # Validar Saúde dos Bancos
                 if confirm "Verificar saúde de todos os bancos de dados?"; then
                     clear_screen
@@ -620,11 +713,11 @@ handle_backup_menu() {
                     pause
                 fi
                 ;;
-            9)
+            10)
                 # Ver Status dos Backups Automáticos
                 run_script "$SCRIPT_DIR/scripts-auxiliares/status-backups.sh" "Status dos Backups"
                 ;;
-            10)
+            11)
                 # Executar Backup Completo AGORA
                 run_script "$SCRIPT_DIR/scripts-auxiliares/backup-completo-agora.sh" "Backup Completo"
                 ;;
@@ -933,6 +1026,10 @@ handle_config_menu() {
                 pause
                 ;;
             6)
+                # Configurar API do Coolify
+                run_script "$SCRIPT_DIR/scripts-auxiliares/configurar-coolify-api.sh" "Configurar API Coolify"
+                ;;
+            7)
                 clear_screen
                 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
                 echo -e "${WHITE}Configurações Atuais${NC}"
@@ -982,6 +1079,19 @@ handle_config_menu() {
                 else
                     echo "  ❌ unattended-upgrades: não configurado"
                     echo "     Configure em: Menu → Configurações → Tarefas Agendadas"
+                fi
+                echo ""
+                echo -e "${MAGENTA}▶ Coolify API:${NC}"
+                if [ "$COOLIFY_API_ENABLED" = "true" ]; then
+                    echo "  ✅ Integração: habilitada"
+                    echo "     URL: ${COOLIFY_API_URL:-http://localhost:8000/api/v1}"
+                    if [ -n "$COOLIFY_API_TOKEN" ]; then
+                        echo "     Token: ${COOLIFY_API_TOKEN:0:10}...${COOLIFY_API_TOKEN: -5}"
+                    fi
+                    [ "$COOLIFY_USE_API_FOR_STOP" = "true" ] && echo "  ✅ Stop/Start via API: ativo" || echo "  ❌ Stop/Start via API: desativado"
+                else
+                    echo "  ❌ Integração: desabilitada"
+                    echo "     Configure em: Menu → Configurações → Configurar API do Coolify"
                 fi
                 echo ""
                 if [ -f "$SCRIPT_DIR/config/config.env" ]; then

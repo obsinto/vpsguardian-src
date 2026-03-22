@@ -648,6 +648,506 @@ smart_start_container() {
 }
 
 ################################################################################
+# Funções de Health Check e Migração
+################################################################################
+
+# Verifica health de todas as applications
+# Retorna linhas no formato: uuid|name|status|health
+coolify_check_applications_health() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    local apps
+    apps=$(coolify_list_applications 2>/dev/null)
+
+    if [ -z "$apps" ] || [ "$apps" = "[]" ]; then
+        return 1
+    fi
+
+    echo "$apps" | jq -r '.[] | [.uuid, .name, .status, (.health // "unknown")] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r uuid name status health; do
+            echo "$uuid|$name|$status|$health"
+        done
+}
+
+# Verifica health de todos os databases
+# Retorna linhas no formato: uuid|name|type|status|is_public
+coolify_check_databases_health() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    local dbs
+    dbs=$(coolify_list_databases 2>/dev/null)
+
+    if [ -z "$dbs" ] || [ "$dbs" = "[]" ]; then
+        return 1
+    fi
+
+    echo "$dbs" | jq -r '.[] | [.uuid, .name, .type, .status, (.is_public // false)] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r uuid name type status is_public; do
+            echo "$uuid|$name|$type|$status|$is_public"
+        done
+}
+
+# Verifica health de todos os services
+# Retorna linhas no formato: uuid|name|status
+coolify_check_services_health() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    local services
+    services=$(coolify_list_services 2>/dev/null)
+
+    if [ -z "$services" ] || [ "$services" = "[]" ]; then
+        return 1
+    fi
+
+    echo "$services" | jq -r '.[] | [.uuid, .name, .status] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r uuid name status; do
+            echo "$uuid|$name|$status"
+        done
+}
+
+# Lista todos os recursos do Coolify com status
+# Retorna linhas no formato: type|uuid|name|status|extra_info
+coolify_list_all_resources() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    # Applications
+    coolify_check_applications_health 2>/dev/null | while IFS='|' read -r uuid name status health; do
+        echo "application|$uuid|$name|$status|health:$health"
+    done
+
+    # Databases
+    coolify_check_databases_health 2>/dev/null | while IFS='|' read -r uuid name type status is_public; do
+        echo "database|$uuid|$name|$status|type:$type"
+    done
+
+    # Services
+    coolify_check_services_health 2>/dev/null | while IFS='|' read -r uuid name status; do
+        echo "service|$uuid|$name|$status|"
+    done
+}
+
+# Conta recursos por tipo e status
+# Uso: coolify_count_resources [running|stopped|all]
+coolify_count_resources() {
+    local filter="${1:-all}"
+
+    if ! coolify_api_available; then
+        echo "0|0|0"
+        return 1
+    fi
+
+    local apps_total=0 apps_running=0
+    local dbs_total=0 dbs_running=0
+    local services_total=0 services_running=0
+
+    # Contar applications
+    local apps
+    apps=$(coolify_list_applications 2>/dev/null)
+    if [ -n "$apps" ] && [ "$apps" != "[]" ]; then
+        apps_total=$(echo "$apps" | jq 'length' 2>/dev/null)
+        apps_running=$(echo "$apps" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+    fi
+
+    # Contar databases
+    local dbs
+    dbs=$(coolify_list_databases 2>/dev/null)
+    if [ -n "$dbs" ] && [ "$dbs" != "[]" ]; then
+        dbs_total=$(echo "$dbs" | jq 'length' 2>/dev/null)
+        dbs_running=$(echo "$dbs" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+    fi
+
+    # Contar services
+    local services
+    services=$(coolify_list_services 2>/dev/null)
+    if [ -n "$services" ] && [ "$services" != "[]" ]; then
+        services_total=$(echo "$services" | jq 'length' 2>/dev/null)
+        services_running=$(echo "$services" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+    fi
+
+    case "$filter" in
+        running)
+            echo "$apps_running|$dbs_running|$services_running"
+            ;;
+        total|all)
+            echo "$apps_total|$dbs_total|$services_total"
+            ;;
+        *)
+            echo "apps:$apps_running/$apps_total|dbs:$dbs_running/$dbs_total|services:$services_running/$services_total"
+            ;;
+    esac
+}
+
+# Verifica se todos os recursos estão running
+# Retorna 0 se todos estão running, 1 caso contrário
+coolify_all_resources_healthy() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    local total running
+
+    # Verificar applications
+    local apps
+    apps=$(coolify_list_applications 2>/dev/null)
+    if [ -n "$apps" ] && [ "$apps" != "[]" ]; then
+        total=$(echo "$apps" | jq 'length' 2>/dev/null)
+        running=$(echo "$apps" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+        if [ "$total" != "$running" ]; then
+            return 1
+        fi
+    fi
+
+    # Verificar databases
+    local dbs
+    dbs=$(coolify_list_databases 2>/dev/null)
+    if [ -n "$dbs" ] && [ "$dbs" != "[]" ]; then
+        total=$(echo "$dbs" | jq 'length' 2>/dev/null)
+        running=$(echo "$dbs" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+        if [ "$total" != "$running" ]; then
+            return 1
+        fi
+    fi
+
+    # Verificar services
+    local services
+    services=$(coolify_list_services 2>/dev/null)
+    if [ -n "$services" ] && [ "$services" != "[]" ]; then
+        total=$(echo "$services" | jq 'length' 2>/dev/null)
+        running=$(echo "$services" | jq '[.[] | select(.status == "running")] | length' 2>/dev/null)
+        if [ "$total" != "$running" ]; then
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+################################################################################
+# Funções de Exportação/Importação para Migração
+################################################################################
+
+# Exporta inventário completo de recursos para arquivo JSON
+# Uso: coolify_export_inventory [output_file]
+coolify_export_inventory() {
+    local output_file="${1:-/tmp/coolify-inventory-$(date +%Y%m%d_%H%M%S).json}"
+
+    if ! coolify_api_available; then
+        echo '{"error": "API não disponível"}' > "$output_file"
+        return 1
+    fi
+
+    local apps dbs services projects
+
+    apps=$(coolify_list_applications 2>/dev/null || echo "[]")
+    dbs=$(coolify_list_databases 2>/dev/null || echo "[]")
+    services=$(coolify_list_services 2>/dev/null || echo "[]")
+    projects=$(coolify_list_projects 2>/dev/null || echo "[]")
+
+    cat > "$output_file" <<EOF
+{
+  "exported_at": "$(date -Iseconds)",
+  "hostname": "$(hostname)",
+  "coolify_api_url": "$COOLIFY_API_URL",
+  "applications": $apps,
+  "databases": $dbs,
+  "services": $services,
+  "projects": $projects
+}
+EOF
+
+    if [ -f "$output_file" ]; then
+        echo "$output_file"
+        return 0
+    fi
+    return 1
+}
+
+# Exporta variáveis de ambiente de uma application
+# Uso: coolify_export_app_envs <app_uuid> [output_file]
+coolify_export_app_envs() {
+    local app_uuid="$1"
+    local output_file="${2:-/tmp/app-envs-${app_uuid}-$(date +%Y%m%d_%H%M%S).json}"
+
+    if ! coolify_api_available || [ -z "$app_uuid" ]; then
+        return 1
+    fi
+
+    local envs
+    envs=$(coolify_api_call GET "/applications/$app_uuid/envs" 2>/dev/null)
+
+    if [ -n "$envs" ]; then
+        echo "$envs" > "$output_file"
+        echo "$output_file"
+        return 0
+    fi
+    return 1
+}
+
+# Exporta lista simplificada de recursos para comparação pré/pós migração
+# Uso: coolify_export_resources_list [output_file]
+# Formato: CSV (type,uuid,name,status)
+coolify_export_resources_list() {
+    local output_file="${1:-/tmp/coolify-resources-$(date +%Y%m%d_%H%M%S).csv}"
+
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    echo "type,uuid,name,status,extra" > "$output_file"
+
+    # Applications
+    coolify_list_applications 2>/dev/null | jq -r '.[] | ["application", .uuid, .name, .status, ""] | @csv' >> "$output_file" 2>/dev/null
+
+    # Databases
+    coolify_list_databases 2>/dev/null | jq -r '.[] | ["database", .uuid, .name, .status, .type] | @csv' >> "$output_file" 2>/dev/null
+
+    # Services
+    coolify_list_services 2>/dev/null | jq -r '.[] | ["service", .uuid, .name, .status, ""] | @csv' >> "$output_file" 2>/dev/null
+
+    if [ -f "$output_file" ]; then
+        echo "$output_file"
+        return 0
+    fi
+    return 1
+}
+
+# Compara dois inventários de recursos (pré e pós migração)
+# Uso: coolify_compare_inventories <pre_file> <post_file>
+coolify_compare_inventories() {
+    local pre_file="$1"
+    local post_file="$2"
+
+    if [ ! -f "$pre_file" ] || [ ! -f "$post_file" ]; then
+        echo "Erro: Arquivos de inventário não encontrados"
+        return 1
+    fi
+
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║            COMPARAÇÃO DE INVENTÁRIOS (Migração)              ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    # Contar recursos em cada arquivo
+    local pre_apps pre_dbs pre_svcs
+    local post_apps post_dbs post_svcs
+
+    pre_apps=$(jq '.applications | length' "$pre_file" 2>/dev/null || echo 0)
+    pre_dbs=$(jq '.databases | length' "$pre_file" 2>/dev/null || echo 0)
+    pre_svcs=$(jq '.services | length' "$pre_file" 2>/dev/null || echo 0)
+
+    post_apps=$(jq '.applications | length' "$post_file" 2>/dev/null || echo 0)
+    post_dbs=$(jq '.databases | length' "$post_file" 2>/dev/null || echo 0)
+    post_svcs=$(jq '.services | length' "$post_file" 2>/dev/null || echo 0)
+
+    echo "  CONTAGEM DE RECURSOS:"
+    echo "                       PRÉ    PÓS    DIFF"
+    echo "    Applications:     $pre_apps      $post_apps      $((post_apps - pre_apps))"
+    echo "    Databases:        $pre_dbs      $post_dbs      $((post_dbs - pre_dbs))"
+    echo "    Services:         $pre_svcs      $post_svcs      $((post_svcs - pre_svcs))"
+    echo ""
+
+    # Verificar recursos ausentes
+    echo "  RECURSOS AUSENTES NO DESTINO:"
+    local missing=0
+
+    # Comparar applications
+    for uuid in $(jq -r '.applications[].uuid' "$pre_file" 2>/dev/null); do
+        if ! jq -e --arg uuid "$uuid" '.applications[] | select(.uuid == $uuid)' "$post_file" >/dev/null 2>&1; then
+            local name=$(jq -r --arg uuid "$uuid" '.applications[] | select(.uuid == $uuid) | .name' "$pre_file" 2>/dev/null)
+            echo "    ✗ Application: $name ($uuid)"
+            ((missing++))
+        fi
+    done
+
+    # Comparar databases
+    for uuid in $(jq -r '.databases[].uuid' "$pre_file" 2>/dev/null); do
+        if ! jq -e --arg uuid "$uuid" '.databases[] | select(.uuid == $uuid)' "$post_file" >/dev/null 2>&1; then
+            local name=$(jq -r --arg uuid "$uuid" '.databases[] | select(.uuid == $uuid) | .name' "$pre_file" 2>/dev/null)
+            echo "    ✗ Database: $name ($uuid)"
+            ((missing++))
+        fi
+    done
+
+    if [ $missing -eq 0 ]; then
+        echo "    ✓ Nenhum recurso ausente"
+    fi
+
+    echo ""
+
+    # Status dos recursos no destino
+    echo "  STATUS DOS RECURSOS NO DESTINO:"
+    local not_running=0
+
+    jq -r '.applications[] | "\(.name)|\(.status)"' "$post_file" 2>/dev/null | while IFS='|' read -r name status; do
+        if [ "$status" != "running" ]; then
+            echo "    ⚠ App: $name ($status)"
+            ((not_running++))
+        fi
+    done
+
+    jq -r '.databases[] | "\(.name)|\(.status)"' "$post_file" 2>/dev/null | while IFS='|' read -r name status; do
+        if [ "$status" != "running" ]; then
+            echo "    ⚠ DB: $name ($status)"
+            ((not_running++))
+        fi
+    done
+
+    if [ $not_running -eq 0 ]; then
+        echo "    ✓ Todos os recursos estão running"
+    fi
+
+    echo ""
+    return 0
+}
+
+# Exporta configuração de servidor (para migração)
+# Uso: coolify_export_server_config <server_uuid> [output_file]
+coolify_export_server_config() {
+    local server_uuid="$1"
+    local output_file="${2:-/tmp/server-config-${server_uuid}-$(date +%Y%m%d_%H%M%S).json}"
+
+    if ! coolify_api_available || [ -z "$server_uuid" ]; then
+        return 1
+    fi
+
+    local server_info
+    server_info=$(coolify_api_call GET "/servers/$server_uuid" 2>/dev/null)
+
+    if [ -n "$server_info" ]; then
+        echo "$server_info" > "$output_file"
+        echo "$output_file"
+        return 0
+    fi
+    return 1
+}
+
+# Lista servidores disponíveis
+# Retorna linhas no formato: uuid|name|ip|status
+coolify_list_servers() {
+    if ! coolify_api_available; then
+        return 1
+    fi
+
+    local servers
+    servers=$(coolify_api_call GET "/servers" 2>/dev/null)
+
+    if [ -z "$servers" ] || [ "$servers" = "[]" ]; then
+        return 1
+    fi
+
+    echo "$servers" | jq -r '.[] | [.uuid, .name, .ip, (.settings.is_reachable // false)] | @tsv' 2>/dev/null | \
+        while IFS=$'\t' read -r uuid name ip reachable; do
+            local status="unreachable"
+            [ "$reachable" = "true" ] && status="reachable"
+            echo "$uuid|$name|$ip|$status"
+        done
+}
+
+# Gera relatório de saúde para migração
+# Uso: coolify_migration_health_report
+coolify_migration_health_report() {
+    if ! coolify_api_available; then
+        echo "API não disponível"
+        return 1
+    fi
+
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║            COOLIFY HEALTH REPORT (via API)                   ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    echo ""
+
+    local apps_ok=0 apps_fail=0
+    local dbs_ok=0 dbs_fail=0
+    local services_ok=0 services_fail=0
+
+    # Applications
+    echo "  APPLICATIONS:"
+    local apps_health
+    apps_health=$(coolify_check_applications_health 2>/dev/null)
+    if [ -n "$apps_health" ]; then
+        while IFS='|' read -r uuid name status health; do
+            if [ "$status" = "running" ]; then
+                echo "    ✓ $name (running)"
+                ((apps_ok++))
+            else
+                echo "    ✗ $name ($status)"
+                ((apps_fail++))
+            fi
+        done <<< "$apps_health"
+    else
+        echo "    (nenhuma application encontrada)"
+    fi
+    echo ""
+
+    # Databases
+    echo "  DATABASES:"
+    local dbs_health
+    dbs_health=$(coolify_check_databases_health 2>/dev/null)
+    if [ -n "$dbs_health" ]; then
+        while IFS='|' read -r uuid name type status is_public; do
+            if [ "$status" = "running" ]; then
+                echo "    ✓ $name ($type) - running"
+                ((dbs_ok++))
+            else
+                echo "    ✗ $name ($type) - $status"
+                ((dbs_fail++))
+            fi
+        done <<< "$dbs_health"
+    else
+        echo "    (nenhum database encontrado)"
+    fi
+    echo ""
+
+    # Services
+    echo "  SERVICES:"
+    local services_health
+    services_health=$(coolify_check_services_health 2>/dev/null)
+    if [ -n "$services_health" ]; then
+        while IFS='|' read -r uuid name status; do
+            if [ "$status" = "running" ]; then
+                echo "    ✓ $name (running)"
+                ((services_ok++))
+            else
+                echo "    ✗ $name ($status)"
+                ((services_fail++))
+            fi
+        done <<< "$services_health"
+    else
+        echo "    (nenhum service encontrado)"
+    fi
+    echo ""
+
+    # Resumo
+    local total_ok=$((apps_ok + dbs_ok + services_ok))
+    local total_fail=$((apps_fail + dbs_fail + services_fail))
+    local total=$((total_ok + total_fail))
+
+    echo "  RESUMO:"
+    echo "    Applications: $apps_ok OK, $apps_fail com problemas"
+    echo "    Databases:    $dbs_ok OK, $dbs_fail com problemas"
+    echo "    Services:     $services_ok OK, $services_fail com problemas"
+    echo ""
+    echo "    Total: $total_ok/$total recursos saudáveis"
+    echo ""
+
+    if [ $total_fail -eq 0 ]; then
+        echo "  ✅ Todos os recursos estão saudáveis!"
+        return 0
+    else
+        echo "  ⚠️  $total_fail recurso(s) com problemas"
+        return 1
+    fi
+}
+
+################################################################################
 # Funções de Diagnóstico
 ################################################################################
 
@@ -717,6 +1217,11 @@ export -f coolify_list_services coolify_stop_service coolify_start_service
 export -f coolify_get_uuid_by_container coolify_get_db_type
 export -f coolify_discover_databases coolify_graceful_stop coolify_graceful_start
 export -f smart_stop_container smart_start_container
+export -f coolify_check_applications_health coolify_check_databases_health coolify_check_services_health
+export -f coolify_list_all_resources coolify_count_resources coolify_all_resources_healthy
+export -f coolify_export_inventory coolify_export_app_envs coolify_export_resources_list
+export -f coolify_compare_inventories coolify_export_server_config coolify_list_servers
+export -f coolify_migration_health_report
 export -f coolify_test_connection coolify_load_cache
 
 # Marca que coolify-api.sh foi carregado

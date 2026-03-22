@@ -9,6 +9,19 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
+# Carregar configurações de destino de backup (inclui Coolify API)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+
+# Carregar biblioteca de API do Coolify
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
+
+# Arquivo de inventário pré-migração (para comparação posterior)
+PRE_MIGRATION_INVENTORY=""
+
 ### ========== CONFIGURAÇÃO PADRÃO ==========
 # Pode ser sobrescrito por arquivo de configuração ou variáveis de ambiente
 
@@ -1931,6 +1944,95 @@ log_info "Cleaning up temporary files on remote server..."
 ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "rm -rf $REMOTE_BACKUP_DIR" 2>/dev/null
 
+### ========== VALIDAÇÃO PÓS-MIGRAÇÃO VIA API ==========
+# Se API estava configurada no servidor de origem, validar recursos no destino
+API_VALIDATION_SUCCESS=true
+
+if [ "$COOLIFY_API_ENABLED" = "true" ] && [ -n "$COOLIFY_API_TOKEN" ]; then
+    log_section "Validação via API do Coolify"
+
+    # Exportar inventário pré-migração (se não foi feito antes)
+    if [ -z "$PRE_MIGRATION_INVENTORY" ]; then
+        log_info "Exportando inventário pré-migração (origem)..."
+        PRE_MIGRATION_INVENTORY=$(coolify_export_inventory "$MIGRATION_LOG_DIR/pre-migration-inventory.json" 2>/dev/null)
+        if [ -n "$PRE_MIGRATION_INVENTORY" ]; then
+            log_success "Inventário da origem salvo: $PRE_MIGRATION_INVENTORY"
+        fi
+    fi
+
+    # Aguardar Coolify ficar pronto no destino
+    log_info "Aguardando Coolify inicializar no destino..."
+    sleep 10
+
+    # Verificar se API está acessível no servidor de destino
+    log_info "Verificando API do Coolify no destino ($NEW_SERVER_IP)..."
+
+    # Tentar usar a API no servidor de destino (via SSH)
+    DEST_API_CHECK=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
+         -H 'Content-Type: application/json' \
+         'http://localhost:8000/api/v1/servers' 2>/dev/null | head -c 100")
+
+    if [ -n "$DEST_API_CHECK" ]; then
+        log_success "API do Coolify está respondendo no destino"
+
+        # Exportar inventário pós-migração do destino
+        log_info "Exportando inventário pós-migração (destino)..."
+        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
+             -H 'Content-Type: application/json' \
+             'http://localhost:8000/api/v1/applications' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-apps.json" 2>/dev/null
+
+        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
+             -H 'Content-Type: application/json' \
+             'http://localhost:8000/api/v1/databases' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-dbs.json" 2>/dev/null
+
+        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
+             -H 'Content-Type: application/json' \
+             'http://localhost:8000/api/v1/services' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-services.json" 2>/dev/null
+
+        # Contar recursos
+        POST_APPS=$(jq 'length' "$MIGRATION_LOG_DIR/post-apps.json" 2>/dev/null || echo "0")
+        POST_DBS=$(jq 'length' "$MIGRATION_LOG_DIR/post-dbs.json" 2>/dev/null || echo "0")
+        POST_SVCS=$(jq 'length' "$MIGRATION_LOG_DIR/post-services.json" 2>/dev/null || echo "0")
+
+        echo ""
+        log_info "Recursos encontrados no destino via API:"
+        log_info "  Applications: $POST_APPS"
+        log_info "  Databases:    $POST_DBS"
+        log_info "  Services:     $POST_SVCS"
+
+        # Comparar com origem (se temos inventário)
+        if [ -f "$PRE_MIGRATION_INVENTORY" ]; then
+            PRE_APPS=$(jq '.applications | length' "$PRE_MIGRATION_INVENTORY" 2>/dev/null || echo "0")
+            PRE_DBS=$(jq '.databases | length' "$PRE_MIGRATION_INVENTORY" 2>/dev/null || echo "0")
+            PRE_SVCS=$(jq '.services | length' "$PRE_MIGRATION_INVENTORY" 2>/dev/null || echo "0")
+
+            echo ""
+            log_info "Comparação origem → destino:"
+            log_info "  Applications: $PRE_APPS → $POST_APPS"
+            log_info "  Databases:    $PRE_DBS → $POST_DBS"
+            log_info "  Services:     $PRE_SVCS → $POST_SVCS"
+
+            if [ "$PRE_APPS" = "$POST_APPS" ] && [ "$PRE_DBS" = "$POST_DBS" ] && [ "$PRE_SVCS" = "$POST_SVCS" ]; then
+                log_success "✓ Todos os recursos foram migrados corretamente!"
+            else
+                log_warning "⚠ Diferença na contagem de recursos detectada"
+                log_info "  Verifique manualmente os recursos no destino"
+                API_VALIDATION_SUCCESS=false
+            fi
+        fi
+    else
+        log_warning "API do Coolify não está respondendo no destino"
+        log_info "  Isso é normal se o token é diferente ou API não está habilitada"
+        log_info "  Execute validar-pos-migracao.sh --use-api no servidor destino"
+    fi
+
+    echo ""
+fi
+
 ### ========== FINAL SUMMARY ==========
 echo ""
 log_section "MIGRATION COMPLETE"
@@ -1949,6 +2051,9 @@ if [ "$MIGRATE_PROXY" = "true" ]; then
 echo "     ✅ Proxy configurations ($PROXY_CERTS_COUNT certs, $PROXY_CONFIGS_COUNT configs)"
 else
 echo "     ⏭️  Proxy (skipped - clean install)"
+fi
+if [ "$API_VALIDATION_SUCCESS" = "true" ] && [ "$COOLIFY_API_ENABLED" = "true" ]; then
+echo "     ✅ Validação via API (recursos verificados)"
 fi
 echo ""
 echo "  ⚠️  NEXT STEPS:"

@@ -2,10 +2,14 @@
 ################################################################################
 # Script: validar-pos-migracao.sh
 # Propósito: Validar ambiente APÓS a migração no servidor de destino
-# Uso: ./validar-pos-migracao.sh [--remote IP]
+# Uso: ./validar-pos-migracao.sh [--remote IP] [--use-api]
+#
+# Com --use-api: Usa API do Coolify para validação avançada de recursos
 ################################################################################
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 LOG_PREFIX="[ Post-Migration Validator ]"
 VALIDATION_LOG="/tmp/post-migration-validation-$(date +%Y%m%d_%H%M%S).log"
@@ -14,6 +18,17 @@ REMOTE_MODE=false
 REMOTE_IP=""
 REMOTE_USER="root"
 REMOTE_PORT="22"
+USE_COOLIFY_API=false
+
+# Carregar configurações de destino de backup (inclui Coolify API)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+
+# Carregar biblioteca de API do Coolify
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
 
 log() {
     echo "$LOG_PREFIX [ $1 ] $2" | tee -a "$VALIDATION_LOG"
@@ -46,11 +61,34 @@ while [[ $# -gt 0 ]]; do
             REMOTE_PORT="$2"
             shift 2
             ;;
+        --use-api|--api)
+            USE_COOLIFY_API=true
+            shift
+            ;;
+        -h|--help)
+            echo "Uso: $0 [OPÇÕES]"
+            echo ""
+            echo "Valida ambiente após migração do Coolify"
+            echo ""
+            echo "Opções:"
+            echo "  --remote IP    Validar servidor remoto via SSH"
+            echo "  --user USER    Usuário SSH (default: root)"
+            echo "  --port PORT    Porta SSH (default: 22)"
+            echo "  --use-api      Usar API do Coolify para validação avançada"
+            echo "  -h, --help     Mostrar esta ajuda"
+            echo ""
+            exit 0
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+# Auto-detectar se API está disponível
+if [ "$USE_COOLIFY_API" = false ] && [ "$COOLIFY_API_ENABLED" = "true" ] && [ -n "$COOLIFY_API_TOKEN" ]; then
+    USE_COOLIFY_API=true
+fi
 
 ################################################################################
 # SETUP
@@ -443,6 +481,112 @@ else
 fi
 
 echo ""
+
+################################################################################
+# 11. VALIDAÇÃO VIA API DO COOLIFY (se disponível)
+################################################################################
+
+if [ "$USE_COOLIFY_API" = true ] && [ "$REMOTE_MODE" = false ]; then
+    log "INFO" "========== COOLIFY API HEALTH CHECK =========="
+    echo ""
+
+    if type coolify_api_available &>/dev/null && coolify_api_available 2>/dev/null; then
+        log "✓" "Coolify API está disponível"
+        ((SUCCESS++))
+
+        # Contar recursos
+        if type coolify_count_resources &>/dev/null; then
+            RESOURCE_COUNT=$(coolify_count_resources "summary" 2>/dev/null)
+            if [ -n "$RESOURCE_COUNT" ]; then
+                log "INFO" "Recursos detectados: $RESOURCE_COUNT"
+            fi
+        fi
+
+        # Verificar applications
+        log "INFO" "Verificando Applications..."
+        APP_ISSUES=0
+        if type coolify_check_applications_health &>/dev/null; then
+            APPS_HEALTH=$(coolify_check_applications_health 2>/dev/null)
+            if [ -n "$APPS_HEALTH" ]; then
+                while IFS='|' read -r uuid name status health; do
+                    if [ "$status" = "running" ]; then
+                        log "✓" "  App: $name (running)"
+                        ((SUCCESS++))
+                    else
+                        log "⚠" "  App: $name ($status)"
+                        ((WARNINGS++))
+                        ((APP_ISSUES++))
+                    fi
+                done <<< "$APPS_HEALTH"
+            else
+                log "INFO" "  Nenhuma application encontrada"
+            fi
+        fi
+
+        # Verificar databases
+        log "INFO" "Verificando Databases..."
+        DB_ISSUES=0
+        if type coolify_check_databases_health &>/dev/null; then
+            DBS_HEALTH=$(coolify_check_databases_health 2>/dev/null)
+            if [ -n "$DBS_HEALTH" ]; then
+                while IFS='|' read -r uuid name type status is_public; do
+                    if [ "$status" = "running" ]; then
+                        log "✓" "  DB: $name ($type) - running"
+                        ((SUCCESS++))
+                    else
+                        log "⚠" "  DB: $name ($type) - $status"
+                        ((WARNINGS++))
+                        ((DB_ISSUES++))
+                    fi
+                done <<< "$DBS_HEALTH"
+            else
+                log "INFO" "  Nenhum database encontrado"
+            fi
+        fi
+
+        # Verificar services
+        log "INFO" "Verificando Services..."
+        SVC_ISSUES=0
+        if type coolify_check_services_health &>/dev/null; then
+            SVCS_HEALTH=$(coolify_check_services_health 2>/dev/null)
+            if [ -n "$SVCS_HEALTH" ]; then
+                while IFS='|' read -r uuid name status; do
+                    if [ "$status" = "running" ]; then
+                        log "✓" "  Service: $name (running)"
+                        ((SUCCESS++))
+                    else
+                        log "⚠" "  Service: $name ($status)"
+                        ((WARNINGS++))
+                        ((SVC_ISSUES++))
+                    fi
+                done <<< "$SVCS_HEALTH"
+            else
+                log "INFO" "  Nenhum service encontrado"
+            fi
+        fi
+
+        # Resumo da API
+        TOTAL_ISSUES=$((APP_ISSUES + DB_ISSUES + SVC_ISSUES))
+        if [ $TOTAL_ISSUES -eq 0 ]; then
+            log "✓" "Todos os recursos do Coolify estão saudáveis via API"
+            ((SUCCESS++))
+        else
+            log "⚠" "$TOTAL_ISSUES recurso(s) com problemas detectados via API"
+        fi
+    else
+        log "⚠" "API do Coolify não disponível (validação via API ignorada)"
+        log "INFO" "  Configure com: scripts-auxiliares/configurar-coolify-api.sh"
+        ((WARNINGS++))
+    fi
+
+    echo ""
+elif [ "$USE_COOLIFY_API" = true ] && [ "$REMOTE_MODE" = true ]; then
+    log "INFO" "========== COOLIFY API HEALTH CHECK =========="
+    log "⚠" "Validação via API não suportada em modo remoto"
+    log "INFO" "  Execute localmente no servidor de destino para usar API"
+    ((WARNINGS++))
+    echo ""
+fi
 
 ################################################################################
 # RESUMO FINAL

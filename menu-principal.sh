@@ -333,6 +333,10 @@ show_backup_menu() {
     echo -e "  ${GREEN}11${NC} → 🚀 Executar Tarefas do Cron AGORA"
     echo -e "       ${GRAY}(Executa exatamente o que os crons fazem)${NC}"
     echo ""
+    echo -e "  ${GREEN}12${NC} → 📡 Monitorar Status do Coolify (API)"
+    echo -e "       ${GRAY}(Dashboard de apps, databases e services)${NC}"
+    echo -e "       ${GRAY}(Requer API do Coolify configurada)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -720,6 +724,22 @@ handle_backup_menu() {
             11)
                 # Executar Backup Completo AGORA
                 run_script "$SCRIPT_DIR/scripts-auxiliares/backup-completo-agora.sh" "Backup Completo"
+                ;;
+            12)
+                # Monitorar Status do Coolify via API
+                echo ""
+                source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
+
+                if [ "$COOLIFY_API_ENABLED" != "true" ] || [ -z "$COOLIFY_API_TOKEN" ]; then
+                    echo -e "${RED}✗ API do Coolify não está configurada${NC}"
+                    echo ""
+                    echo "Para usar o monitoramento, configure a API primeiro:"
+                    echo "  Menu → Configuração → Configurar API do Coolify"
+                    echo ""
+                    pause
+                else
+                    run_script "$SCRIPT_DIR/scripts-auxiliares/monitorar-coolify.sh" "Monitorar Coolify" "--dashboard"
+                fi
                 ;;
             0)
                 return

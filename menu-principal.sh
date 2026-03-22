@@ -572,7 +572,12 @@ handle_backup_menu() {
                 echo ""
 
                 # Verificar se API está disponível
-                source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
+                # Carregar de /opt/vpsguardian primeiro, fallback para local
+                if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+                    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+                elif [ -f "$SCRIPT_DIR/config/backup-destinations.conf" ]; then
+                    source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
+                fi
                 source "$SCRIPT_DIR/lib/coolify-api.sh" 2>/dev/null
 
                 if [ "$COOLIFY_API_ENABLED" != "true" ] || [ -z "$COOLIFY_API_TOKEN" ]; then

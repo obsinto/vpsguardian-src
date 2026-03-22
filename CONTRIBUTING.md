@@ -22,7 +22,8 @@ vpsguardian/
 │   ├── logging.sh            # Funções de log
 │   ├── validation.sh         # Funções de validação
 │   ├── notificacoes.sh       # Discord/Slack webhooks
-│   └── backup-retention.sh   # Lógica de retenção GFS
+│   ├── backup-retention.sh   # Lógica de retenção GFS
+│   └── coolify-api.sh        # Integração com API do Coolify
 ├── manutencao/               # Scripts de manutenção
 ├── migrar/                   # Scripts de migração
 ├── scripts-auxiliares/       # Scripts de suporte
@@ -77,6 +78,188 @@ Ao criar nova funcionalidade que requer configuração:
 NOVA_FEATURE_ENABLED=false
 NOVA_FEATURE_ENDPOINT=""
 NOVA_FEATURE_TOKEN=""
+```
+
+---
+
+## Carregamento de Configurações
+
+### Ordem de Precedência
+
+Sempre carregar configurações na seguinte ordem:
+1. **Produção primeiro**: `/opt/vpsguardian/config/`
+2. **Fallback para desenvolvimento**: `$SCRIPT_DIR/config/` ou `$SCRIPT_DIR/../config/`
+
+### Padrão Obrigatório
+
+```bash
+# Carregar configurações (SEMPRE usar este padrão)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+```
+
+### Por que este padrão?
+
+| Cenário | Caminho usado |
+|---------|---------------|
+| Execução em produção (`/opt/vpsguardian/`) | `/opt/vpsguardian/config/` |
+| Execução via menu principal | `/opt/vpsguardian/config/` |
+| Desenvolvimento local | `./config/` (fallback) |
+| Scripts auxiliares configuram em | `/opt/vpsguardian/config/` |
+
+### Exemplo Completo
+
+```bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Carregar bibliotecas
+source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
+    log_info() { echo "[ INFO ] $*"; }
+    log_error() { echo "[ ERRO ] $*"; }
+}
+
+# Carregar configurações (ordem de precedência)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+```
+
+---
+
+## Integração API vs Comandos Nativos (Fallback Pattern)
+
+### Conceito
+
+Quando uma funcionalidade pode usar **API externa** (Coolify, etc.) ou **comandos nativos** (docker, systemctl), sempre implementar com fallback:
+
+```
+API disponível? → Usar API
+        ↓ não
+Usar comando nativo (docker, systemctl, etc.)
+```
+
+### Benefícios do Fallback
+
+| Aspecto | API | Comando Nativo |
+|---------|-----|----------------|
+| Respeita estado do orquestrador | ✅ | ❌ |
+| Funciona sem configuração extra | ❌ | ✅ |
+| Logs/métricas integrados | ✅ | ❌ |
+| Funciona offline | ❌ | ✅ |
+
+### Padrão de Implementação
+
+```bash
+# 1. Verificar se API está disponível
+if coolify_api_available; then
+    # Usar API
+    coolify_stop_database "$uuid"
+else
+    # Fallback: comando nativo
+    docker stop -t 60 "$container_name"
+fi
+```
+
+### Funções de Wrapper (lib/coolify-api.sh)
+
+Para simplificar, use os wrappers inteligentes que fazem o fallback automaticamente:
+
+```bash
+# Stop inteligente (API se disponível, senão docker stop)
+smart_stop_container "container_name" "database"
+
+# Start inteligente (API se disponível, senão docker start)
+smart_start_container "container_name" "database"
+```
+
+### Verificação de Disponibilidade
+
+```bash
+# Verificar se API está habilitada E conectável
+if coolify_api_available; then
+    echo "API disponível"
+fi
+
+# Verificar apenas se está habilitada (sem testar conexão)
+if coolify_api_enabled; then
+    echo "API configurada"
+fi
+```
+
+### Ordem de Carregamento para Usar API
+
+```bash
+# 1. Carregar configurações primeiro (contém COOLIFY_API_TOKEN)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+fi
+
+# 2. Depois carregar a biblioteca da API
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || {
+    # Fallback: definir funções vazias
+    coolify_api_available() { return 1; }
+    smart_stop_container() { docker stop -t 60 "$1"; }
+    smart_start_container() { docker start "$1"; }
+}
+
+# 3. Agora pode usar
+if coolify_api_available; then
+    # Código que usa API
+fi
+```
+
+### Variáveis de Configuração da API
+
+```bash
+# Em backup-destinations.conf
+COOLIFY_API_ENABLED=true              # Habilitar integração
+COOLIFY_API_URL="http://localhost:8000/api/v1"
+COOLIFY_API_TOKEN="seu-token-aqui"
+COOLIFY_API_TIMEOUT=10                # Timeout em segundos
+COOLIFY_USE_API_FOR_STOP=true         # Usar API para stop/start
+```
+
+### Exemplo Completo: Script com Fallback
+
+```bash
+#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Carregar libs
+source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null
+
+# Carregar config (ordem de precedência)
+if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
+    source "/opt/vpsguardian/config/backup-destinations.conf"
+elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
+    source "$SCRIPT_DIR/../config/backup-destinations.conf"
+fi
+
+# Carregar API com fallback
+source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || {
+    coolify_api_available() { return 1; }
+}
+
+# Listar databases
+if coolify_api_available; then
+    log_info "Usando API do Coolify"
+    databases=$(coolify_list_databases)
+else
+    log_info "Usando Docker diretamente"
+    databases=$(docker ps --filter "label=coolify.managed=true" --format "{{.Names}}")
+fi
+
+# Parar container
+for db in $databases; do
+    smart_stop_container "$db" "database"  # Usa API ou docker automaticamente
+done
 ```
 
 ---
@@ -363,6 +546,8 @@ done
 
 - [ ] Usar cabeçalho padrão com descrição e uso
 - [ ] Carregar `lib/common.sh` no início
+- [ ] **Usar padrão de carregamento de config** (`/opt/vpsguardian` primeiro, fallback local)
+- [ ] **Implementar fallback API → nativo** se usar Coolify API
 - [ ] Usar funções de log (`log_info`, `log_error`, etc.)
 - [ ] Implementar `--help` com documentação
 - [ ] Usar exit codes padronizados

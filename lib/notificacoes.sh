@@ -227,7 +227,7 @@ notify_cleanup_success() {
 }
 
 # Notificar limpeza remota de backups S3/R2
-# Uso: notify_s3_cleanup_result "bucket" "prefixo" "estrategia" "removidos" "falhas" "detalhes"
+# Uso: notify_s3_cleanup_result "bucket" "prefixo" "estrategia" "removidos" "falhas" "detalhes" "espaco_liberado"
 notify_s3_cleanup_result() {
     local bucket="$1"
     local prefix="$2"
@@ -235,6 +235,7 @@ notify_s3_cleanup_result() {
     local removed="$4"
     local failed="$5"
     local details="$6"
+    local space_freed="${7:-0 B}"
 
     [ -z "$details" ] && details="Nenhum detalhe disponível"
     if [ "${#details}" -gt 900 ]; then
@@ -256,6 +257,7 @@ notify_s3_cleanup_result() {
         "📁 Prefixo|${prefix:-/}" \
         "📋 Estratégia|$strategy" \
         "🗑️ Removidos|$removed" \
+        "💾 Liberado|$space_freed" \
         "⚠️ Falhas|$failed" \
         "📝 Log|$details|false"
 }

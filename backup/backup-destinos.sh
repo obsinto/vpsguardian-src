@@ -73,35 +73,62 @@ s3_list_backup_objects() {
     done
 }
 
+format_bytes() {
+    local bytes="${1:-0}"
+
+    if command -v numfmt >/dev/null 2>&1; then
+        numfmt --to=iec --suffix=B "$bytes"
+    else
+        awk -v bytes="$bytes" 'BEGIN {
+            split("B KiB MiB GiB TiB", units)
+            unit = 1
+            while (bytes >= 1024 && unit < 5) {
+                bytes = bytes / 1024
+                unit++
+            }
+            printf "%.1f %s", bytes, units[unit]
+        }'
+    fi
+}
+
 delete_s3_objects() {
     local deleted=0
     local failed=0
+    local entry
     local obj_key
+    local obj_size
+    local obj_size_fmt
 
-    for obj_key in "$@"; do
-        log_info "Removendo backup antigo do S3/R2: s3://$S3_BUCKET/$obj_key"
+    for entry in "$@"; do
+        IFS=$'\t' read -r obj_size obj_key <<< "$entry"
+        obj_size="${obj_size:-0}"
+        obj_size_fmt=$(format_bytes "$obj_size")
+
+        log_info "Removendo backup antigo do S3/R2: s3://$S3_BUCKET/$obj_key ($obj_size_fmt)"
         if run_aws s3 rm "$(s3_object_uri "$obj_key")"; then
             ((deleted++))
             S3_CLEANUP_DELETED_COUNT=$((S3_CLEANUP_DELETED_COUNT + 1))
+            S3_CLEANUP_DELETED_BYTES=$((S3_CLEANUP_DELETED_BYTES + obj_size))
             if [ -z "$S3_CLEANUP_DELETED_KEYS" ]; then
-                S3_CLEANUP_DELETED_KEYS="- $obj_key"
+                S3_CLEANUP_DELETED_KEYS="- $obj_key ($obj_size_fmt)"
             else
-                S3_CLEANUP_DELETED_KEYS="${S3_CLEANUP_DELETED_KEYS}\\n- $obj_key"
+                S3_CLEANUP_DELETED_KEYS="${S3_CLEANUP_DELETED_KEYS}\\n- $obj_key ($obj_size_fmt)"
             fi
         else
             log_warning "Falha ao remover: s3://$S3_BUCKET/$obj_key"
             ((failed++))
             S3_CLEANUP_FAILED_COUNT=$((S3_CLEANUP_FAILED_COUNT + 1))
             if [ -z "$S3_CLEANUP_FAILED_KEYS" ]; then
-                S3_CLEANUP_FAILED_KEYS="- $obj_key"
+                S3_CLEANUP_FAILED_KEYS="- $obj_key ($obj_size_fmt)"
             else
-                S3_CLEANUP_FAILED_KEYS="${S3_CLEANUP_FAILED_KEYS}\\n- $obj_key"
+                S3_CLEANUP_FAILED_KEYS="${S3_CLEANUP_FAILED_KEYS}\\n- $obj_key ($obj_size_fmt)"
             fi
         fi
     done
 
     if [ "$deleted" -gt 0 ]; then
         log_success "$deleted backup(s) antigo(s) removido(s) do S3/R2"
+        log_success "Espaço remoto liberado: $(format_bytes "$S3_CLEANUP_DELETED_BYTES")"
     fi
 
     [ "$failed" -eq 0 ]
@@ -135,7 +162,8 @@ notify_s3_cleanup_webhook() {
             "$strategy" \
             "${S3_CLEANUP_DELETED_COUNT:-0}" \
             "${S3_CLEANUP_FAILED_COUNT:-0}" \
-            "$details"
+            "$details" \
+            "$(format_bytes "${S3_CLEANUP_DELETED_BYTES:-0}")"
     fi
 }
 
@@ -159,7 +187,7 @@ cleanup_s3_simple() {
 
         age_days=$(( (now - modified) / 86400 ))
         if [ "$age_days" -gt "$retention_days" ]; then
-            backups_to_delete+=("$obj_key")
+            backups_to_delete+=("${obj_size}"$'\t'"${obj_key}")
         fi
     done < <(s3_list_backup_objects "$prefix_uri")
 
@@ -188,7 +216,7 @@ cleanup_s3_count() {
     while IFS=$'\t' read -r obj_date obj_time obj_size obj_key; do
         modified=$(date -d "$obj_date $obj_time" +%s 2>/dev/null || echo 0)
         [ "$modified" -eq 0 ] && continue
-        all_backups+=("${modified}"$'\t'"${obj_key}")
+        all_backups+=("${modified}"$'\t'"${obj_size}"$'\t'"${obj_key}")
     done < <(s3_list_backup_objects "$prefix_uri")
 
     if [ "${#all_backups[@]}" -le "$retention_count" ]; then
@@ -197,9 +225,9 @@ cleanup_s3_count() {
     fi
 
     index=0
-    while IFS=$'\t' read -r modified obj_key; do
+    while IFS=$'\t' read -r modified obj_size obj_key; do
         if [ "$index" -ge "$retention_count" ]; then
-            backups_to_delete+=("$obj_key")
+            backups_to_delete+=("${obj_size}"$'\t'"${obj_key}")
         fi
         ((index++))
     done < <(printf '%s\n' "${all_backups[@]}" | sort -rn)
@@ -232,7 +260,7 @@ cleanup_s3_gfs() {
             continue
         fi
 
-        backups_to_delete+=("$obj_key")
+        backups_to_delete+=("${obj_size}"$'\t'"${obj_key}")
     done < <(s3_list_backup_objects "$prefix_uri")
 
     if [ "${#backups_to_delete[@]}" -eq 0 ]; then
@@ -263,6 +291,7 @@ cleanup_s3_after_upload() {
     retention_count="${S3_RETENTION_COUNT:-${BACKUP_RETENTION_COUNT:-10}}"
     S3_CLEANUP_DELETED_COUNT=0
     S3_CLEANUP_FAILED_COUNT=0
+    S3_CLEANUP_DELETED_BYTES=0
     S3_CLEANUP_DELETED_KEYS=""
     S3_CLEANUP_FAILED_KEYS=""
 

@@ -18,6 +18,18 @@ NC='\033[0m'
 CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
 BACKUP_DIR="/var/backups/vpsguardian"
 
+get_s3_retention_strategy() {
+    echo "${S3_RETENTION_STRATEGY:-${BACKUP_RETENTION_STRATEGY:-simple}}"
+}
+
+get_s3_retention_days() {
+    echo "${S3_RETENTION_DAYS:-${BACKUP_RETENTION_DAYS:-30}}"
+}
+
+get_s3_retention_count() {
+    echo "${S3_RETENTION_COUNT:-${BACKUP_RETENTION_COUNT:-10}}"
+}
+
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║              STATUS DOS BACKUPS AUTOMÁTICOS                    ║${NC}"
@@ -65,6 +77,16 @@ if [ -f "$CONFIG_FILE" ]; then
             echo -e "     ${GRAY}Endpoint: ${S3_ENDPOINT}${NC}"
         else
             echo -e "  ${GREEN}✅${NC} AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}"
+        fi
+
+        if [ "${S3_CLEANUP_ENABLED:-true}" = "true" ]; then
+            case "$(get_s3_retention_strategy)" in
+                simple) echo -e "     ${GRAY}Limpeza após upload: >$(get_s3_retention_days) dias${NC}" ;;
+                count) echo -e "     ${GRAY}Limpeza após upload: manter últimos $(get_s3_retention_count)${NC}" ;;
+                gfs) echo -e "     ${GRAY}Limpeza após upload: GFS (7d+4w+12m)${NC}" ;;
+            esac
+        else
+            echo -e "     ${YELLOW}Limpeza após upload: desabilitada${NC}"
         fi
     else
         echo -e "  ${RED}❌${NC} AWS S3"

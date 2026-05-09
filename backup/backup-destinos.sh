@@ -28,6 +28,266 @@ log_warning() {
     echo "$LOG_PREFIX [ AVISO ] $*"
 }
 
+normalize_s3_prefix() {
+    local prefix="$1"
+    prefix="${prefix#/}"
+    prefix="${prefix%/}"
+    echo "$prefix"
+}
+
+s3_object_uri() {
+    local key="$1"
+    echo "s3://$S3_BUCKET/$key"
+}
+
+s3_prefix_uri() {
+    local prefix
+    prefix=$(normalize_s3_prefix "$1")
+
+    if [ -n "$prefix" ]; then
+        echo "s3://$S3_BUCKET/$prefix/"
+    else
+        echo "s3://$S3_BUCKET/"
+    fi
+}
+
+run_aws() {
+    if [ -n "$S3_ENDPOINT" ]; then
+        aws "$@" --endpoint-url "$S3_ENDPOINT"
+    else
+        aws "$@"
+    fi
+}
+
+s3_list_backup_objects() {
+    local prefix_uri="$1"
+
+    run_aws s3 ls "$prefix_uri" --recursive 2>/dev/null | while read -r obj_date obj_time obj_size obj_key; do
+        [ -z "$obj_key" ] && continue
+
+        case "$obj_key" in
+            *.tar.gz|*.tar.gz.*)
+                printf '%s\t%s\t%s\t%s\n' "$obj_date" "$obj_time" "$obj_size" "$obj_key"
+                ;;
+        esac
+    done
+}
+
+delete_s3_objects() {
+    local deleted=0
+    local failed=0
+    local obj_key
+
+    for obj_key in "$@"; do
+        log_info "Removendo backup antigo do S3/R2: s3://$S3_BUCKET/$obj_key"
+        if run_aws s3 rm "$(s3_object_uri "$obj_key")"; then
+            ((deleted++))
+            S3_CLEANUP_DELETED_COUNT=$((S3_CLEANUP_DELETED_COUNT + 1))
+            if [ -z "$S3_CLEANUP_DELETED_KEYS" ]; then
+                S3_CLEANUP_DELETED_KEYS="- $obj_key"
+            else
+                S3_CLEANUP_DELETED_KEYS="${S3_CLEANUP_DELETED_KEYS}\\n- $obj_key"
+            fi
+        else
+            log_warning "Falha ao remover: s3://$S3_BUCKET/$obj_key"
+            ((failed++))
+            S3_CLEANUP_FAILED_COUNT=$((S3_CLEANUP_FAILED_COUNT + 1))
+            if [ -z "$S3_CLEANUP_FAILED_KEYS" ]; then
+                S3_CLEANUP_FAILED_KEYS="- $obj_key"
+            else
+                S3_CLEANUP_FAILED_KEYS="${S3_CLEANUP_FAILED_KEYS}\\n- $obj_key"
+            fi
+        fi
+    done
+
+    if [ "$deleted" -gt 0 ]; then
+        log_success "$deleted backup(s) antigo(s) removido(s) do S3/R2"
+    fi
+
+    [ "$failed" -eq 0 ]
+}
+
+notify_s3_cleanup_webhook() {
+    local prefix="$1"
+    local strategy="$2"
+    local details=""
+
+    if [ "${S3_CLEANUP_DELETED_COUNT:-0}" -eq 0 ] && [ "${S3_CLEANUP_FAILED_COUNT:-0}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ -n "$S3_CLEANUP_DELETED_KEYS" ]; then
+        details="Removidos:\\n$S3_CLEANUP_DELETED_KEYS"
+    fi
+
+    if [ -n "$S3_CLEANUP_FAILED_KEYS" ]; then
+        if [ -n "$details" ]; then
+            details="${details}\\n\\nFalhas:\\n$S3_CLEANUP_FAILED_KEYS"
+        else
+            details="Falhas:\\n$S3_CLEANUP_FAILED_KEYS"
+        fi
+    fi
+
+    if type notify_s3_cleanup_result &>/dev/null; then
+        notify_s3_cleanup_result \
+            "$S3_BUCKET" \
+            "$prefix" \
+            "$strategy" \
+            "${S3_CLEANUP_DELETED_COUNT:-0}" \
+            "${S3_CLEANUP_FAILED_COUNT:-0}" \
+            "$details"
+    fi
+}
+
+cleanup_s3_simple() {
+    local prefix_uri="$1"
+    local retention_days="$2"
+    local now
+    local obj_date obj_time obj_size obj_key modified age_days
+    local backups_to_delete=()
+
+    if ! [[ "$retention_days" =~ ^[0-9]+$ ]]; then
+        log_warning "S3_RETENTION_DAYS inválido: $retention_days. Limpeza remota ignorada."
+        return 0
+    fi
+
+    now=$(date +%s)
+
+    while IFS=$'\t' read -r obj_date obj_time obj_size obj_key; do
+        modified=$(date -d "$obj_date $obj_time" +%s 2>/dev/null || echo 0)
+        [ "$modified" -eq 0 ] && continue
+
+        age_days=$(( (now - modified) / 86400 ))
+        if [ "$age_days" -gt "$retention_days" ]; then
+            backups_to_delete+=("$obj_key")
+        fi
+    done < <(s3_list_backup_objects "$prefix_uri")
+
+    if [ "${#backups_to_delete[@]}" -eq 0 ]; then
+        log_success "Nenhum backup remoto antigo para remover (todos <= ${retention_days} dias)"
+        return 0
+    fi
+
+    log_info "Encontrados ${#backups_to_delete[@]} backup(s) remoto(s) com mais de ${retention_days} dias"
+    delete_s3_objects "${backups_to_delete[@]}"
+}
+
+cleanup_s3_count() {
+    local prefix_uri="$1"
+    local retention_count="$2"
+    local obj_date obj_time obj_size obj_key modified
+    local all_backups=()
+    local backups_to_delete=()
+    local line index
+
+    if ! [[ "$retention_count" =~ ^[0-9]+$ ]] || [ "$retention_count" -lt 1 ]; then
+        log_warning "S3_RETENTION_COUNT inválido: $retention_count. Limpeza remota ignorada."
+        return 0
+    fi
+
+    while IFS=$'\t' read -r obj_date obj_time obj_size obj_key; do
+        modified=$(date -d "$obj_date $obj_time" +%s 2>/dev/null || echo 0)
+        [ "$modified" -eq 0 ] && continue
+        all_backups+=("${modified}"$'\t'"${obj_key}")
+    done < <(s3_list_backup_objects "$prefix_uri")
+
+    if [ "${#all_backups[@]}" -le "$retention_count" ]; then
+        log_success "Nenhum backup remoto para remover (total: ${#all_backups[@]}, retenção: $retention_count)"
+        return 0
+    fi
+
+    index=0
+    while IFS=$'\t' read -r modified obj_key; do
+        if [ "$index" -ge "$retention_count" ]; then
+            backups_to_delete+=("$obj_key")
+        fi
+        ((index++))
+    done < <(printf '%s\n' "${all_backups[@]}" | sort -rn)
+
+    log_info "Encontrados ${#backups_to_delete[@]} backup(s) remoto(s) para remover (mantendo últimos $retention_count)"
+    delete_s3_objects "${backups_to_delete[@]}"
+}
+
+cleanup_s3_gfs() {
+    local prefix_uri="$1"
+    local now
+    local obj_date obj_time obj_size obj_key modified age_days backup_day backup_dom
+    local backups_to_delete=()
+
+    now=$(date +%s)
+
+    while IFS=$'\t' read -r obj_date obj_time obj_size obj_key; do
+        modified=$(date -d "$obj_date $obj_time" +%s 2>/dev/null || echo 0)
+        [ "$modified" -eq 0 ] && continue
+
+        age_days=$(( (now - modified) / 86400 ))
+        backup_day=$(date -d "@$modified" +%u)
+        backup_dom=$(date -d "@$modified" +%d)
+
+        if [ "$age_days" -le 7 ]; then
+            continue
+        elif [ "$age_days" -le 28 ] && [ "$backup_day" -eq 7 ]; then
+            continue
+        elif [ "$age_days" -le 365 ] && [ "$backup_dom" -eq 01 ]; then
+            continue
+        fi
+
+        backups_to_delete+=("$obj_key")
+    done < <(s3_list_backup_objects "$prefix_uri")
+
+    if [ "${#backups_to_delete[@]}" -eq 0 ]; then
+        log_success "Nenhum backup remoto fora da política GFS"
+        return 0
+    fi
+
+    log_info "Encontrados ${#backups_to_delete[@]} backup(s) remoto(s) fora da política GFS"
+    delete_s3_objects "${backups_to_delete[@]}"
+}
+
+cleanup_s3_after_upload() {
+    local prefix="$1"
+    local prefix_uri
+    local strategy
+    local retention_days
+    local retention_count
+    local cleanup_status=0
+
+    if [ "${S3_CLEANUP_ENABLED:-true}" != "true" ]; then
+        log_info "Limpeza remota S3/R2 desabilitada (S3_CLEANUP_ENABLED=false)"
+        return 0
+    fi
+
+    prefix_uri=$(s3_prefix_uri "$prefix")
+    strategy="${S3_RETENTION_STRATEGY:-${BACKUP_RETENTION_STRATEGY:-simple}}"
+    retention_days="${S3_RETENTION_DAYS:-${BACKUP_RETENTION_DAYS:-30}}"
+    retention_count="${S3_RETENTION_COUNT:-${BACKUP_RETENTION_COUNT:-10}}"
+    S3_CLEANUP_DELETED_COUNT=0
+    S3_CLEANUP_FAILED_COUNT=0
+    S3_CLEANUP_DELETED_KEYS=""
+    S3_CLEANUP_FAILED_KEYS=""
+
+    log_info "Aplicando retenção remota S3/R2 em $prefix_uri (estratégia: $strategy)"
+
+    case "$strategy" in
+        simple)
+            cleanup_s3_simple "$prefix_uri" "$retention_days" || cleanup_status=$?
+            ;;
+        count)
+            cleanup_s3_count "$prefix_uri" "$retention_count" || cleanup_status=$?
+            ;;
+        gfs)
+            cleanup_s3_gfs "$prefix_uri" || cleanup_status=$?
+            ;;
+        *)
+            log_warning "Estratégia de retenção S3/R2 inválida: $strategy. Limpeza remota ignorada."
+            return 0
+            ;;
+    esac
+
+    notify_s3_cleanup_webhook "$prefix" "$strategy"
+    return "$cleanup_status"
+}
+
 # Carregar configurações de destino
 CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -421,17 +681,27 @@ if [ "$UPLOAD_S3" = true ]; then
             fi
 
             if [ "$S3_UPLOAD_READY" = true ]; then
-                # Montar comando com endpoint se configurado (R2, MinIO, etc)
-                AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\""
+                S3_PREFIX=$(normalize_s3_prefix "$S3_PREFIX")
+                if [ -n "$S3_PREFIX" ]; then
+                    S3_BACKUP_KEY="$S3_PREFIX/$BACKUP_FILENAME"
+                else
+                    S3_BACKUP_KEY="$BACKUP_FILENAME"
+                fi
+
                 if [ -n "$S3_ENDPOINT" ]; then
-                    AWS_CMD="aws s3 cp \"$BACKUP_FILE\" \"s3://$S3_BUCKET/$S3_PREFIX/$BACKUP_FILENAME\" --endpoint-url \"$S3_ENDPOINT\""
                     log_info "Usando endpoint customizado: $S3_ENDPOINT"
                 fi
 
-                log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_PREFIX/..."
-                if eval $AWS_CMD; then
+                log_info "Enviando backup para S3: s3://$S3_BUCKET/$S3_BACKUP_KEY"
+                if run_aws s3 cp "$BACKUP_FILE" "$(s3_object_uri "$S3_BACKUP_KEY")"; then
                     log_success "Upload para S3 concluído!"
                     notify_upload_success "$BACKUP_FILENAME" "S3 ($S3_BUCKET)" "$BACKUP_SIZE"
+
+                    if cleanup_s3_after_upload "$S3_PREFIX"; then
+                        log_success "Limpeza remota S3/R2 concluída"
+                    else
+                        log_warning "Limpeza remota S3/R2 terminou com avisos"
+                    fi
 
                     # Configurar lifecycle policy (apenas em modo interativo)
                     if [ "$AUTO_MODE" = false ]; then
@@ -455,7 +725,7 @@ if [ "$UPLOAD_S3" = true ]; then
   ]
 }
 EOF
-                            aws s3api put-bucket-lifecycle-configuration \
+                            run_aws s3api put-bucket-lifecycle-configuration \
                                 --bucket "$S3_BUCKET" \
                                 --lifecycle-configuration file:///tmp/s3-lifecycle.json
                             rm /tmp/s3-lifecycle.json

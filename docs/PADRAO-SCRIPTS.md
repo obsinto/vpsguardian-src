@@ -104,6 +104,10 @@ fi
 | `S3_BUCKET` | Nome do bucket S3/R2 |
 | `S3_PREFIX` | Prefixo/pasta dentro do bucket |
 | `S3_ENDPOINT` | Endpoint customizado (R2, MinIO) |
+| `S3_CLEANUP_ENABLED` | Limpa backups antigos no S3/R2 após upload (true/false) |
+| `S3_RETENTION_STRATEGY` | Estratégia remota S3/R2; vazio usa `BACKUP_RETENTION_STRATEGY` |
+| `S3_RETENTION_DAYS` | Dias de retenção remota para estratégia `simple`; vazio usa `BACKUP_RETENTION_DAYS` |
+| `S3_RETENTION_COUNT` | Quantidade remota para estratégia `count`; vazio usa `BACKUP_RETENTION_COUNT` |
 
 ## Resumo
 

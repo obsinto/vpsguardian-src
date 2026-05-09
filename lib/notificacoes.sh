@@ -226,6 +226,40 @@ notify_cleanup_success() {
         "💾 Liberado|$space_freed"
 }
 
+# Notificar limpeza remota de backups S3/R2
+# Uso: notify_s3_cleanup_result "bucket" "prefixo" "estrategia" "removidos" "falhas" "detalhes"
+notify_s3_cleanup_result() {
+    local bucket="$1"
+    local prefix="$2"
+    local strategy="$3"
+    local removed="$4"
+    local failed="$5"
+    local details="$6"
+
+    [ -z "$details" ] && details="Nenhum detalhe disponível"
+    if [ "${#details}" -gt 900 ]; then
+        details="${details:0:900}\\n..."
+    fi
+
+    local title="🗑️ Limpeza S3/R2"
+    local message_type="success"
+    local description="Backups antigos removidos do destino remoto."
+
+    if [ "${failed:-0}" -gt 0 ]; then
+        title="⚠️ Limpeza S3/R2 com avisos"
+        message_type="warning"
+        description="A limpeza remota terminou com falhas em alguns objetos."
+    fi
+
+    send_discord_detailed "$title" "$description" "$message_type" \
+        "🪣 Bucket|$bucket" \
+        "📁 Prefixo|${prefix:-/}" \
+        "📋 Estratégia|$strategy" \
+        "🗑️ Removidos|$removed" \
+        "⚠️ Falhas|$failed" \
+        "📝 Log|$details|false"
+}
+
 ################################################################################
 # NOTIFICAÇÕES DE UPLOAD
 ################################################################################

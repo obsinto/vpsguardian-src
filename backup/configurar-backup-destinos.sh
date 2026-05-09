@@ -23,6 +23,88 @@ log_success() { echo -e "${GREEN}[ OK ]${NC} $*"; }
 log_error() { echo -e "${RED}[ ERRO ]${NC} $*"; }
 log_warning() { echo -e "${YELLOW}[ AVISO ]${NC} $*"; }
 
+get_s3_retention_strategy() {
+    echo "${S3_RETENTION_STRATEGY:-${BACKUP_RETENTION_STRATEGY:-simple}}"
+}
+
+get_s3_retention_days() {
+    echo "${S3_RETENTION_DAYS:-${BACKUP_RETENTION_DAYS:-30}}"
+}
+
+get_s3_retention_count() {
+    echo "${S3_RETENTION_COUNT:-${BACKUP_RETENTION_COUNT:-10}}"
+}
+
+show_s3_cleanup_summary() {
+    if [ "${S3_CLEANUP_ENABLED:-true}" = "true" ]; then
+        case "$(get_s3_retention_strategy)" in
+            simple) echo -e "     ${GREEN}↳${NC} Limpeza S3/R2: >$(get_s3_retention_days) dias" ;;
+            count) echo -e "     ${GREEN}↳${NC} Limpeza S3/R2: manter últimos $(get_s3_retention_count)" ;;
+            gfs) echo -e "     ${GREEN}↳${NC} Limpeza S3/R2: GFS - 7d+4w+12m" ;;
+        esac
+    else
+        echo -e "     ${YELLOW}↳${NC} Limpeza S3/R2: desabilitada"
+    fi
+}
+
+configure_s3_cleanup() {
+    echo ""
+    echo -e "${YELLOW}Limpeza remota S3/R2${NC}"
+    echo "A limpeza roda logo após cada upload bem-sucedido e só afeta o prefixo enviado."
+    echo ""
+
+    read -p "$(echo -e ${BLUE}Limpar backups antigos no S3/R2 após upload? \(Y/n\):${NC} )" ENABLE_S3_CLEANUP
+    ENABLE_S3_CLEANUP=${ENABLE_S3_CLEANUP:-Y}
+    S3_CLEANUP_ENABLED=$([[ "$ENABLE_S3_CLEANUP" =~ ^[Yy]$ ]] && echo "true" || echo "false")
+
+    if [ "$S3_CLEANUP_ENABLED" != "true" ]; then
+        S3_RETENTION_STRATEGY=""
+        S3_RETENTION_DAYS=""
+        S3_RETENTION_COUNT=""
+        return
+    fi
+
+    read -p "$(echo -e ${BLUE}Usar a mesma retenção local no S3/R2? \(Y/n\):${NC} )" USE_LOCAL_RETENTION
+    USE_LOCAL_RETENTION=${USE_LOCAL_RETENTION:-Y}
+
+    if [[ "$USE_LOCAL_RETENTION" =~ ^[Yy]$ ]]; then
+        S3_RETENTION_STRATEGY=""
+        S3_RETENTION_DAYS=""
+        S3_RETENTION_COUNT=""
+        log_info "S3/R2 usará a mesma política local (${BACKUP_RETENTION_STRATEGY:-simple})"
+        return
+    fi
+
+    echo ""
+    echo "Estratégia de retenção remota:"
+    echo "  1) simple - Deleta backups mais antigos que X dias"
+    echo "  2) count  - Mantém últimos X backups"
+    echo "  3) gfs    - 7 diários + 4 semanais + 12 mensais"
+    echo ""
+    read -p "$(echo -e ${BLUE}Escolha a estratégia \(1-3, padrão: 1\):${NC} )" S3_CLEANUP_CHOICE
+    S3_CLEANUP_CHOICE=${S3_CLEANUP_CHOICE:-1}
+
+    case "$S3_CLEANUP_CHOICE" in
+        2)
+            S3_RETENTION_STRATEGY="count"
+            read -p "$(echo -e ${BLUE}Quantidade de backups remotos a manter \(padrão: 10\):${NC} )" NEW_S3_COUNT
+            S3_RETENTION_COUNT=${NEW_S3_COUNT:-10}
+            S3_RETENTION_DAYS=""
+            ;;
+        3)
+            S3_RETENTION_STRATEGY="gfs"
+            S3_RETENTION_DAYS=""
+            S3_RETENTION_COUNT=""
+            ;;
+        *)
+            S3_RETENTION_STRATEGY="simple"
+            read -p "$(echo -e ${BLUE}Deletar backups remotos com mais de quantos dias? \(padrão: 30\):${NC} )" NEW_S3_DAYS
+            S3_RETENTION_DAYS=${NEW_S3_DAYS:-30}
+            S3_RETENTION_COUNT=""
+            ;;
+    esac
+}
+
 clear
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}║     CONFIGURAÇÃO DE DESTINOS DE BACKUP AUTOMÁTICO             ║${NC}"
@@ -71,6 +153,10 @@ S3_PREFIX="$S3_PREFIX"
 S3_REGION="$S3_REGION"
 S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
 S3_ENDPOINT="$S3_ENDPOINT"
+S3_CLEANUP_ENABLED=${S3_CLEANUP_ENABLED:-true}
+S3_RETENTION_STRATEGY="${S3_RETENTION_STRATEGY:-}"
+S3_RETENTION_DAYS="${S3_RETENTION_DAYS:-}"
+S3_RETENTION_COUNT="${S3_RETENTION_COUNT:-}"
 
 # ========== RETENÇÃO DE BACKUPS ==========
 # Estratégia: simple, count, gfs
@@ -115,6 +201,7 @@ if [ -f "$CONFIG_FILE" ]; then
     [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo -e "  ${GREEN}✅${NC} Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo -e "  ${RED}❌${NC} Google Drive"
     if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
         [ -n "$S3_ENDPOINT" ] && echo -e "  ${GREEN}✅${NC} S3/R2 → s3://${S3_BUCKET}/${S3_PREFIX}" || echo -e "  ${GREEN}✅${NC} AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}"
+        show_s3_cleanup_summary
     else
         echo -e "  ${RED}❌${NC} AWS S3"
     fi
@@ -383,6 +470,17 @@ EOF
                 log_info "GFS usa retenção fixa: 7 diários + 4 semanais + 12 mensais"
             fi
 
+            if [ "$BACKUP_DEST_AWS_S3" = "true" ] && [ "${S3_CLEANUP_ENABLED:-true}" = "true" ]; then
+                echo ""
+                read -p "$(echo -e ${BLUE}Usar esta mesma política também no S3/R2? \(Y/n\):${NC} )" UPDATE_S3_RETENTION
+                UPDATE_S3_RETENTION=${UPDATE_S3_RETENTION:-Y}
+                if [[ "$UPDATE_S3_RETENTION" =~ ^[Yy]$ ]]; then
+                    S3_RETENTION_STRATEGY=""
+                    S3_RETENTION_DAYS=""
+                    S3_RETENTION_COUNT=""
+                fi
+            fi
+
             save_config
             log_success "Configuração de retenção salva!"
             echo ""
@@ -391,6 +489,7 @@ EOF
             [ "$BACKUP_RETENTION_STRATEGY" = "simple" ] && echo -e "  Retenção: ${GREEN}$BACKUP_RETENTION_DAYS dias${NC}"
             [ "$BACKUP_RETENTION_STRATEGY" = "count" ] && echo -e "  Retenção: ${GREEN}últimos $BACKUP_RETENTION_COUNT backups${NC}"
             [ "$BACKUP_RETENTION_STRATEGY" = "gfs" ] && echo -e "  Retenção: ${GREEN}7 diários + 4 semanais + 12 mensais${NC}"
+            [ "$BACKUP_DEST_AWS_S3" = "true" ] && show_s3_cleanup_summary
             exit 0
             ;;
         9)
@@ -402,6 +501,7 @@ EOF
             unset BACKUP_DEST_LOCAL BACKUP_DEST_SSH BACKUP_DEST_GOOGLE_DRIVE BACKUP_DEST_AWS_S3
             unset SSH_REMOTE_SERVER SSH_REMOTE_USER SSH_REMOTE_PORT SSH_REMOTE_DIR
             unset GDRIVE_REMOTE_NAME GDRIVE_DIR S3_BUCKET S3_PREFIX S3_REGION S3_ENDPOINT
+            unset S3_CLEANUP_ENABLED S3_RETENTION_STRATEGY S3_RETENTION_DAYS S3_RETENTION_COUNT
             unset WEBHOOK_URL NOTIFICATION_EMAIL BACKUP_RETENTION_STRATEGY BACKUP_RETENTION_DAYS BACKUP_RETENTION_COUNT
             ;;
         0|"")
@@ -750,6 +850,10 @@ if command -v aws &> /dev/null; then
                 fi
             fi
         fi
+
+        if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
+            configure_s3_cleanup
+        fi
     else
         S3_ENABLED=false
         BACKUP_DEST_AWS_S3=false
@@ -824,6 +928,7 @@ if [ "$BACKUP_DEST_AWS_S3" = "true" ]; then
     else
         echo "  ✅ AWS S3 → s3://${S3_BUCKET}/${S3_PREFIX}"
     fi
+    show_s3_cleanup_summary
 else
     echo "  ❌ AWS S3"
 fi

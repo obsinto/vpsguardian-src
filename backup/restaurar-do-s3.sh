@@ -377,7 +377,7 @@ else
 
             if [ -n "$BACKUP_APP_KEY" ]; then
                 log_success "✅ APP_KEY encontrada no backup"
-                log_info "   Preview: ${BACKUP_APP_KEY:0:30}..."
+                log_info "   APP_KEY encontrada (valor oculto)"
             fi
 
             if [ -n "$BACKUP_PREV_KEYS" ]; then
@@ -425,7 +425,7 @@ else
 
             chmod 600 "$ENV_FILE"
             log_success "✅ APP_KEY aplicada com sucesso!"
-            log_info "   APP_KEY: ${BACKUP_APP_KEY:0:30}..."
+            log_info "   APP_KEY: presente e ocultada"
         fi
 
         # Encontrar o diretório extraído para outros arquivos
@@ -561,8 +561,7 @@ else
             log_success "✅ APP_KEY verificada - container usando chave correta!"
         else
             log_warning "⚠️  APP_KEY no container pode estar diferente"
-            log_info "   Esperado: ${BACKUP_APP_KEY:0:30}..."
-            log_info "   Atual:    ${CONTAINER_APP_KEY:0:30}..."
+            log_info "   APP_KEY esperada e atual divergem (valores ocultos)"
             log_info "   Se houver erro 'MAC is invalid', execute manualmente:"
             log_info "   cd /data/coolify/source && docker compose up -d --force-recreate"
         fi

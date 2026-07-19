@@ -318,13 +318,13 @@ cleanup_s3_after_upload() {
 }
 
 # Carregar configurações de destino
-CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$SCRIPT_DIR/../config/backup-destinations.conf}"
 if [ -f "$CONFIG_FILE" ]; then
     source "$CONFIG_FILE"
 fi
 
 # Carregar biblioteca de notificações
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "$SCRIPT_DIR/../lib/notificacoes.sh" ]; then
     source "$SCRIPT_DIR/../lib/notificacoes.sh"
 fi
@@ -529,17 +529,29 @@ if [ "$UPLOAD_SELFHOSTED" = true ]; then
             REMOTE_UPLOAD_DIR="$REMOTE_DIR"
         fi
 
+        if [[ ! "$REMOTE_USER" =~ ^[A-Za-z0-9._-]+$ ]] ||
+           [[ ! "$REMOTE_PORT" =~ ^[0-9]+$ ]] ||
+           [[ ! "$REMOTE_IP" =~ ^[A-Za-z0-9.:-]+$ ]] ||
+           [[ ! "$REMOTE_UPLOAD_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
+            log_error "Configuração SSH contém usuário, host, porta ou caminho inválido"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            UPLOAD_SELFHOSTED=false
+        fi
+
         log_info "Testando conexão SSH..."
+    fi
+
+    if [ "$UPLOAD_SELFHOSTED" = true ]; then
         if ssh -p "$REMOTE_PORT" -o ConnectTimeout=10 "$REMOTE_USER@$REMOTE_IP" "exit" 2>/dev/null; then
             log_success "Conexão SSH estabelecida"
 
-            # Criar diretório remoto se não existir
-            log_info "Criando diretório remoto se necessário..."
-            ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" "mkdir -p $REMOTE_UPLOAD_DIR"
-
-            # Upload do arquivo
+            # Criar o diretório e gravar via stdin mantém o caminho devidamente
+            # quoted e aplica permissão restrita no destino.
             log_info "Enviando backup para $REMOTE_USER@$REMOTE_IP:$REMOTE_UPLOAD_DIR..."
-            if scp -P "$REMOTE_PORT" "$BACKUP_FILE" "$REMOTE_USER@$REMOTE_IP:$REMOTE_UPLOAD_DIR/"; then
+            REMOTE_UPLOAD_DIR_Q=$(printf '%q' "$REMOTE_UPLOAD_DIR")
+            REMOTE_FILE_Q=$(printf '%q' "$REMOTE_UPLOAD_DIR/$BACKUP_FILENAME")
+            if ssh -p "$REMOTE_PORT" "$REMOTE_USER@$REMOTE_IP" \
+                "umask 077; mkdir -p -- $REMOTE_UPLOAD_DIR_Q && cat > $REMOTE_FILE_Q" < "$BACKUP_FILE"; then
                 log_success "Upload self-hosted concluído!"
                 notify_upload_success "$BACKUP_FILENAME" "SSH ($REMOTE_IP)" "$BACKUP_SIZE"
                 ((SUCCESS_COUNT++))
@@ -739,8 +751,14 @@ if [ "$UPLOAD_S3" = true ]; then
                             read -p "$LOG_PREFIX [ INPUT ] Dias para expiração (padrão: 30): " EXPIRE_DAYS
                             EXPIRE_DAYS=${EXPIRE_DAYS:-30}
 
-                            log_info "Configurando lifecycle policy para $EXPIRE_DAYS dias..."
-                            cat > /tmp/s3-lifecycle.json <<EOF
+                            if [[ ! "$EXPIRE_DAYS" =~ ^[1-9][0-9]*$ ]] || \
+                               [[ ! "$S3_PREFIX" =~ ^[A-Za-z0-9._/-]*$ ]]; then
+                                log_error "Dias de expiração ou prefixo S3 inválido"
+                                FAIL_COUNT=$((FAIL_COUNT + 1))
+                            else
+                                log_info "Configurando lifecycle policy para $EXPIRE_DAYS dias..."
+                                LIFECYCLE_FILE=$(mktemp "${TMPDIR:-/tmp}/vpsguardian-s3-lifecycle.XXXXXX.json")
+                                cat > "$LIFECYCLE_FILE" <<EOF
 {
   "Rules": [
     {
@@ -754,11 +772,18 @@ if [ "$UPLOAD_S3" = true ]; then
   ]
 }
 EOF
-                            run_aws s3api put-bucket-lifecycle-configuration \
-                                --bucket "$S3_BUCKET" \
-                                --lifecycle-configuration file:///tmp/s3-lifecycle.json
-                            rm /tmp/s3-lifecycle.json
-                            log_success "Lifecycle policy configurada"
+                                run_aws s3api put-bucket-lifecycle-configuration \
+                                    --bucket "$S3_BUCKET" \
+                                    --lifecycle-configuration "file://$LIFECYCLE_FILE"
+                                LIFECYCLE_RESULT=$?
+                                rm -f "$LIFECYCLE_FILE"
+                                if [ "$LIFECYCLE_RESULT" -eq 0 ]; then
+                                    log_success "Lifecycle policy configurada"
+                                else
+                                    log_error "Falha ao configurar lifecycle policy"
+                                    FAIL_COUNT=$((FAIL_COUNT + 1))
+                                fi
+                            fi
                         fi
                     fi
 
@@ -787,6 +812,11 @@ fi
 if [ $SUCCESS_COUNT -eq 0 ]; then
     log_error "Nenhum upload foi realizado com sucesso"
     exit 1
+elif [ $FAIL_COUNT -gt 0 ]; then
+    log_error "Upload parcial: ao menos um destino falhou"
+    exit 1
 else
     log_success "Backup enviado com sucesso para $SUCCESS_COUNT destino(s)"
 fi
+
+exit 0

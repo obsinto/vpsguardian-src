@@ -373,7 +373,8 @@ create_lock() {
 
 # Verifica se Coolify está instalado
 check_coolify() {
-    if [ ! -d "/data/coolify" ]; then
+    local coolify_dir="${COOLIFY_DATA_DIR:-/data/coolify}"
+    if [ ! -d "$coolify_dir" ]; then
         log_error "Coolify não está instalado"
         log_info "Instale: curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash"
         return 1

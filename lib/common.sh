@@ -10,6 +10,14 @@
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VPSGUARDIAN_ROOT="$(dirname "$LIB_DIR")"
 
+# A instalação registra os caminhos escolhidos ao lado do código. Carregar esse
+# metadado antes dos defaults evita que uma instalação customizada volte
+# silenciosamente para /var/backups ou /var/log.
+if [ -f "$VPSGUARDIAN_ROOT/.install.conf" ]; then
+    # shellcheck disable=SC1091
+    source "$VPSGUARDIAN_ROOT/.install.conf"
+fi
+
 # Carrega configuração global
 if [ -f "$VPSGUARDIAN_ROOT/config/default.conf" ]; then
     source "$VPSGUARDIAN_ROOT/config/default.conf"
@@ -25,7 +33,7 @@ source "$LIB_DIR/validation.sh"
 # Configurações padrão se não foram definidas
 : "${VPSGUARDIAN_ROOT:=/opt/vpsguardian}"
 : "${BACKUP_ROOT:=/var/backups/vpsguardian}"
-: "${LOG_DIR:=/var/log/vpsguardian}"
+: "${LOG_DIR:=${LOG_ROOT:-/var/log/vpsguardian}}"
 
 # Define nome do script automaticamente
 if [ -z "$SCRIPT_NAME" ]; then
@@ -37,7 +45,7 @@ fi
 init_script() {
     # Cria diretórios necessários
     ensure_directory "$BACKUP_ROOT" 700
-    ensure_directory "$LOG_DIR" 755
+    ensure_directory "$LOG_DIR" 750
 
     # Configura log file se não estiver definido
     if [ -z "$LOG_FILE" ]; then
@@ -109,13 +117,14 @@ retry() {
     local max_attempts="${1:-3}"
     local delay="${2:-5}"
     shift 2
-    local cmd="$@"
+    local cmd_display
+    printf -v cmd_display '%q ' "$@"
     local attempt=1
 
     while [ $attempt -le $max_attempts ]; do
-        log_debug "Tentativa $attempt/$max_attempts: $cmd"
+        log_debug "Tentativa $attempt/$max_attempts: $cmd_display"
 
-        if eval "$cmd"; then
+        if "$@"; then
             return 0
         fi
 
@@ -127,7 +136,7 @@ retry() {
         ((attempt++))
     done
 
-    log_error "Comando falhou após $max_attempts tentativas: $cmd"
+    log_error "Comando falhou após $max_attempts tentativas: $cmd_display"
     return 1
 }
 

@@ -22,7 +22,12 @@ log_success() {
 }
 
 # Arquivo de configuração de destinos
-BACKUP_DEST_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    source "/etc/vpsguardian/install.conf"
+fi
+BACKUP_DEST_CONFIG="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$INSTALL_ROOT/config/backup-destinations.conf}"
 
 # Função para atualizar variável no arquivo de configuração
 update_config_var() {
@@ -35,12 +40,19 @@ update_config_var() {
         return 1
     fi
 
-    # Se a variável existe, atualiza; senão, adiciona
-    if grep -q "^${var_name}=" "$config_file"; then
-        sed -i "s|^${var_name}=.*|${var_name}=\"${var_value}\"|" "$config_file"
-    else
-        echo "${var_name}=\"${var_value}\"" >> "$config_file"
-    fi
+    local config_tmp line found=false
+    config_tmp=$(mktemp "$(dirname "$config_file")/.cron-config.XXXXXX")
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" == "$var_name="* ]]; then
+            printf '%s=%q\n' "$var_name" "$var_value" >> "$config_tmp"
+            found=true
+        else
+            printf '%s\n' "$line" >> "$config_tmp"
+        fi
+    done < "$config_file"
+    [ "$found" = true ] || printf '%s=%q\n' "$var_name" "$var_value" >> "$config_tmp"
+    chmod 600 "$config_tmp"
+    mv -f "$config_tmp" "$config_file"
 }
 
 # Função para salvar configurações de retenção
@@ -80,16 +92,19 @@ echo "  • Upload automático para destinos remotos (opcional)"
 echo "  • Rotação de logs"
 echo ""
 
-# Detectar diretório de instalação
-INSTALL_ROOT="/opt/vpsguardian"
-
 # Procurar arquivo de configuração
-for config in "/opt/vpsguardian/.install.conf" "/opt/vpsguardian-src/.install.conf"; do
+for config in "/etc/vpsguardian/install.conf" "$INSTALL_ROOT/.install.conf"; do
     if [ -f "$config" ]; then
         source "$config"
         break
     fi
 done
+
+CRON_LOG_ROOT="${LOG_ROOT:-/var/log/vpsguardian}"
+CRON_BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/vpsguardian}"
+INSTALL_ROOT_Q=$(printf '%q' "$INSTALL_ROOT")
+CRON_LOG_ROOT_Q=$(printf '%q' "$CRON_LOG_ROOT")
+CRON_BACKUP_ROOT_Q=$(printf '%q' "$CRON_BACKUP_ROOT")
 
 # Verificar se scripts existem
 log "INFO" "Verificando scripts necessários..."
@@ -97,17 +112,17 @@ ERRORS=0
 
 if [ ! -x "$INSTALL_ROOT/backup/backup-coolify.sh" ]; then
     log_error "Script de backup não encontrado: $INSTALL_ROOT/backup/backup-coolify.sh"
-    ((ERRORS++))
+    ERRORS=$((ERRORS + 1))
 fi
 
 if [ ! -x "$INSTALL_ROOT/manutencao/manutencao-completa.sh" ]; then
     log_error "Script de manutenção não encontrado: $INSTALL_ROOT/manutencao/manutencao-completa.sh"
-    ((ERRORS++))
+    ERRORS=$((ERRORS + 1))
 fi
 
 if [ ! -x "$INSTALL_ROOT/manutencao/alerta-disco.sh" ]; then
     log_error "Script de alerta não encontrado: $INSTALL_ROOT/manutencao/alerta-disco.sh"
-    ((ERRORS++))
+    ERRORS=$((ERRORS + 1))
 fi
 
 if [ $ERRORS -gt 0 ]; then
@@ -483,7 +498,7 @@ crontab -l 2>/dev/null | grep -v "vpsguardian.*backup-coolify.sh" | \
     grep -v "logrotate" > "$TEMP_CRON" || true
 
 # Adicionar cabeçalho
-cat >> "$TEMP_CRON" << 'EOF'
+cat >> "$TEMP_CRON" << EOF
 
 ################################################################################
 # Sistema de Manutenção e Backup VPS - Configurado automaticamente
@@ -509,13 +524,13 @@ if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
     if [ "$DB_BACKUP_FREQ" = "daily" ]; then
         cat >> "$TEMP_CRON" << EOF
 # Backup automático de bancos de dados (diário às $DB_BACKUP_TIME) → destino: $DB_BACKUP_DEST
-$DB_BACKUP_MIN $DB_BACKUP_HOUR * * * $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> /var/log/vpsguardian/cron-db-backup.log 2>&1
+$DB_BACKUP_MIN $DB_BACKUP_HOUR * * * $INSTALL_ROOT_Q/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> $CRON_LOG_ROOT_Q/cron-db-backup.log 2>&1
 
 EOF
     else
         cat >> "$TEMP_CRON" << EOF
 # Backup automático de bancos de dados (semanal ${DB_BACKUP_DAY}=Dia da semana, $DB_BACKUP_TIME) → destino: $DB_BACKUP_DEST
-$DB_BACKUP_MIN $DB_BACKUP_HOUR * * $DB_BACKUP_DAY $INSTALL_ROOT/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> /var/log/vpsguardian/cron-db-backup.log 2>&1
+$DB_BACKUP_MIN $DB_BACKUP_HOUR * * $DB_BACKUP_DAY $INSTALL_ROOT_Q/backup/backup-databases-dump-auto.sh --dest=$DB_BACKUP_DEST >> $CRON_LOG_ROOT_Q/cron-db-backup.log 2>&1
 
 EOF
     fi
@@ -526,13 +541,13 @@ if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
     if [ "$VOLUMES_BACKUP_FREQ" = "daily" ]; then
         cat >> "$TEMP_CRON" << EOF
 # Backup de volumes das aplicações (diário às $VOLUMES_BACKUP_TIME) - estratégia double-check
-$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * * $INSTALL_ROOT/migrar/backup-volumes.sh --auto --all --output=/var/backups/vpsguardian/volumes --strategy=double-check >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * * $INSTALL_ROOT_Q/migrar/backup-volumes.sh --auto --all --output=$CRON_BACKUP_ROOT_Q/volumes --strategy=double-check >> $CRON_LOG_ROOT_Q/cron-volumes-backup.log 2>&1
 
 EOF
     else
         cat >> "$TEMP_CRON" << EOF
 # Backup de volumes das aplicações (semanal ${VOLUMES_BACKUP_DAY}=Dia da semana, $VOLUMES_BACKUP_TIME) - estratégia double-check
-$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * $VOLUMES_BACKUP_DAY $INSTALL_ROOT/migrar/backup-volumes.sh --auto --all --output=/var/backups/vpsguardian/volumes --strategy=double-check >> /var/log/vpsguardian/cron-volumes-backup.log 2>&1
+$VOLUMES_BACKUP_MIN $VOLUMES_BACKUP_HOUR * * $VOLUMES_BACKUP_DAY $INSTALL_ROOT_Q/migrar/backup-volumes.sh --auto --all --output=$CRON_BACKUP_ROOT_Q/volumes --strategy=double-check >> $CRON_LOG_ROOT_Q/cron-volumes-backup.log 2>&1
 
 EOF
     fi
@@ -541,7 +556,7 @@ fi
 # Adicionar backup do Coolify
 cat >> "$TEMP_CRON" << EOF
 # Backup completo do Coolify - Configurações (${BACKUP_DAY}=Dia da semana, $BACKUP_TIME)
-$BACKUP_MIN $BACKUP_HOUR * * $BACKUP_DAY $INSTALL_ROOT/backup/backup-coolify.sh >> /var/log/vpsguardian/cron-backup.log 2>&1
+$BACKUP_MIN $BACKUP_HOUR * * $BACKUP_DAY $INSTALL_ROOT_Q/backup/backup-coolify.sh >> $CRON_LOG_ROOT_Q/cron-backup.log 2>&1
 
 EOF
 
@@ -563,7 +578,7 @@ if [[ "$AUTO_UPLOAD" =~ ^[Yy]$ ]]; then
 
     cat >> "$TEMP_CRON" << EOF
 # Upload automático de backups para $UPLOAD_DEST ($UPLOAD_DELAY hora(s) após o backup)
-$BACKUP_MIN $UPLOAD_HOUR * * $UPLOAD_DAY find /var/backups/vpsguardian/coolify -name "*.tar.gz" -mmin -120 -exec $INSTALL_ROOT/backup/backup-destinos.sh {} --dest=$UPLOAD_DEST \; >> /var/log/vpsguardian/cron-upload.log 2>&1
+$BACKUP_MIN $UPLOAD_HOUR * * $UPLOAD_DAY find $CRON_BACKUP_ROOT_Q/coolify -name "*.tar.gz" -mmin -120 -exec $INSTALL_ROOT_Q/backup/backup-destinos.sh {} --dest=$UPLOAD_DEST \; >> $CRON_LOG_ROOT_Q/cron-upload.log 2>&1
 
 EOF
 fi
@@ -571,14 +586,14 @@ fi
 # Adicionar manutenção preventiva
 cat >> "$TEMP_CRON" << EOF
 # Manutenção preventiva semanal (${MANUTENCAO_DAY}=Dia da semana, $MANUTENCAO_TIME)
-$MANUTENCAO_MIN $MANUTENCAO_HOUR * * $MANUTENCAO_DAY $INSTALL_ROOT/manutencao/manutencao-completa.sh >> /var/log/vpsguardian/cron-manutencao.log 2>&1
+$MANUTENCAO_MIN $MANUTENCAO_HOUR * * $MANUTENCAO_DAY $INSTALL_ROOT_Q/manutencao/manutencao-completa.sh >> $CRON_LOG_ROOT_Q/cron-manutencao.log 2>&1
 
 EOF
 
 # Adicionar alerta de disco
 cat >> "$TEMP_CRON" << EOF
 # Alerta de espaço em disco (diário às $ALERTA_TIME)
-$ALERTA_MIN $ALERTA_HOUR * * * $INSTALL_ROOT/manutencao/alerta-disco.sh >> /var/log/vpsguardian/cron-alerta.log 2>&1
+$ALERTA_MIN $ALERTA_HOUR * * * $INSTALL_ROOT_Q/manutencao/alerta-disco.sh >> $CRON_LOG_ROOT_Q/cron-alerta.log 2>&1
 
 EOF
 
@@ -597,16 +612,16 @@ if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
     esac
 
     # Diretórios a limpar
-    COOLIFY_BACKUP_DIR="/var/backups/vpsguardian/coolify"
-    VOLUMES_BACKUP_DIR="/var/backups/vpsguardian/volumes"
-    DATABASES_BACKUP_DIR="/var/backups/vpsguardian/databases"
+    COOLIFY_BACKUP_DIR="$CRON_BACKUP_ROOT/coolify"
+    VOLUMES_BACKUP_DIR="$CRON_BACKUP_ROOT/volumes"
+    DATABASES_BACKUP_DIR="$CRON_BACKUP_ROOT/databases"
 
     # Formatação de horário (evita erro de octal com 08, 09)
     CLEANUP_TIME_FMT=$(printf "%02d:%02d" $((10#$CLEANUP_HOUR)) $((10#$CLEANUP_MIN)))
 
     cat >> "$TEMP_CRON" << EOF
 # Limpeza automática de backups do Coolify (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
-$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$COOLIFY_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-coolify.log 2>&1
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT_Q/scripts-auxiliares/limpar-backups-antigos.sh --dir=$(printf '%q' "$COOLIFY_BACKUP_DIR") $CLEANUP_ARGS >> $CRON_LOG_ROOT_Q/cron-cleanup-coolify.log 2>&1
 
 EOF
 
@@ -614,7 +629,7 @@ EOF
     if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
         cat >> "$TEMP_CRON" << EOF
 # Limpeza automática de backups de databases (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
-$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$DATABASES_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-databases.log 2>&1
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT_Q/scripts-auxiliares/limpar-backups-antigos.sh --dir=$(printf '%q' "$DATABASES_BACKUP_DIR") $CLEANUP_ARGS >> $CRON_LOG_ROOT_Q/cron-cleanup-databases.log 2>&1
 
 EOF
     fi
@@ -623,7 +638,7 @@ EOF
     if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
         cat >> "$TEMP_CRON" << EOF
 # Limpeza automática de backups de volumes (${CLEANUP_DAY}=Dia da semana, $CLEANUP_TIME_FMT)
-$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT/scripts-auxiliares/limpar-backups-antigos.sh --dir=$VOLUMES_BACKUP_DIR $CLEANUP_ARGS >> /var/log/vpsguardian/cron-cleanup-volumes.log 2>&1
+$CLEANUP_MIN $CLEANUP_HOUR * * $CLEANUP_DAY $INSTALL_ROOT_Q/scripts-auxiliares/limpar-backups-antigos.sh --dir=$(printf '%q' "$VOLUMES_BACKUP_DIR") $CLEANUP_ARGS >> $CRON_LOG_ROOT_Q/cron-cleanup-volumes.log 2>&1
 
 EOF
     fi
@@ -632,7 +647,7 @@ fi
 # Adicionar rotação de logs
 cat >> "$TEMP_CRON" << 'EOF'
 # Rotação de logs (mensalmente, dia 1 às 04:00)
-0 4 1 * * /usr/sbin/logrotate /etc/logrotate.conf >> /var/log/vpsguardian/cron-logrotate.log 2>&1
+0 4 1 * * /usr/sbin/logrotate /etc/logrotate.conf >> $CRON_LOG_ROOT_Q/cron-logrotate.log 2>&1
 
 EOF
 
@@ -644,7 +659,7 @@ log_success "Cron jobs configurados com sucesso"
 echo ""
 
 # Criar diretórios de logs se não existirem
-mkdir -p /var/log/vpsguardian
+mkdir -p "$CRON_LOG_ROOT"
 
 # Verificar instalação
 log "INFO" "========== VERIFICANDO CONFIGURAÇÃO =========="
@@ -764,22 +779,22 @@ echo "  # Editar manualmente"
 echo "  sudo crontab -e"
 echo ""
 echo "  # Ver logs de execução"
-echo "  tail -f /var/log/vpsguardian/cron-backup.log"
+echo "  tail -f $CRON_LOG_ROOT/cron-backup.log"
 if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
-    echo "  tail -f /var/log/vpsguardian/cron-db-backup.log"
+    echo "  tail -f $CRON_LOG_ROOT/cron-db-backup.log"
 fi
 if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
-    echo "  tail -f /var/log/vpsguardian/cron-volumes-backup.log"
+    echo "  tail -f $CRON_LOG_ROOT/cron-volumes-backup.log"
 fi
-echo "  tail -f /var/log/vpsguardian/cron-manutencao.log"
-echo "  tail -f /var/log/vpsguardian/cron-alerta.log"
+echo "  tail -f $CRON_LOG_ROOT/cron-manutencao.log"
+echo "  tail -f $CRON_LOG_ROOT/cron-alerta.log"
 if [[ "$ENABLE_CLEANUP" =~ ^[Yy]$ ]]; then
-    echo "  tail -f /var/log/vpsguardian/cron-cleanup-coolify.log"
+    echo "  tail -f $CRON_LOG_ROOT/cron-cleanup-coolify.log"
     if [[ "$ENABLE_DB_BACKUP" =~ ^[Yy]$ ]]; then
-        echo "  tail -f /var/log/vpsguardian/cron-cleanup-databases.log"
+        echo "  tail -f $CRON_LOG_ROOT/cron-cleanup-databases.log"
     fi
     if [[ "$ENABLE_VOLUMES_BACKUP" =~ ^[Yy]$ ]]; then
-        echo "  tail -f /var/log/vpsguardian/cron-cleanup-volumes.log"
+        echo "  tail -f $CRON_LOG_ROOT/cron-cleanup-volumes.log"
     fi
 fi
 echo ""
@@ -804,4 +819,4 @@ else
 fi
 
 echo ""
-log "INFO" "Monitore os logs em /var/log/vpsguardian/ para garantir que tudo funciona"
+log "INFO" "Monitore os logs em $CRON_LOG_ROOT/ para garantir que tudo funciona"

@@ -1,0 +1,6 @@
+aaa111111111|bugroyale-worker|bugroyale:latest|running|Up 3 hours
+bbb222222222|automind|automind:latest|running|Up 5 hours
+ccc333333333|postgres-x1y2z3|postgres:16|running|Up 2 days (healthy)
+ddd444444444|esus|esus:latest|running|Up 1 hour (unhealthy)
+eee555555555|flaky-app|flaky:latest|restarting|Restarting (1) 5 seconds ago
+fff666666666|old-app|old:latest|exited|Exited (0) 2 days ago

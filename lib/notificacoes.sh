@@ -4,8 +4,11 @@
 # Funções para enviar notificações via Webhook (Discord/Slack) e Email
 ################################################################################
 
-# Carregar configuração
-NOTIF_CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
+# Carregar a configuração compartilhada da instalação real. O monitor pode
+# fornecê-la já carregada; nunca há um segundo arquivo de webhook.
+NOTIF_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NOTIF_ROOT="${MONITOR_INSTALL_ROOT:-${VPSGUARDIAN_ROOT:-$(dirname "$NOTIF_LIB_DIR")}}"
+NOTIF_CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$NOTIF_ROOT/config/backup-destinations.conf}"
 if [ -f "$NOTIF_CONFIG_FILE" ]; then
     source "$NOTIF_CONFIG_FILE"
 fi
@@ -314,6 +317,82 @@ notify_restore_error() {
 }
 
 ################################################################################
+# MONITOR PREVENTIVO (M5)
+################################################################################
+
+# Envia um incidente do Monitor Preventivo reutilizando o MESMO webhook Discord
+# (variável WEBHOOK_URL) e o mesmo formato de embed já usado pelo projeto.
+#
+# Diferente de send_discord_simple/send_discord_detailed (que enviam em segundo
+# plano e sempre retornam 0), esta função envia de forma SÍNCRONA e com timeout,
+# devolvendo o resultado real — necessário para que a máquina de estados do
+# monitor saiba se o incidente foi entregue (cooldown/recovery corretos).
+#
+# NÃO cria novo webhook, token ou cliente: apenas reutiliza WEBHOOK_URL.
+# A URL do webhook nunca é impressa (stderr do curl é descartado).
+#
+# Uso: notify_monitor_incident <type> <title> <description> [ "nome|valor|inline" ... ]
+#   type: success | warning | error | info
+# Retorno: 0 = enviado (SUCCESS), 1 = falha (FAILED), 2 = sem canal (DISABLED)
+notify_monitor_incident() {
+    local type="$1"
+    local title="$2"
+    local description="$3"
+    shift 3
+
+    # Sem webhook configurado ou webhook não-Discord => desabilitado (não é erro)
+    [ -z "$WEBHOOK_URL" ] && return 2
+    [[ ! "$WEBHOOK_URL" == *"discord.com"* ]] && return 2
+
+    local color
+    case "$type" in
+        success) color=$COLOR_SUCCESS ;;
+        warning) color=$COLOR_WARNING ;;
+        error)   color=$COLOR_ERROR ;;
+        *)       color=$COLOR_INFO ;;
+    esac
+
+    # Campos opcionais (mesmo formato "nome|valor|inline" de send_discord_detailed)
+    local fields="" first=true field name value inline
+    for field in "$@"; do
+        name=$(echo "$field" | cut -d'|' -f1)
+        value=$(echo "$field" | cut -d'|' -f2)
+        inline=$(echo "$field" | cut -d'|' -f3)
+        inline=${inline:-true}
+        if [ "$first" = true ]; then first=false; else fields="$fields,"; fi
+        fields="$fields{\"name\": \"$name\", \"value\": \"$value\", \"inline\": $inline}"
+    done
+
+    # Cabeçalho: hostname + timestamp locais (sem chamada externa a ifconfig.me)
+    local host_name timestamp
+    host_name=$(hostname 2>/dev/null)
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    local payload
+    payload=$(cat <<EOF
+{
+    "embeds": [{
+        "title": "$title",
+        "description": "$description",
+        "color": $color,
+        "fields": [$fields],
+        "footer": {"text": "$host_name • $timestamp"}
+    }]
+}
+EOF
+)
+
+    # Envio síncrono, com timeout e --fail (HTTP >=400 conta como falha).
+    local http_timeout="${MONITOR_ALERT_HTTP_TIMEOUT:-10}"
+    if curl -sf -o /dev/null --max-time "$http_timeout" \
+        -X POST -H "Content-Type: application/json" \
+        -d "$payload" "$WEBHOOK_URL" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
+################################################################################
 # SLACK WEBHOOK (básico)
 ################################################################################
 
@@ -365,3 +444,6 @@ send_email_notification() {
         echo -e "$body" | mail -s "[VPS Guardian] $subject" "$NOTIFICATION_EMAIL" 2>/dev/null &
     fi
 }
+
+# Exporta apenas a nova função do monitor (as demais mantêm o comportamento atual)
+export -f notify_monitor_incident 2>/dev/null || true

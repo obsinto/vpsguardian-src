@@ -1,5 +1,7 @@
 #!/bin/bash
 ################################################################################
+
+umask 077
 # Script: backup-volumes.sh
 # Propósito: Backup unificado de volumes Docker com estratégias inteligentes
 # Uso: ./backup-volumes.sh [--all] [--output=DIR] [--auto] [--strategy=MODE]
@@ -29,10 +31,9 @@ source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
 source "$SCRIPT_DIR/../lib/backup-retention.sh" 2>/dev/null || true
 
 # Carregar configurações de destino de backup (inclui Coolify API)
-if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
-elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
-    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+SHARED_CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$SCRIPT_DIR/../config/backup-destinations.conf}"
+if [ -f "$SHARED_CONFIG_FILE" ]; then
+    source "$SHARED_CONFIG_FILE" 2>/dev/null
 fi
 
 # Carregar biblioteca de API do Coolify
@@ -40,7 +41,7 @@ source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
 
 ### ========== CONFIGURAÇÃO ==========
 BACKUP_ALL=false
-OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-/var/backups/vpsguardian/volumes}"
+OUTPUT_DIR="${BACKUP_OUTPUT_DIR:-${VOLUME_BACKUP_DIR:-${BACKUP_ROOT:-/var/backups/vpsguardian}/volumes}}"
 AUTO_MODE=false
 AUTO_RESTART=true
 STRATEGY="double-check"  # Padrão: double-check (mais moderno)
@@ -188,21 +189,21 @@ get_db_credentials() {
         mysql)
             local root_pass=$(echo "$env_vars" | grep -E '^(MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD)=' | head -1 | cut -d'=' -f2-)
             local db_name=$(echo "$env_vars" | grep -E '^MYSQL_DATABASE=' | cut -d'=' -f2)
-            echo "root:${root_pass}:${db_name:-all}"
+            printf '%s\n%s\n%s\n' "root" "$root_pass" "${db_name:-all}"
             ;;
         postgres)
             local pg_pass=$(echo "$env_vars" | grep -E '^POSTGRES_PASSWORD=' | cut -d'=' -f2)
             local pg_user=$(echo "$env_vars" | grep -E '^POSTGRES_USER=' | cut -d'=' -f2)
             local pg_db=$(echo "$env_vars" | grep -E '^POSTGRES_DB=' | cut -d'=' -f2)
-            echo "${pg_user:-postgres}:${pg_pass}:${pg_db:-postgres}"
+            printf '%s\n%s\n%s\n' "${pg_user:-postgres}" "$pg_pass" "${pg_db:-postgres}"
             ;;
         mongodb)
             local mongo_pass=$(echo "$env_vars" | grep -E '^MONGO_INITDB_ROOT_PASSWORD=' | cut -d'=' -f2)
             local mongo_user=$(echo "$env_vars" | grep -E '^MONGO_INITDB_ROOT_USERNAME=' | cut -d'=' -f2)
-            echo "${mongo_user:-root}:${mongo_pass}:admin"
+            printf '%s\n%s\n%s\n' "${mongo_user:-root}" "$mongo_pass" "admin"
             ;;
         *)
-            echo ":::"
+            printf '\n\n\n'
             ;;
     esac
 }
@@ -227,18 +228,18 @@ dump_mysql() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    local user=$(printf '%s\n' "$credentials" | sed -n '1p')
+    local password=$(printf '%s\n' "$credentials" | sed -n '2p')
+    local database=$(printf '%s\n' "$credentials" | sed -n '3p')
 
     log_info "  Executando mysqldump..."
 
     local dump_opts="--single-transaction --quick --lock-tables=false"
 
     if [ "$database" = "all" ]; then
-        docker exec "$container_id" mysqldump -u "$user" -p"$password" --all-databases $dump_opts > "$output_file" 2>/dev/null
+        docker exec -e MYSQL_PWD="$password" "$container_id" mysqldump -u "$user" --all-databases $dump_opts > "$output_file" 2>/dev/null
     else
-        docker exec "$container_id" mysqldump -u "$user" -p"$password" $dump_opts "$database" > "$output_file" 2>/dev/null
+        docker exec -e MYSQL_PWD="$password" "$container_id" mysqldump -u "$user" $dump_opts "$database" > "$output_file" 2>/dev/null
     fi
 }
 
@@ -247,9 +248,9 @@ dump_postgres() {
     local output_file="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
-    local database=$(echo "$credentials" | cut -d':' -f3)
+    local user=$(printf '%s\n' "$credentials" | sed -n '1p')
+    local password=$(printf '%s\n' "$credentials" | sed -n '2p')
+    local database=$(printf '%s\n' "$credentials" | sed -n '3p')
 
     log_info "  Executando pg_dump..."
 
@@ -262,8 +263,8 @@ dump_mongodb() {
     local output_dir="$2"
     local credentials="$3"
 
-    local user=$(echo "$credentials" | cut -d':' -f1)
-    local password=$(echo "$credentials" | cut -d':' -f2)
+    local user=$(printf '%s\n' "$credentials" | sed -n '1p')
+    local password=$(printf '%s\n' "$credentials" | sed -n '2p')
 
     log_info "  Executando mongodump..."
 
@@ -391,7 +392,7 @@ strategy_slow_shutdown() {
         mysql|mariadb)
             log_info "  Configurando innodb_fast_shutdown=0..."
             local creds="${DB_CREDENTIALS[$container]}"
-            local password=$(echo "$creds" | cut -d':' -f2)
+            local password=$(printf '%s\n' "$creds" | sed -n '2p')
 
             if [ -n "$password" ]; then
                 docker exec "$container" mysql -u root -p"$password" \
@@ -694,10 +695,10 @@ fi
 # Aplicar retenção
 if type apply_retention &>/dev/null 2>&1; then
     log_section "Aplicando Política de Retenção"
-    local antes=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
+    antes=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
     apply_retention "$OUTPUT_DIR" "${BACKUP_RETENTION_STRATEGY:-gfs}" true 2>/dev/null || true
-    local depois=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
-    local removidos=$((antes - depois))
+    depois=$(find "$OUTPUT_DIR" -name "*-backup-*.tar.gz" 2>/dev/null | wc -l)
+    removidos=$((antes - depois))
     if [ "$removidos" -gt 0 ]; then
         log_success "$removidos backups antigos removidos"
     fi

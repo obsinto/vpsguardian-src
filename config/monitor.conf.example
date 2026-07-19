@@ -1,0 +1,312 @@
+#!/bin/bash
+################################################################################
+# VPS Guardian - Configuração do Monitor Preventivo
+#
+# Para ativar: copie este arquivo para monitor.conf no mesmo diretório
+#   cp config/monitor.conf.example config/monitor.conf
+#
+# TODOS os valores são opcionais: sem este arquivo o monitor usa os defaults
+# mostrados abaixo. Em atualizações do VPS Guardian o monitor.conf do usuário
+# nunca é sobrescrito (apenas este .example é distribuído).
+#
+# Locais de busca (primeiro encontrado vence):
+#   1. $MONITOR_CONFIG_FILE (variável de ambiente)
+#   2. <INSTALL_ROOT>/config/monitor.conf
+#   3. /etc/vpsguardian/monitor.conf (compatibilidade modular)
+#   4. /opt/vpsguardian/config/monitor.conf (instalações legadas)
+#
+# NÃO defina WEBHOOK_URL, COOLIFY_API_URL, COOLIFY_API_TOKEN ou credenciais de
+# e-mail aqui. O monitor herda essas chaves do backup-destinations.conf ativo do
+# VPS Guardian. `vps-guardian monitor config-check` detecta duplicações.
+################################################################################
+
+# ========== EXECUÇÃO ==========
+
+# Timeout para qualquer comando externo que possa travar (segundos)
+#MONITOR_COMMAND_TIMEOUT=5
+
+# Intervalo entre as duas leituras de /proc/stat para o delta de CPU (segundos)
+#MONITOR_CPU_SAMPLE_INTERVAL=1
+
+# ========== MEMÓRIA ==========
+# Alerta quando a memória DISPONÍVEL ficar abaixo destes valores (MB)
+
+#MONITOR_MEM_AVAILABLE_WARNING_MB=2048
+#MONITOR_MEM_AVAILABLE_CRITICAL_MB=1024
+
+# Alternativa por percentual disponível (0 = desabilitado)
+#MONITOR_MEM_AVAILABLE_WARNING_PERCENT=0
+#MONITOR_MEM_AVAILABLE_CRITICAL_PERCENT=0
+
+# ========== SWAP ==========
+# Percentual de swap utilizada
+
+#MONITOR_SWAP_WARNING_PERCENT=10
+#MONITOR_SWAP_CRITICAL_PERCENT=20
+#MONITOR_SWAP_EMERGENCY_PERCENT=50
+
+# ========== LOAD AVERAGE ==========
+# load_ratio = load de 1 minuto / quantidade de vCPUs
+
+#MONITOR_LOAD_RATIO_WARNING=1.5
+#MONITOR_LOAD_RATIO_CRITICAL=3.0
+#MONITOR_LOAD_RATIO_EMERGENCY=5.0
+
+# ========== CPU ==========
+# Utilização total de CPU (%)
+
+#MONITOR_CPU_WARNING_PERCENT=85
+#MONITOR_CPU_CRITICAL_PERCENT=95
+
+# CPU steal (%): tempo roubado pelo hypervisor — indício de throttling
+# do provedor (Hostinger etc.)
+#MONITOR_STEAL_WARNING_PERCENT=10
+#MONITOR_STEAL_CRITICAL_PERCENT=20
+#MONITOR_STEAL_EMERGENCY_PERCENT=30
+
+# I/O wait (%)
+#MONITOR_IOWAIT_WARNING_PERCENT=15
+#MONITOR_IOWAIT_CRITICAL_PERCENT=30
+
+# ========== DISCO ==========
+# Utilização da partição monitorada e de inodes (%)
+
+#MONITOR_DISK_WARNING_PERCENT=80
+#MONITOR_DISK_CRITICAL_PERCENT=90
+#MONITOR_INODE_WARNING_PERCENT=80
+#MONITOR_INODE_CRITICAL_PERCENT=90
+
+# Partição monitorada
+#MONITOR_DISK_PATH=/
+
+# ========== DOCKER / CONTAINERD (M2) ==========
+
+# Timeout das sondas docker version/info/ps (segundos)
+#MONITOR_DOCKER_TIMEOUT_SECONDS=5
+
+# Latência acima da qual o Docker é considerado LENTO (ms)
+#MONITOR_DOCKER_SLOW_MS=2000
+
+# Timeout da sonda ctr do containerd (segundos)
+#MONITOR_CONTAINERD_TIMEOUT_SECONDS=5
+
+# Latência acima da qual o containerd é considerado lento (ms)
+#MONITOR_CONTAINERD_SLOW_MS=2000
+
+# true = a ausência do Docker é tratada como CRITICAL
+# false = host sem Docker gera apenas UNKNOWN (sem incidente)
+#MONITOR_DOCKER_REQUIRED=false
+
+# Binários e socket (sobrescritos nos testes para usar mocks)
+#MONITOR_DOCKER_BIN=docker
+#MONITOR_CTR_BIN=ctr
+#MONITOR_DOCKER_SOCKET=/var/run/docker.sock
+
+# ========== CONTAINERS (M3) ==========
+
+# Timeout específico do docker stats --no-stream (segundos)
+#MONITOR_DOCKER_STATS_TIMEOUT_SECONDS=10
+
+# Percentual do LIMITE de memória do container
+#MONITOR_CONTAINER_MEM_WARNING_PERCENT=80
+#MONITOR_CONTAINER_MEM_CRITICAL_PERCENT=90
+#MONITOR_CONTAINER_MEM_EMERGENCY_PERCENT=97
+
+# Severidade para container SEM limite de memória (WARNING recomendado)
+#MONITOR_CONTAINER_NO_MEM_LIMIT_SEVERITY=WARNING
+
+# Severidade para container sem limite de CPU (INFO ou WARNING)
+#MONITOR_CONTAINER_NO_CPU_LIMIT_SEVERITY=INFO
+
+# CPU do container em % do que lhe é permitido (limite ou host inteiro)
+#MONITOR_CONTAINER_CPU_WARNING_PERCENT=80
+#MONITOR_CONTAINER_CPU_CRITICAL_PERCENT=95
+
+# Restart loop: reinicializações dentro da janela
+#MONITOR_CONTAINER_RESTART_WARNING=3
+#MONITOR_CONTAINER_RESTART_CRITICAL=5
+#MONITOR_CONTAINER_RESTART_WINDOW_MINUTES=15
+
+# Containers de infraestrutura isentos do alerta de "sem limite" (regex de nome)
+#MONITOR_CONTAINER_LIMIT_EXCEPTIONS="^coolify(-|$)|^coolify-proxy|^coolify-db|^coolify-redis|^coolify-realtime|^coolify-sentinel"
+
+# Heurística leve de workers (M4 aprofunda) — regex sobre nome/imagem/label
+#MONITOR_WORKER_NAME_REGEX="worker|queue|horizon"
+
+# Quantos containers exibir nos tops e nos alertas da saída humana
+#MONITOR_TOP_CONTAINERS=5
+
+# Máximo de containers no inventário JSON (evita arquivos gigantes)
+#MONITOR_MAX_CONTAINERS_JSON=200
+
+# ========== WORKERS LARAVEL / HORIZON (M4) ==========
+
+# Habilitar detecção de workers Laravel (horizon, queue:work, scheduler, octane)
+#MONITOR_LARAVEL_WORKERS_ENABLED=true
+
+# Timeout da chamada ps (segundos; padrão herda MONITOR_COMMAND_TIMEOUT)
+#MONITOR_LARAVEL_COMMAND_TIMEOUT=5
+
+# --timeout do worker (segundos): severidade quando ESTRITAMENTE acima
+#MONITOR_LARAVEL_TIMEOUT_WARNING=300
+#MONITOR_LARAVEL_TIMEOUT_CRITICAL=900
+#MONITOR_LARAVEL_TIMEOUT_EMERGENCY=3600
+
+# Workers equivalentes no mesmo grupo (container+tipo+fila): "mais de N"
+#MONITOR_LARAVEL_WORKERS_WARNING=2
+#MONITOR_LARAVEL_WORKERS_CRITICAL=4
+#MONITOR_LARAVEL_WORKERS_EMERGENCY=8
+
+# schedule:run deveria ser curto (segundos de execução contínua)
+#MONITOR_LARAVEL_SCHEDULE_RUN_WARNING=300
+#MONITOR_LARAVEL_SCHEDULE_RUN_CRITICAL=900
+
+# queue:listen em produção gera WARNING (reinicializa o framework a cada job)
+#MONITOR_LARAVEL_QUEUE_LISTEN_WARNING=true
+
+# Sem --memory E container sem limite de memória => WARNING
+#MONITOR_LARAVEL_MISSING_MEMORY_WARNING=true
+
+# Sem --max-time combinado com outros sinais (sem limite, muitos workers,
+# uptime > 24h) => WARNING; isolado é sempre INFO
+#MONITOR_LARAVEL_MISSING_MAX_TIME_WARNING=true
+
+# Worker no mesmo container do servidor web (php-fpm/nginx/...) => WARNING
+#MONITOR_LARAVEL_SHARED_WEB_WARNING=true
+
+# Máximo de processos web cujo cgroup é lido por execução (custo limitado)
+#MONITOR_LARAVEL_WEB_SCAN_MAX=200
+
+# ========== INTEGRAÇÃO COOLIFY (M3) ==========
+
+# Enriquecer containers com projeto/aplicação do Coolify.
+# Usa labels sempre; usa a API somente se COOLIFY_API_ENABLED=true em
+# config/backup-destinations.conf (o token NUNCA aparece em logs/saídas).
+#MONITOR_COOLIFY_ENRICH=true
+
+# ========== ALERTAS / MOTOR DE INCIDENTES (M5) ==========
+#
+# O monitor REUTILIZA o webhook Discord já configurado do VPS Guardian.
+# A credencial continua sendo a variável WEBHOOK_URL em
+# config/backup-destinations.conf — NÃO há uma segunda URL/token aqui.
+# As flags abaixo apenas ligam/desligam e ajustam o comportamento.
+
+# Liga/desliga todo o motor de alertas do monitor preventivo
+#MONITOR_ALERTS_ENABLED=true
+
+# Usa o canal Discord existente para os incidentes preventivos
+#MONITOR_ALERT_DISCORD_ENABLED=true
+
+# Nome do servidor exibido nos alertas (padrão: hostname)
+#MONITOR_SERVER_NAME=
+
+# Severidade mínima para abrir um incidente (INFO nunca notifica)
+#MONITOR_ALERT_MIN_SEVERITY=WARNING
+
+# Verificações consecutivas com a condição presente antes de abrir (anti-flapping)
+#MONITOR_ALERT_CONSECUTIVE=1
+
+# Intervalo mínimo entre lembretes do mesmo incidente (minutos)
+#MONITOR_ALERT_COOLDOWN_MINUTES=15
+
+# Enviar lembrete periódico enquanto o incidente persistir (após o cooldown)
+#MONITOR_ALERT_REMINDERS_ENABLED=false
+
+# Timeout do envio síncrono ao Discord, em segundos (usado por notificacoes.sh)
+#MONITOR_ALERT_HTTP_TIMEOUT=10
+
+# Executa o motor sem enviar nada (útil para testes/validação)
+#MONITOR_ALERT_DRY_RUN=false
+
+# ========== CORRELAÇÃO / DIAGNÓSTICOS (M6) ==========
+#
+# Combina os sinais já coletados (M1–M4) e produz diagnósticos prováveis com
+# nível de confiança. NÃO faz novas coletas nem executa ações. Diagnósticos
+# elegíveis viram incidentes `diagnosis:*` na mesma máquina de estados do M5.
+
+# Liga/desliga o motor de correlação (diagnósticos)
+#MONITOR_CORRELATION_ENABLED=true
+
+# Confirmação por confiança (ocorrências consecutivas antes de alertar):
+#   VERY_HIGH = imediato | HIGH = 2 | MEDIUM = 3 | LOW = nunca (só relatório)
+# Os limiares seguem o padrão do handoff e não requerem configuração.
+
+# ========== HISTÓRICO / RELATÓRIOS (M7) ==========
+#
+# Persiste métricas, eventos e diagnósticos como séries temporais (JSON Lines),
+# em camada SEPARADA de incidents.state/diagnoses.state. A falha de histórico
+# nunca derruba o monitor. Nenhum segredo é persistido.
+
+# Liga/desliga a persistência histórica
+#MONITOR_HISTORY_ENABLED=true
+
+# Diretório do histórico (padrão: <state_dir>/history)
+#MONITOR_HISTORY_DIR=/var/lib/vpsguardian/monitor/history
+
+# Frequência de gravação (segundos): métricas do host x detalhes de containers
+#MONITOR_HISTORY_METRICS_INTERVAL=60
+#MONITOR_HISTORY_CONTAINER_INTERVAL=300
+
+# Retenção (dias) por tipo de arquivo
+#MONITOR_HISTORY_METRICS_RETENTION_DAYS=30
+#MONITOR_HISTORY_EVENTS_RETENTION_DAYS=180
+#MONITOR_HISTORY_REPORTS_RETENTION_DAYS=90
+
+# Comprimir (gzip) arquivos mais antigos que N dias (gzip é opcional)
+#MONITOR_HISTORY_COMPRESS_AFTER_DAYS=2
+
+# Manutenção (retenção/compressão) no máximo a cada N segundos (padrão: 1x/dia)
+#MONITOR_HISTORY_MAINTENANCE_INTERVAL=86400
+
+# Tolerância mínima para considerar tendência de crescimento (bytes; padrão 64 MB)
+#MONITOR_HISTORY_SWAP_TREND_MIN_BYTES=67108864
+#MONITOR_HISTORY_CONTAINER_TREND_MIN_BYTES=67108864
+
+# ========== MODO DE EMERGÊNCIA (M8) ==========
+#
+# `vps-monitor.sh emergency` coleta evidências mesmo com o Docker travado e gera
+# um pacote de incidente SANITIZADO. Coleta primeiro, diagnostica depois; respeita
+# um deadline global; nunca executa ações destrutivas.
+
+# Deadline global da coleta inteira (segundos)
+#MONITOR_EMERGENCY_DEADLINE_SECONDS=45
+
+# Timeouts por comando (normal / rápido / logs)
+#MONITOR_EMERGENCY_COMMAND_TIMEOUT=5
+#MONITOR_EMERGENCY_FAST_TIMEOUT=2
+#MONITOR_EMERGENCY_LOG_TIMEOUT=8
+
+# Amostragem de CPU reduzida durante a emergência (0 = sem esperar 1s)
+#MONITOR_EMERGENCY_CPU_SAMPLE=0
+
+# Limites de tamanho (bytes) e de linhas
+#   MAX_TOTAL_BYTES: teto AGREGADO do pacote (soma dos arquivos regulares). Valor
+#   inválido/0/negativo => padrão 50 MB; abaixo de 131072 (128 KB) é elevado ao piso.
+#   Reserva ~64 KB para essenciais (manifest/summary/errors/checksums), que são
+#   sempre produzidos. Ao atingir o teto, descarta-se P2 (logs/rede) antes de P1,
+#   e P0 (host/processos/diagnóstico) nunca é descartado.
+#MONITOR_EMERGENCY_MAX_TOTAL_BYTES=52428800
+#MONITOR_EMERGENCY_MAX_FILE_BYTES=5242880
+#MONITOR_EMERGENCY_TOP_PROCESSES=30
+
+# Logs recentes (não histórico completo)
+#MONITOR_EMERGENCY_LOG_SINCE_MINUTES=30
+#MONITOR_EMERGENCY_LOG_MAX_LINES=2000
+
+# Janela do histórico M7 incluída no pacote
+#MONITOR_EMERGENCY_HISTORY_WINDOW=1h
+#MONITOR_EMERGENCY_HISTORY_MAX_LINES=1000
+
+# Diretório dos incidentes (padrão: <state_dir>/incidents)
+#MONITOR_EMERGENCY_INCIDENTS_DIR=/var/lib/vpsguardian/monitor/incidents
+
+# ========== DIRETÓRIOS ==========
+
+# Estado entre execuções (deltas de swap/cgroup) e último snapshot JSON
+#MONITOR_STATE_DIR=/var/lib/vpsguardian/monitor
+
+# Logs do monitor
+#MONITOR_LOG_DIR=/var/log/vpsguardian
+
+# Lock contra execuções simultâneas
+#MONITOR_LOCK_FILE=/var/lock/vpsguardian-monitor.lock

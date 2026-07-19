@@ -27,6 +27,13 @@ CROSS="${RED}✗${NC}"
 WARN="${YELLOW}⚠${NC}"
 INFO="${BLUE}ℹ${NC}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    # shellcheck disable=SC1091
+    source "/etc/vpsguardian/install.conf"
+fi
+
 ################################################################################
 # FUNÇÕES AUXILIARES
 ################################################################################
@@ -495,16 +502,16 @@ else
 fi
 
 print_section "Scripts de Backup"
-if [ -f /opt/vpsguardian/backup/backup-coolify.sh ]; then
+if [ -f "$INSTALL_ROOT/backup/backup-coolify.sh" ]; then
     echo -e "  $CHECK Script backup-coolify.sh encontrado"
 else
     echo -e "  $WARN Script backup-coolify.sh não encontrado"
 fi
 
-if [ -f /opt/vpsguardian/backup/backup-databases.sh ]; then
-    echo -e "  $CHECK Script backup-databases.sh encontrado"
+if [ -f "$INSTALL_ROOT/backup/backup-databases-dump-auto.sh" ]; then
+    echo -e "  $CHECK Script backup-databases-dump-auto.sh encontrado"
 else
-    echo -e "  $INFO Script backup-databases.sh não encontrado"
+    echo -e "  $INFO Script backup-databases-dump-auto.sh não encontrado"
 fi
 
 ################################################################################

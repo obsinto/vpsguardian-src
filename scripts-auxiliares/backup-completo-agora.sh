@@ -15,7 +15,12 @@ MAGENTA='\033[0;35m'
 GRAY='\033[0;90m'
 NC='\033[0m'
 
-INSTALL_ROOT="/opt/vpsguardian"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    source "/etc/vpsguardian/install.conf"
+fi
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/vpsguardian}"
 
 # Carregar configurações de destino
 if [ -f "$INSTALL_ROOT/config/backup-destinations.conf" ]; then
@@ -37,7 +42,7 @@ detect_cron_config() {
     fi
 
     # Detectar backup de volumes
-    if echo "$CRON_CONTENT" | grep -q "backup-database-volumes.sh"; then
+    if echo "$CRON_CONTENT" | grep -q "migrar/backup-volumes.sh"; then
         CRON_VOLUMES_BACKUP="true"
     else
         CRON_VOLUMES_BACKUP="false"
@@ -186,9 +191,10 @@ run_task() {
             echo -e "${MAGENTA}💾 BACKUP DE VOLUMES DOCKER${NC}"
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
-            echo -e "${GRAY}Executando: BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes $INSTALL_ROOT/migrar/backup-database-volumes.sh${NC}"
+            echo -e "${GRAY}Executando: $INSTALL_ROOT/migrar/backup-volumes.sh --all --auto --output=$BACKUP_ROOT/volumes${NC}"
             echo ""
-            BACKUP_OUTPUT_DIR=/var/backups/vpsguardian/volumes bash "$INSTALL_ROOT/migrar/backup-database-volumes.sh"
+            bash "$INSTALL_ROOT/migrar/backup-volumes.sh" --all --auto \
+                --output="$BACKUP_ROOT/volumes" --strategy=double-check
             ;;
         coolify)
             echo ""

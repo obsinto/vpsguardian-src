@@ -10,10 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
 
 # Carregar configurações de destino de backup (inclui Coolify API)
-if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
-elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
-    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+SHARED_CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$SCRIPT_DIR/../config/backup-destinations.conf}"
+if [ -f "$SHARED_CONFIG_FILE" ]; then
+    source "$SHARED_CONFIG_FILE" 2>/dev/null
 fi
 
 # Carregar biblioteca de API do Coolify
@@ -40,12 +39,13 @@ BACKUP_FILE="${BACKUP_FILE:-}"
 
 # Modo automático (sem prompts)
 AUTO_MODE=false
+REPLACE_EXISTING=false
 
 # Diretórios
 COOLIFY_DATA_DIR="/data/coolify"
 ENV_FILE="$COOLIFY_DATA_DIR/source/.env"
 SSH_KEYS_DIR="$COOLIFY_DATA_DIR/ssh/keys"
-BACKUP_DIR="${COOLIFY_BACKUP_DIR:-/var/backups/vpsguardian/coolify}"
+BACKUP_DIR="${COOLIFY_BACKUP_DIR:-${BACKUP_ROOT:-/var/backups/vpsguardian}/coolify}"
 
 ### ========== PARSE ARGUMENTOS ==========
 CONFIG_FILE=""
@@ -64,12 +64,17 @@ while [[ $# -gt 0 ]]; do
             AUTO_MODE=true
             shift
             ;;
+        --replace-existing)
+            REPLACE_EXISTING=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --config=FILE    Load configuration from file"
             echo "  --auto           Run in automatic mode (no prompts)"
+            echo "  --replace-existing  Autoriza remover uma instalação Coolify já existente no destino"
             echo "  -h, --help       Show this help"
             echo ""
             echo "Configuration file format (bash syntax):"
@@ -108,7 +113,8 @@ fi
 
 ### ========== CONSTANTES ==========
 REMOTE_BACKUP_DIR="/root/coolify-backup"
-CONTROL_SOCKET="/tmp/ssh_mux_socket_$$"
+CONTROL_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-ssh-control.XXXXXX")
+CONTROL_SOCKET="$CONTROL_DIR/socket"
 
 # Criar diretório de logs
 MIGRATION_LOG_DIR="$LOG_DIR/migration-$(date +%Y%m%d_%H%M%S)"
@@ -128,6 +134,24 @@ check_success() {
         log_error "$2"
         cleanup_and_exit 1
     fi
+}
+
+remote_coolify_api_get() {
+    local endpoint="$1"
+    case "$endpoint" in
+        servers|applications|databases|services) ;;
+        *) return 2 ;;
+    esac
+
+    # O token viaja por stdin e não integra a linha de comando remota.
+    printf '%s\n' "$COOLIFY_API_TOKEN" | \
+        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "IFS= read -r token; curl -sf -H \"Authorization: Bearer \$token\" -H 'Content-Type: application/json' 'http://localhost:8000/api/v1/$endpoint' 2>/dev/null"
+}
+
+stage_remote_secret_file() {
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        'umask 077; secret_file=$(mktemp /tmp/vpsguardian-secret.XXXXXX) || exit 1; cat > "$secret_file"; printf "%s" "$secret_file"'
 }
 
 check_and_install_dependencies() {
@@ -181,9 +205,14 @@ cleanup_and_exit() {
     fi
 
     log_info "Cleaning up SSH connection and background processes..."
-    kill $HEALTH_CHECK_PID 2>/dev/null || true
+    if [ -n "${HEALTH_CHECK_PID:-}" ]; then
+        kill "$HEALTH_CHECK_PID" 2>/dev/null || true
+    fi
     ssh -S "$CONTROL_SOCKET" -O exit "$NEW_SERVER_USER@$NEW_SERVER_IP" 2>/dev/null || true
-    rm -f "$CONTROL_SOCKET"
+    if [ -n "${SSH_AGENT_PID:-}" ]; then
+        ssh-agent -k >/dev/null 2>&1 || true
+    fi
+    rm -rf "$CONTROL_DIR"
     log_info "Cleanup complete."
     exit $1
 }
@@ -360,13 +389,23 @@ fi
 log_success "Selected backup: $(basename $BACKUP_FILE)"
 
 # Extrair backup temporariamente
-TEMP_EXTRACT_DIR="/tmp/coolify-migration-$$"
-mkdir -p "$TEMP_EXTRACT_DIR"
-log_info "Extracting backup to analyze..."
-
-# CORRIGIDO: Removido "--strip-components=1"
-# Isso garante que a pasta 'ssh-keys' seja extraída exatamente como está no backup
-tar -xzf "$BACKUP_FILE" -C "$TEMP_EXTRACT_DIR" 2>/dev/null
+if ! TEMP_EXTRACT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-coolify-migration.XXXXXX"); then
+    log_error "Não foi possível criar diretório temporário seguro"
+    cleanup_and_exit 1
+fi
+log_info "Validando e extraindo backup..."
+if ! tar -tzf "$BACKUP_FILE" 2>/dev/null | \
+    awk 'BEGIN { bad=0 } /(^\/|(^|\/)\.\.($|\/))/ { bad=1 } END { exit bad }'; then
+    log_error "Backup corrompido ou contendo caminhos inseguros"
+    rm -rf "$TEMP_EXTRACT_DIR"
+    cleanup_and_exit 1
+fi
+if ! tar -xzf "$BACKUP_FILE" -C "$TEMP_EXTRACT_DIR" \
+    --no-same-owner --no-same-permissions 2>/dev/null; then
+    log_error "Falha ao extrair o backup"
+    rm -rf "$TEMP_EXTRACT_DIR"
+    cleanup_and_exit 1
+fi
 
 # ==============================================================================
 # EXTRAÇÃO DE APP_KEY E APP_PREVIOUS_KEYS (CRÍTICO - FAZER ANTES DE LIMPAR!)
@@ -391,7 +430,7 @@ if [ -n "$FOUND_ENV_FILE" ]; then
 
     if [ -n "$BACKUP_APP_KEY" ]; then
         log_success "✅ APP_KEY encontrado no backup"
-        log_info "   Preview: ${BACKUP_APP_KEY:0:20}..."
+        log_info "   APP_KEY encontrada no backup (valor oculto)"
     fi
 
     if [ -n "$BACKUP_PREV_KEYS" ]; then
@@ -413,7 +452,7 @@ if [ -z "$BACKUP_APP_KEY" ]; then
 
         if [ -n "$APP_KEY_LOCAL" ]; then
             log_warning "⚠️  Usando APP_KEY do sistema local como fallback"
-            log_info "   Preview: ${APP_KEY_LOCAL:0:20}..."
+            log_info "   APP_KEY local encontrada (valor oculto)"
             BACKUP_APP_KEY="$APP_KEY_LOCAL"
 
             # Tentar pegar previous keys localmente também
@@ -466,7 +505,7 @@ if [[ "$BACKUP_APP_KEY" == base64:* ]]; then
 else
     log_warning "⚠️  APP_KEY não tem prefixo 'base64:'"
     log_warning "   Formato esperado: base64:... (Laravel padrão)"
-    log_warning "   Formato atual: ${BACKUP_APP_KEY:0:20}..."
+    log_warning "   Formato atual da APP_KEY é inválido (valor oculto)"
     echo ""
     log_info "ℹ️  Continuando mesmo assim (pode ser formato antigo do Coolify)"
 fi
@@ -475,7 +514,7 @@ fi
 APP_KEY="$BACKUP_APP_KEY"
 
 log_success "✅ Chaves de criptografia preparadas para migração"
-log_info "   APP_KEY: ${APP_KEY:0:30}..."
+log_info "   APP_KEY: carregada e ocultada"
 if [ -n "$BACKUP_PREV_KEYS" ]; then
     PREV_KEY_COUNT=$(echo "$BACKUP_PREV_KEYS" | tr ',' '\n' | wc -l)
     log_info "   APP_PREVIOUS_KEYS: $PREV_KEY_COUNT chaves"
@@ -932,10 +971,13 @@ if [ "$EXISTING_COOLIFY" -gt 0 ]; then
         echo ""
         read -p "Deseja remover a instalação anterior? (S/n): " REMOVE_EXISTING
         REMOVE_EXISTING=${REMOVE_EXISTING:-S}
-    else
-        # Em modo automático, sempre remove (instalação limpa)
+    elif [ "$REPLACE_EXISTING" = true ]; then
         REMOVE_EXISTING="S"
-        log_warning "Modo automático: removendo instalação anterior automaticamente"
+        log_warning "Substituição do destino autorizada explicitamente por --replace-existing"
+    else
+        log_error "O destino já possui Coolify; --auto não autoriza remoção destrutiva"
+        log_info "Revise o destino e repita com --replace-existing somente se deseja substituí-lo"
+        cleanup_and_exit 1
     fi
 
     if [[ "$REMOVE_EXISTING" =~ ^[Ss]$ ]]; then
@@ -1193,9 +1235,8 @@ else
 
     # Se as chaves estão no backup, copiar para temp local antes de limpar
     if [[ "$SOURCE_KEYS" == "$TEMP_EXTRACT_DIR"* ]]; then
-        TEMP_KEYS_BACKUP="/tmp/coolify-ssh-keys-$$"
+        TEMP_KEYS_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-coolify-ssh-keys.XXXXXX")
         log_info "📦 Criando backup temporário das chaves..."
-        mkdir -p "$TEMP_KEYS_BACKUP"
 
         cp -rv "$SOURCE_KEYS"/. "$TEMP_KEYS_BACKUP/" 2>&1 | grep -v "^$"
 
@@ -1232,9 +1273,8 @@ if [ "$MIGRATE_PROXY" = "true" ] && [ -d "$TEMP_EXTRACT_DIR/proxy-config" ]; the
 
     if [ $PROXY_CERTS_COUNT -gt 0 ] || [ $PROXY_CONFIGS_COUNT -gt 0 ]; then
         # Copiar para temp local antes de limpar o backup
-        TEMP_PROXY_BACKUP="/tmp/coolify-proxy-$$"
+        TEMP_PROXY_BACKUP=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-coolify-proxy.XXXXXX")
         log_info "📦 Preparando configurações do proxy para migração..."
-        mkdir -p "$TEMP_PROXY_BACKUP"
         cp -r "$TEMP_EXTRACT_DIR/proxy-config"/. "$TEMP_PROXY_BACKUP/" 2>/dev/null
 
         if [ $? -eq 0 ]; then
@@ -1288,7 +1328,7 @@ echo ""
 # DEBUG: Mostrar o que temos
 log_info "📊 Estado das chaves do backup:"
 if [ -n "$BACKUP_APP_KEY" ]; then
-    log_success "  ✅ APP_KEY: ${BACKUP_APP_KEY:0:20}..."
+    log_success "  ✅ APP_KEY: presente e ocultada"
 else
     log_error "  ❌ APP_KEY não encontrado"
 fi
@@ -1339,8 +1379,9 @@ fi
 # APLICAR ESTRATÉGIA ESCOLHIDA
 # ==============================================================================
 
-log_info "Parando containers para aplicação segura..."
-ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "docker stop \$(docker ps -q) 2>/dev/null || true"
+log_info "Parando somente os containers internos do Coolify para aplicação segura..."
+ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+    "docker stop coolify coolify-db coolify-redis coolify-realtime 2>/dev/null || true"
 
 if [ "$KEY_STRATEGY" = "1" ]; then
     # ========================================
@@ -1355,7 +1396,7 @@ if [ "$KEY_STRATEGY" = "1" ]; then
     PREV_KEYS_TO_SET="$BACKUP_PREV_KEYS"
 
     log_info "📋 Configuração que será aplicada:"
-    log_info "   APP_KEY: ${APP_KEY_TO_SET:0:20}... (mesma do backup)"
+    log_info "   APP_KEY: preservada a partir do backup (valor oculto)"
 
     if [ -n "$PREV_KEYS_TO_SET" ]; then
         PREV_COUNT=$(echo "$PREV_KEYS_TO_SET" | tr ',' '\n' | wc -l)
@@ -1368,11 +1409,18 @@ if [ "$KEY_STRATEGY" = "1" ]; then
     # Aplicar no servidor novo
     log_info "Aplicando chaves no servidor novo..."
 
-    # CORREÇÃO: Passar variáveis de forma segura via stdin
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_TO_SET") $(printf '%q' "$PREV_KEYS_TO_SET")" << 'EOF'
-        APP_KEY_TO_SET="$1"
-        PREV_KEYS_TO_SET="$2"
-
+    # Segredos seguem no corpo do script enviado por stdin, nunca nos argumentos
+    # do ssh ou do processo remoto.
+    APP_KEY_TO_SET_B64=$(printf '%s' "$APP_KEY_TO_SET" | base64 | tr -d '\n')
+    PREV_KEYS_TO_SET_B64=$(printf '%s' "$PREV_KEYS_TO_SET" | base64 | tr -d '\n')
+    REMOTE_KEY_FILE=$(printf '%s\n%s\n' "$APP_KEY_TO_SET_B64" "$PREV_KEYS_TO_SET_B64" | stage_remote_secret_file)
+    check_success $? "Segredos transferidos por canal protegido"
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "bash -s -- $(printf '%q' "$REMOTE_KEY_FILE")" << 'EOF'
+        SECRET_FILE="$1"
+        trap 'rm -f "$SECRET_FILE"' EXIT
+        APP_KEY_TO_SET=$(sed -n '1p' "$SECRET_FILE" | base64 -d)
+        PREV_KEYS_TO_SET=$(sed -n '2p' "$SECRET_FILE" | base64 -d)
         mkdir -p /data/coolify/source
         ENV_FILE="/data/coolify/source/.env"
         touch "$ENV_FILE"
@@ -1433,10 +1481,14 @@ else
     # Aplicar no servidor novo
     log_info "Aplicando rotação de chaves..."
 
-    # CORREÇÃO: Passar variáveis de forma segura via stdin
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$KEYS_TO_MIGRATE")" << 'EOF'
-        KEYS_TO_MIGRATE="$1"
-
+    KEYS_TO_MIGRATE_B64=$(printf '%s' "$KEYS_TO_MIGRATE" | base64 | tr -d '\n')
+    REMOTE_KEY_FILE=$(printf '%s\n' "$KEYS_TO_MIGRATE_B64" | stage_remote_secret_file)
+    check_success $? "Segredos transferidos por canal protegido"
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "bash -s -- $(printf '%q' "$REMOTE_KEY_FILE")" << 'EOF'
+        SECRET_FILE="$1"
+        trap 'rm -f "$SECRET_FILE"' EXIT
+        KEYS_TO_MIGRATE=$(sed -n '1p' "$SECRET_FILE" | base64 -d)
         mkdir -p /data/coolify/source
         ENV_FILE="/data/coolify/source/.env"
         touch "$ENV_FILE"
@@ -1465,26 +1517,24 @@ echo ""
 
 ### ========== FINAL INSTALL ==========
 log_section "Final Install"
-log_info "DEBUG: APP_KEY configurado: ${APP_KEY:0:20}..."
+log_info "APP_KEY preparada para o instalador final (valor oculto)"
 
 # CRÍTICO: Salvar APP_KEY ANTES do Final Install
 log_info "🔒 Salvando APP_KEY para proteção..."
-APP_KEY_BACKUP="$APP_KEY_TO_SET"
-PREV_KEYS_BACKUP="$PREV_KEYS_TO_SET"
+APP_KEY_BACKUP="${APP_KEY_TO_SET:-}"
+PREV_KEYS_BACKUP="${PREV_KEYS_TO_SET:-${KEYS_TO_MIGRATE:-}}"
 
 log_info "Running final Coolify install to apply all changes..."
 ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash -s $COOLIFY_VERSION" \
-    >"$FINAL_INSTALL_LOG" 2>&1 &
-
-log_info "Waiting for installation to complete (max 5 minutes)..."
-for i in {1..30}; do
-    sleep 10
-    if grep -q "Your instance is ready to use" "$FINAL_INSTALL_LOG"; then
-        log_success "Coolify installation completed successfully."
-        break
-    fi
-done
+    >"$FINAL_INSTALL_LOG" 2>&1
+FINAL_INSTALL_RESULT=$?
+if [ "$FINAL_INSTALL_RESULT" -ne 0 ]; then
+    log_error "A instalação final do Coolify falhou (código $FINAL_INSTALL_RESULT)"
+    tail -30 "$FINAL_INSTALL_LOG" | while IFS= read -r line; do log_error "  $line"; done
+    cleanup_and_exit 1
+fi
+log_success "Coolify installation completed successfully."
 
 ### ========== CRITICAL: RE-APPLY APP_KEY AFTER FINAL INSTALL ==========
 log_section "Verify and Protect APP_KEY"
@@ -1495,15 +1545,29 @@ echo ""
 CURRENT_APP_KEY=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
     "grep '^APP_KEY=' /data/coolify/source/.env 2>/dev/null | cut -d'=' -f2-")
 
+if [ "$KEY_STRATEGY" = "2" ]; then
+    if [ -z "$CURRENT_APP_KEY" ]; then
+        log_error "O instalador final não gerou a nova APP_KEY solicitada"
+        cleanup_and_exit 1
+    fi
+    APP_KEY_BACKUP="$CURRENT_APP_KEY"
+fi
+
 if [ -z "$CURRENT_APP_KEY" ]; then
     log_error "❌ APP_KEY DESAPARECEU após Final Install!"
     log_warning "⚠️  Forçando re-aplicação da chave do backup..."
 
-    # Forçar re-aplicação
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_BACKUP") $(printf '%q' "$PREV_KEYS_BACKUP")" << 'EOF_REAPPLY'
-        APP_KEY_TO_SET="$1"
-        PREV_KEYS_TO_SET="$2"
-
+    # Forçar re-aplicação, mantendo segredos fora dos argumentos do processo.
+    APP_KEY_BACKUP_B64=$(printf '%s' "$APP_KEY_BACKUP" | base64 | tr -d '\n')
+    PREV_KEYS_BACKUP_B64=$(printf '%s' "$PREV_KEYS_BACKUP" | base64 | tr -d '\n')
+    REMOTE_KEY_FILE=$(printf '%s\n%s\n' "$APP_KEY_BACKUP_B64" "$PREV_KEYS_BACKUP_B64" | stage_remote_secret_file)
+    check_success $? "Segredos transferidos por canal protegido"
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "bash -s -- $(printf '%q' "$REMOTE_KEY_FILE")" << 'EOF_REAPPLY'
+        SECRET_FILE="$1"
+        trap 'rm -f "$SECRET_FILE"' EXIT
+        APP_KEY_TO_SET=$(sed -n '1p' "$SECRET_FILE" | base64 -d)
+        PREV_KEYS_TO_SET=$(sed -n '2p' "$SECRET_FILE" | base64 -d)
         ENV_FILE="/data/coolify/source/.env"
 
         # Remover linhas antigas
@@ -1524,18 +1588,23 @@ EOF_REAPPLY
 
 elif [ "$CURRENT_APP_KEY" != "$APP_KEY_BACKUP" ]; then
     log_error "❌ APP_KEY FOI ALTERADA pelo Final Install!"
-    log_error "   Esperada: ${APP_KEY_BACKUP:0:30}..."
-    log_error "   Atual:    ${CURRENT_APP_KEY:0:30}..."
+    log_error "   A chave atual diverge do backup (valores ocultos)"
     echo ""
     log_warning "⚠️  PROBLEMA: Dados criptografados não poderão ser descriptografados!"
     log_warning "⚠️  Forçando restauração da chave original..."
     echo ""
 
-    # Forçar restauração da chave original
-    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" "bash -s -- $(printf '%q' "$APP_KEY_BACKUP") $(printf '%q' "$PREV_KEYS_BACKUP")" << 'EOF_RESTORE'
-        APP_KEY_TO_SET="$1"
-        PREV_KEYS_TO_SET="$2"
-
+    # Forçar restauração da chave original sem expô-la nos argumentos.
+    APP_KEY_BACKUP_B64=$(printf '%s' "$APP_KEY_BACKUP" | base64 | tr -d '\n')
+    PREV_KEYS_BACKUP_B64=$(printf '%s' "$PREV_KEYS_BACKUP" | base64 | tr -d '\n')
+    REMOTE_KEY_FILE=$(printf '%s\n%s\n' "$APP_KEY_BACKUP_B64" "$PREV_KEYS_BACKUP_B64" | stage_remote_secret_file)
+    check_success $? "Segredos transferidos por canal protegido"
+    ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "bash -s -- $(printf '%q' "$REMOTE_KEY_FILE")" << 'EOF_RESTORE'
+        SECRET_FILE="$1"
+        trap 'rm -f "$SECRET_FILE"' EXIT
+        APP_KEY_TO_SET=$(sed -n '1p' "$SECRET_FILE" | base64 -d)
+        PREV_KEYS_TO_SET=$(sed -n '2p' "$SECRET_FILE" | base64 -d)
         ENV_FILE="/data/coolify/source/.env"
 
         # Backup do .env antes de modificar
@@ -1568,7 +1637,7 @@ EOF_RESTORE
 
 else
     log_success "✅ APP_KEY PRESERVADA corretamente!"
-    log_success "   APP_KEY: ${CURRENT_APP_KEY:0:30}..."
+    log_success "   APP_KEY: valor validado e oculto"
     log_success "   Status: Idêntica ao backup original"
 fi
 
@@ -1586,6 +1655,7 @@ if [ "$FINAL_APP_KEY" = "$APP_KEY_BACKUP" ]; then
 else
     log_error "   ❌ APP_KEY: AINDA INCORRETA!"
     log_error "      Erro crítico - dados criptografados serão inacessíveis"
+    cleanup_and_exit 1
 fi
 
 if [ -n "$PREV_KEYS_BACKUP" ]; then
@@ -1968,30 +2038,18 @@ if [ "$COOLIFY_API_ENABLED" = "true" ] && [ -n "$COOLIFY_API_TOKEN" ]; then
     log_info "Verificando API do Coolify no destino ($NEW_SERVER_IP)..."
 
     # Tentar usar a API no servidor de destino (via SSH)
-    DEST_API_CHECK=$(ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-        "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
-         -H 'Content-Type: application/json' \
-         'http://localhost:8000/api/v1/servers' 2>/dev/null | head -c 100")
+    DEST_API_CHECK=$(remote_coolify_api_get servers | head -c 100)
 
     if [ -n "$DEST_API_CHECK" ]; then
         log_success "API do Coolify está respondendo no destino"
 
         # Exportar inventário pós-migração do destino
         log_info "Exportando inventário pós-migração (destino)..."
-        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
-             -H 'Content-Type: application/json' \
-             'http://localhost:8000/api/v1/applications' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-apps.json" 2>/dev/null
+        remote_coolify_api_get applications > "$MIGRATION_LOG_DIR/post-apps.json" 2>/dev/null
 
-        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
-             -H 'Content-Type: application/json' \
-             'http://localhost:8000/api/v1/databases' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-dbs.json" 2>/dev/null
+        remote_coolify_api_get databases > "$MIGRATION_LOG_DIR/post-dbs.json" 2>/dev/null
 
-        ssh -S "$CONTROL_SOCKET" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-            "curl -sf -H 'Authorization: Bearer $COOLIFY_API_TOKEN' \
-             -H 'Content-Type: application/json' \
-             'http://localhost:8000/api/v1/services' 2>/dev/null" > "$MIGRATION_LOG_DIR/post-services.json" 2>/dev/null
+        remote_coolify_api_get services > "$MIGRATION_LOG_DIR/post-services.json" 2>/dev/null
 
         # Contar recursos
         POST_APPS=$(jq 'length' "$MIGRATION_LOG_DIR/post-apps.json" 2>/dev/null || echo "0")
@@ -2034,6 +2092,11 @@ if [ "$COOLIFY_API_ENABLED" = "true" ] && [ -n "$COOLIFY_API_TOKEN" ]; then
 fi
 
 ### ========== FINAL SUMMARY ==========
+if [ "$API_VALIDATION_SUCCESS" != "true" ]; then
+    log_error "A validação pós-migração encontrou diferenças entre origem e destino"
+    cleanup_and_exit 1
+fi
+
 echo ""
 log_section "MIGRATION COMPLETE"
 echo ""
@@ -2083,7 +2146,12 @@ echo "    • List all Docker volumes on the current server"
 echo "    • Let you select which volumes to migrate"
 echo "    • Transfer and restore them on $NEW_SERVER_IP"
 echo ""
-read -p "  Migrate application volumes? (yes/no): " MIGRATE_VOLUMES
+if [ "$AUTO_MODE" = true ]; then
+    MIGRATE_VOLUMES="no"
+    log_info "Modo automático: migração adicional interativa de volumes ignorada"
+else
+    read -p "  Migrate application volumes? (yes/no): " MIGRATE_VOLUMES
+fi
 
 if [ "$MIGRATE_VOLUMES" = "yes" ] || [ "$MIGRATE_VOLUMES" = "y" ]; then
     echo ""
@@ -2126,8 +2194,8 @@ if [ "$MIGRATE_VOLUMES" = "yes" ] || [ "$MIGRATE_VOLUMES" = "y" ]; then
         if [ $VOLUME_MIGRATION_EXIT_CODE -eq 0 ]; then
             log_success "Volume migration completed successfully!"
         else
-            log_warning "Volume migration exited with code: $VOLUME_MIGRATION_EXIT_CODE"
-            log_info "Check logs for details"
+            log_error "Volume migration exited with code: $VOLUME_MIGRATION_EXIT_CODE"
+            cleanup_and_exit "$VOLUME_MIGRATION_EXIT_CODE"
         fi
     fi
 else

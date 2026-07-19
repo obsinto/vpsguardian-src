@@ -25,7 +25,21 @@ if [ -L "$SCRIPT_PATH" ]; then
 fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 
-LOG_DIR="/var/log/manutencao"
+INSTALL_ROOT="$SCRIPT_DIR"
+VPSGUARDIAN_ROOT="$INSTALL_ROOT"
+if [ -f "$INSTALL_ROOT/.install.conf" ]; then
+    # shellcheck disable=SC1091
+    source "$INSTALL_ROOT/.install.conf"
+elif [ -f "/etc/vpsguardian/install.conf" ]; then
+    # shellcheck disable=SC1091
+    source "/etc/vpsguardian/install.conf"
+fi
+if [ -f "$INSTALL_ROOT/config/default.conf" ]; then
+    # shellcheck disable=SC1091
+    source "$INSTALL_ROOT/config/default.conf"
+fi
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/vpsguardian}"
+LOG_DIR="${LOG_DIR:-${LOG_ROOT:-/var/log/vpsguardian}}"
 LOG_FILE="$LOG_DIR/menu-execucoes.log"
 
 # Criar diretório de logs se não existir
@@ -271,6 +285,10 @@ show_status_menu() {
     echo -e "  ${GREEN}3${NC} → 🧪 Teste do Sistema"
     echo -e "       ${GRAY}(Verificar funcionalidades básicas)${NC}"
     echo ""
+    echo -e "  ${GREEN}4${NC} → 🩺 Monitor Preventivo do Host"
+    echo -e "       ${GRAY}(RAM, swap, load, CPU, steal, throttling, disco)${NC}"
+    echo -e "       ${GRAY}(Detecção precoce de sobrecarga da VPS)${NC}"
+    echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -287,7 +305,7 @@ show_backup_menu() {
     echo -e "  ${MAGENTA}CRIAR BACKUPS${NC}"
     echo -e "  ${GREEN}1${NC} → 📦 Backup Completo do Coolify (Local)"
     echo -e "       ${GRAY}(DB + SSH keys + configs + volumes)${NC}"
-    echo -e "       ${GRAY}(Salvo em: /var/backups/vpsguardian)${NC}"
+    echo -e "       ${GRAY}(Salvo em: $BACKUP_ROOT)${NC}"
     echo ""
     echo -e "  ${GREEN}2${NC} → 🗄️  Backup de Bancos via Dump SQL"
     echo -e "       ${GRAY}(PostgreSQL, MySQL, MongoDB - inclui Coolify)${NC}"
@@ -319,7 +337,7 @@ show_backup_menu() {
     echo ""
     echo -e "  ${GREEN}8${NC} → 📦 Restaurar Volume Docker"
     echo -e "       ${GRAY}(Dados persistentes de containers)${NC}"
-    echo -e "       ${GRAY}(De backup local em /var/backups/vpsguardian)${NC}"
+    echo -e "       ${GRAY}(De backup local em $BACKUP_ROOT)${NC}"
     echo -e "       ${GRAY}(⚠️  Sobrescreve dados do volume)${NC}"
     echo ""
     echo -e "  ${MAGENTA}VALIDAÇÃO E DIAGNÓSTICO${NC}"
@@ -513,6 +531,9 @@ handle_status_menu() {
             3)
                 run_script "$SCRIPT_DIR/scripts-auxiliares/test-sistema.sh" "Teste do Sistema"
                 ;;
+            4)
+                run_script "$SCRIPT_DIR/monitor/vps-monitor.sh" "Monitor Preventivo do Host" "check"
+                ;;
             0)
                 return
                 ;;
@@ -572,10 +593,7 @@ handle_backup_menu() {
                 echo ""
 
                 # Verificar se API está disponível
-                # Carregar de /opt/vpsguardian primeiro, fallback para local
-                if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-                    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
-                elif [ -f "$SCRIPT_DIR/config/backup-destinations.conf" ]; then
+                if [ -f "$INSTALL_ROOT/config/backup-destinations.conf" ]; then
                     source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
                 fi
                 source "$SCRIPT_DIR/lib/coolify-api.sh" 2>/dev/null
@@ -733,10 +751,7 @@ handle_backup_menu() {
             12)
                 # Monitorar Status do Coolify via API
                 echo ""
-                # Carregar de /opt/vpsguardian primeiro, fallback para local
-                if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-                    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
-                elif [ -f "$SCRIPT_DIR/config/backup-destinations.conf" ]; then
+                if [ -f "$INSTALL_ROOT/config/backup-destinations.conf" ]; then
                     source "$SCRIPT_DIR/config/backup-destinations.conf" 2>/dev/null
                 fi
 
@@ -874,19 +889,19 @@ handle_migration_menu() {
                 echo -e "${CYAN}📥 RESTAURAR DUMPS SQL${NC}"
                 echo ""
                 echo "Diretórios comuns com dumps:"
-                echo "  1) /var/backups/vpsguardian/databases (padrão)"
+                echo "  1) $BACKUP_ROOT/databases (padrão)"
                 echo "  2) /root/database-dumps-migration (migração remota)"
                 echo "  3) Outro diretório"
                 echo ""
                 read -p "Escolha (1-3): " dir_choice
 
                 case $dir_choice in
-                    1) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
+                    1) DUMP_PATH="$BACKUP_ROOT/databases" ;;
                     2) DUMP_PATH="/root/database-dumps-migration" ;;
                     3)
                         read -p "Digite o caminho completo: " DUMP_PATH
                         ;;
-                    *) DUMP_PATH="/var/backups/vpsguardian/databases" ;;
+                    *) DUMP_PATH="$BACKUP_ROOT/databases" ;;
                 esac
 
                 if [ -d "$DUMP_PATH" ]; then
@@ -1066,8 +1081,8 @@ handle_config_menu() {
                 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
                 echo ""
                 echo -e "${MAGENTA}▶ Destinos de Backup:${NC}"
-                if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-                    source "/opt/vpsguardian/config/backup-destinations.conf"
+                if [ -f "$INSTALL_ROOT/config/backup-destinations.conf" ]; then
+                    source "$INSTALL_ROOT/config/backup-destinations.conf"
                     [ "$BACKUP_DEST_LOCAL" = "true" ] && echo "  ✅ Local" || echo "  ❌ Local"
                     [ "$BACKUP_DEST_SSH" = "true" ] && echo "  ✅ SSH → $SSH_REMOTE_USER@$SSH_REMOTE_SERVER" || echo "  ❌ SSH"
                     [ "$BACKUP_DEST_GOOGLE_DRIVE" = "true" ] && echo "  ✅ Google Drive → ${GDRIVE_REMOTE_NAME}:${GDRIVE_DIR}" || echo "  ❌ Google Drive"
@@ -1116,7 +1131,7 @@ handle_config_menu() {
                     echo "  ✅ Integração: habilitada"
                     echo "     URL: ${COOLIFY_API_URL:-http://localhost:8000/api/v1}"
                     if [ -n "$COOLIFY_API_TOKEN" ]; then
-                        echo "     Token: ${COOLIFY_API_TOKEN:0:10}...${COOLIFY_API_TOKEN: -5}"
+                        echo "     Token: configurado (valor oculto)"
                     fi
                     [ "$COOLIFY_USE_API_FOR_STOP" = "true" ] && echo "  ✅ Stop/Start via API: ativo" || echo "  ❌ Stop/Start via API: desativado"
                 else

@@ -8,7 +8,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
+CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$SCRIPT_DIR/../config/backup-destinations.conf}"
 
 # Cores
 GREEN='\033[0;32m'
@@ -120,7 +120,9 @@ fi
 # Função para salvar configuração
 save_config() {
     mkdir -p "$(dirname "$CONFIG_FILE")"
-    cat > "$CONFIG_FILE" << EOF
+    local config_tmp
+    config_tmp=$(mktemp "$(dirname "$CONFIG_FILE")/.backup-destinations.conf.XXXXXX")
+    cat > "$config_tmp" << EOF
 #!/bin/bash
 ################################################################################
 # VPS Guardian - Configuração de Destinos de Backup
@@ -135,24 +137,24 @@ BACKUP_DEST_AWS_S3=$BACKUP_DEST_AWS_S3
 
 # ========== CONFIGURAÇÕES SSH (Self-hosted) ==========
 SSH_REMOTE_ENABLED=${SSH_REMOTE_ENABLED:-false}
-SSH_REMOTE_SERVER="$SSH_REMOTE_SERVER"
-SSH_REMOTE_USER="$SSH_REMOTE_USER"
-SSH_REMOTE_PORT="$SSH_REMOTE_PORT"
-SSH_REMOTE_DIR="$SSH_REMOTE_DIR"
-SSH_KEY_PATH="$SSH_KEY_PATH"
+SSH_REMOTE_SERVER=$(printf '%q' "${SSH_REMOTE_SERVER:-}")
+SSH_REMOTE_USER=$(printf '%q' "${SSH_REMOTE_USER:-}")
+SSH_REMOTE_PORT=$(printf '%q' "${SSH_REMOTE_PORT:-22}")
+SSH_REMOTE_DIR=$(printf '%q' "${SSH_REMOTE_DIR:-}")
+SSH_KEY_PATH=$(printf '%q' "${SSH_KEY_PATH:-}")
 
 # ========== CONFIGURAÇÕES GOOGLE DRIVE (rclone) ==========
 GDRIVE_ENABLED=${GDRIVE_ENABLED:-false}
-GDRIVE_REMOTE_NAME="$GDRIVE_REMOTE_NAME"
-GDRIVE_DIR="$GDRIVE_DIR"
+GDRIVE_REMOTE_NAME=$(printf '%q' "${GDRIVE_REMOTE_NAME:-}")
+GDRIVE_DIR=$(printf '%q' "${GDRIVE_DIR:-}")
 
 # ========== CONFIGURAÇÕES AWS S3 / R2 / MinIO ==========
 S3_ENABLED=${S3_ENABLED:-false}
-S3_BUCKET="$S3_BUCKET"
-S3_PREFIX="$S3_PREFIX"
-S3_REGION="$S3_REGION"
-S3_STORAGE_CLASS="$S3_STORAGE_CLASS"
-S3_ENDPOINT="$S3_ENDPOINT"
+S3_BUCKET=$(printf '%q' "${S3_BUCKET:-}")
+S3_PREFIX=$(printf '%q' "${S3_PREFIX:-}")
+S3_REGION=$(printf '%q' "${S3_REGION:-}")
+S3_STORAGE_CLASS=$(printf '%q' "${S3_STORAGE_CLASS:-}")
+S3_ENDPOINT=$(printf '%q' "${S3_ENDPOINT:-}")
 S3_CLEANUP_ENABLED=${S3_CLEANUP_ENABLED:-true}
 S3_RETENTION_STRATEGY="${S3_RETENTION_STRATEGY:-}"
 S3_RETENTION_DAYS="${S3_RETENTION_DAYS:-}"
@@ -168,11 +170,19 @@ REMOVE_LOCAL_AFTER_UPLOAD=$REMOVE_LOCAL_AFTER_UPLOAD
 # ========== OPÇÕES DE BACKUP ==========
 BACKUP_INCLUDE_COOLIFY=$BACKUP_INCLUDE_COOLIFY
 
+# ========== COOLIFY API ==========
+COOLIFY_API_ENABLED=${COOLIFY_API_ENABLED:-false}
+COOLIFY_API_URL=$(printf '%q' "${COOLIFY_API_URL:-http://localhost:8000/api/v1}")
+COOLIFY_API_TOKEN=$(printf '%q' "${COOLIFY_API_TOKEN:-}")
+COOLIFY_USE_API_FOR_STOP=${COOLIFY_USE_API_FOR_STOP:-true}
+COOLIFY_API_TIMEOUT=${COOLIFY_API_TIMEOUT:-10}
+
 # ========== NOTIFICAÇÕES ==========
-WEBHOOK_URL="$WEBHOOK_URL"
-NOTIFICATION_EMAIL="$NOTIFICATION_EMAIL"
+WEBHOOK_URL=$(printf '%q' "${WEBHOOK_URL:-}")
+NOTIFICATION_EMAIL=$(printf '%q' "${NOTIFICATION_EMAIL:-}")
 EOF
-    chmod 600 "$CONFIG_FILE"
+    chmod 600 "$config_tmp"
+    mv -f "$config_tmp" "$CONFIG_FILE"
 }
 
 # Carregar configuração existente se houver
@@ -237,7 +247,11 @@ if [ -f "$CONFIG_FILE" ]; then
             echo -e "${YELLOW}EDITAR NOTIFICAÇÕES${NC}"
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
-            echo -e "Webhook atual: ${YELLOW}${WEBHOOK_URL:-não configurado}${NC}"
+            if [ -n "${WEBHOOK_URL:-}" ]; then
+                echo -e "Webhook atual: ${YELLOW}configurado (valor oculto)${NC}"
+            else
+                echo -e "Webhook atual: ${YELLOW}não configurado${NC}"
+            fi
             echo -e "Email atual: ${YELLOW}${NOTIFICATION_EMAIL:-não configurado}${NC}"
             echo ""
             read -p "$(echo -e ${BLUE}Novo Webhook \(Enter para manter, 'limpar' para remover\):${NC} )" NEW_WEBHOOK
@@ -275,7 +289,8 @@ if [ -f "$CONFIG_FILE" ]; then
                 echo ""
                 read -p "$(echo -e ${BLUE}Deseja configurar um webhook agora? \(Y/n\):${NC} )" CONFIGURE_NOW
                 if [[ "$CONFIGURE_NOW" =~ ^[Yy]$ ]] || [ -z "$CONFIGURE_NOW" ]; then
-                    read -p "$(echo -e ${BLUE}URL do Webhook \(Discord/Slack\):${NC} )" WEBHOOK_URL
+                    read -s -p "$(echo -e ${BLUE}URL do Webhook \(Discord/Slack\):${NC} )" WEBHOOK_URL
+                    echo ""
                     if [ -n "$WEBHOOK_URL" ]; then
                         save_config
                         log_success "Webhook salvo!"
@@ -287,7 +302,7 @@ if [ -f "$CONFIG_FILE" ]; then
                 fi
             fi
 
-            echo -e "Webhook: ${YELLOW}$WEBHOOK_URL${NC}"
+            echo -e "Webhook: ${YELLOW}configurado (valor oculto)${NC}"
             echo ""
             log_info "Enviando mensagem de teste..."
             echo ""
@@ -895,7 +910,8 @@ else
     REMOVE_LOCAL_AFTER_UPLOAD=false
 fi
 
-read -p "$(echo -e ${BLUE}Webhook para notificações \(Discord/Slack, deixe vazio para desabilitar\):${NC} )" WEBHOOK
+read -s -p "$(echo -e ${BLUE}Webhook para notificações \(Discord/Slack, deixe vazio para desabilitar\):${NC} )" WEBHOOK
+echo ""
 WEBHOOK_URL="$WEBHOOK"
 
 read -p "$(echo -e ${BLUE}Email para notificações \(deixe vazio para desabilitar\):${NC} )" EMAIL

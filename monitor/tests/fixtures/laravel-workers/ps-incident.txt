@@ -1,0 +1,27 @@
+ 4820     1 www-data Ss   7300  1.0 0.5  92160 php artisan horizon
+ 4821  4820 www-data S    7200 45.0 1.2 131072 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 4822  4820 www-data S    7200 42.0 1.3 145408 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 4823  4820 www-data S    7100 38.0 1.4 152576 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 4824  4820 www-data S    7100 40.0 1.5 165888 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 4825  4820 www-data S    7000 44.0 1.6 178176 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 4826  4820 www-data S    7000 41.0 1.7 188416 php artisan horizon:work redis --name=default --supervisor=agilytech-jsW3:supervisor-1 --backoff=0 --max-time=0 --sleep=3 --timeout=36000 --tries=1
+ 5001     1 www-data S   86400  5.0 0.8  81920 php artisan queue:work --queue=high,default --timeout=300 --memory=128 --max-time=3600 --tries=3 --sleep=3
+ 5002     1 root     Ss  90000  0.5 1.0  61440 php-fpm: master process (/usr/local/etc/php-fpm.conf)
+ 5003     1 www-data S    3000  2.0 0.5  51200 php artisan queue:work --timeout 300
+ 5016     1 www-data S    4000  1.5 0.4  40960 php artisan queue:work --queue=emails --timeout=300 --memory=128 --max-time=3600
+ 6001     1 deploy   S    4000  1.0 0.3  40960 php artisan queue:listen --timeout=60
+ 7001     1 root     S    1200  0.1 0.2  30720 php artisan schedule:run
+ 7002     1 root     S      30  0.1 0.2  30720 php artisan schedule:run
+ 8001     1 root     Z      50  0.0 0.0      0 php artisan queue:work --queue=z1
+ 5010     1 www-data S     600  1.0 0.4  51200 php artisan queue:work --queue=z2 --timeout=abc --memory=-5
+ 5011     1 www-data S     600  1.0 0.4  51200 php artisan queue:work --queue=z3 --timeout=999999999
+ 5012     1 www-data S     600  1.0 0.4  51200 php artisan queue:work --queue=z4 --token=abc123 --env=production redis://user:s3cr3t@redis:6379 password=topsecret
+ 5013     1 www-data S     600  1.0 0.4  51200 php artisan queue:work --queue=high --timeo
+ 5014     1 www-data S     600  1.0 0.4  51200 php artisan queue:work
+ 5015     1 www-data S     600  1.0 0.4  51200 php artisan queue:work --queue=z5
+ 5555     1 www-data R     100 400.0 0.5 51200 php artisan queue:work --queue=z6
+ 5556     1 www-data S     100  1.0 0.5  51200 php artisan queue:work --queue=z7
+ 9001     1 root     S     100  0.1 0.1  10240 php artisan horizon:status
+ 9002     1 root     S     100  0.1 0.1  10240 php artisan migrate --force
+ 9003     1 root     S       5  0.0 0.0   4096 grep php artisan queue:work
+ 9004     1 root     S       5  0.0 0.0   4096 sh -c php artisan queue:work --timeout=36000

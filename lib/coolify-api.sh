@@ -1156,7 +1156,7 @@ coolify_test_connection() {
     echo "Testando conexão com API do Coolify..."
     echo ""
     echo "  URL: $COOLIFY_API_URL"
-    echo "  Token: ${COOLIFY_API_TOKEN:0:10}...${COOLIFY_API_TOKEN: -5}"
+    echo "  Token: configurado (valor oculto)"
     echo "  Timeout: ${COOLIFY_API_TIMEOUT}s"
     echo ""
 

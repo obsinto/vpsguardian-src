@@ -42,6 +42,9 @@ vps-guardian
 | `vps-guardian firewall` | Gerenciador interativo de firewall | `sudo vps-guardian firewall` |
 | `vps-guardian maintenance` | Executa manutenção completa | `sudo vps-guardian maintenance` |
 | `vps-guardian updates` | Configura updates automáticos | `sudo vps-guardian updates` |
+| `vps-guardian monitor check` | Executa o monitor preventivo | `sudo vps-guardian monitor check` |
+| `vps-guardian monitor config-check` | Valida configuração e herança | `sudo vps-guardian monitor config-check` |
+| `vps-guardian monitor self-check` | Valida instalação e timer | `sudo vps-guardian monitor self-check` |
 
 ### Configuração
 
@@ -134,6 +137,36 @@ sudo vps-guardian maintenance
 # Ativa updates de segurança automáticos
 sudo vps-guardian updates
 ```
+
+Esse comando configura updates de segurança do sistema operacional. Para atualizar
+o código do VPS Guardian, use o `instalar.sh` existente:
+
+```bash
+sudo ./instalar.sh --mode update --non-interactive
+```
+
+### Monitor Preventivo
+
+```bash
+# Validar a integração real
+sudo vps-guardian monitor config-check
+sudo vps-guardian monitor self-check
+
+# Verificação e inventário
+sudo vps-guardian monitor check
+sudo vps-guardian monitor containers
+
+# Discord compartilhado
+sudo vps-guardian monitor test-alert --dry-run
+sudo vps-guardian monitor test-alert
+
+# Histórico e emergência
+sudo vps-guardian monitor report --last 24h
+sudo vps-guardian monitor emergency --archive
+```
+
+Consulte [GUIA-MONITOR-PREVENTIVO.md](GUIA-MONITOR-PREVENTIVO.md) para thresholds,
+rollback, desativação, desinstalação e purge.
 
 ### Configurar Backups Automáticos
 ```bash

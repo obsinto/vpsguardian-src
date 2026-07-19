@@ -4,7 +4,7 @@
 
 [![Bash](https://img.shields.io/badge/Bash-5.0+-green.svg)](https://www.gnu.org/software/bash/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)]()
+[![Status](https://img.shields.io/badge/Status-Testes%20automatizados-blue.svg)]()
 
 ## 🚀 Quick Start
 
@@ -14,13 +14,13 @@ cd /usr/local/src
 sudo git clone https://github.com/SEU-USUARIO/vpsguardian.git
 cd vpsguardian
 
-# Instale (cria instalação em /opt/vpsguardian)
+# Instale (o caminho é confirmado pelo instalador)
 sudo ./instalar.sh
 ```
 
 **Comando global instalado:** `vps-guardian`
 
-> **📁 Por que `/usr/local/src`?** É o local padrão Unix para código fonte de ferramentas locais. O instalador cria symlinks em `/opt/vpsguardian` automaticamente.
+> **📁 Por que `/usr/local/src`?** É o local padrão Unix para código-fonte de ferramentas locais. O instalador usa cópias por padrão (modo recomendado), ainda aceita symlinks por compatibilidade e registra o caminho real em `/etc/vpsguardian/install.conf`.
 
 ## ✨ Principais Recursos
 
@@ -30,13 +30,15 @@ sudo ./instalar.sh
 - **Retenção Inteligente:** Estratégias Simple, Count e GFS
 - **Manutenção:** Limpeza automática de disco, logs e Docker
 - **Firewall Interativo:** Perfis de segurança (Seguro/Híbrido/Básico)
+- **Monitor Preventivo:** Host, Docker, containers e workers Laravel com alertas,
+  correlação, histórico e pacotes de emergência
 
 ## 📦 Principais Scripts
 
 ### Backup
 - `backup-coolify.sh` - Backup completo local
-- `backup-coolify-s3.sh` - Backup + upload S3
-- `backup-databases.sh` - Backup de DBs específicos
+- `backup-destinos.sh` - Replicação para S3, Google Drive e SSH
+- `backup-databases-dump-auto.sh` - Backup automatizado dos bancos
 - `restaurar-coolify-remoto.sh` - Restauração automatizada
 
 ### Migração
@@ -63,6 +65,8 @@ vps-guardian backup-s3    # Backup para S3
 vps-guardian migrate      # Migração
 vps-guardian status       # Status do sistema
 vps-guardian firewall     # Gerenciar firewall
+vps-guardian monitor self-check  # Validar monitor e timer
+vps-guardian monitor check       # Executar verificação preventiva
 
 # Aliases rápidos
 backup-vps                # = vps-guardian backup
@@ -82,6 +86,7 @@ status-vps                # = vps-guardian status
 - **[GUIA-MIGRACAO-COMPLETA.md](docs/GUIA-MIGRACAO-COMPLETA.md)** - Migração apenas Coolify
 - **[FIREWALL-GUIDE.md](docs/FIREWALL-GUIDE.md)** - Configuração de firewall
 - **[COMANDOS.md](docs/COMANDOS.md)** - Referência de comandos
+- **[GUIA-MONITOR-PREVENTIVO.md](docs/GUIA-MONITOR-PREVENTIVO.md)** - Monitor integrado, atualização, relatórios e emergência
 
 ## 🏗️ Arquitetura
 
@@ -98,6 +103,7 @@ status-vps                # = vps-guardian status
 │   ├── colors.sh        # → Cores ANSI para output
 │   └── validation.sh    # → 50+ funções de validação
 ├── config/              # Configurações e exemplos
+├── monitor/             # Monitor preventivo e units systemd
 └── menu-principal.sh    # Menu interativo principal
 
 📂 INSTALAÇÃO (Symlinks)
@@ -111,7 +117,26 @@ status-vps                # = vps-guardian status
 
 /var/log/vpsguardian/
 └── *.log                # Logs estruturados
+
+/var/lib/vpsguardian/monitor/
+├── history/             # Histórico M7
+└── incidents/           # Pacotes de emergência M8
 ```
+
+Os caminhos acima são os padrões usuais. Consulte
+`/etc/vpsguardian/install.conf` para a instalação real.
+
+## 🔄 Atualização
+
+Execute o mesmo instalador e selecione **Atualizar**:
+
+```bash
+sudo ./instalar.sh --mode update --non-interactive
+```
+
+Configuração, estados, histórico e incidentes são preservados. O fluxo possui
+validação, smoke test e rollback de todos os artefatos imutáveis gerenciados
+pelo instalador. Configurações e dados mutáveis não são revertidos.
 
 ## 💡 Exemplos Rápidos
 
@@ -125,7 +150,8 @@ sudo vps-guardian cron
 ### Migrar Coolify + Apps para Novo Servidor
 ```bash
 # Migração TOTAL (Coolify + todas as aplicações):
-sudo /opt/vpsguardian/migrar/migrar-completo.sh --auto
+source /etc/vpsguardian/install.conf
+sudo "$INSTALL_ROOT/migrar/migrar-completo.sh" --auto
 
 # OU apenas Coolify (sem volumes de apps):
 sudo vps-guardian migrate
@@ -149,7 +175,7 @@ sudo backup-s3-vps
 **Permissões:**
 - `/opt/vpsguardian` → 755 (rwxr-xr-x)
 - `/var/backups/vpsguardian` → 700 (rwx------) - **Apenas root**
-- `/var/log/vpsguardian` → 755 (rwxr-xr-x)
+- `/var/log/vpsguardian` → 750 (rwxr-x---)
 
 **Backups contêm dados sensíveis:**
 - APP_KEY do Coolify

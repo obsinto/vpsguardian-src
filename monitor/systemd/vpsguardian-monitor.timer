@@ -1,0 +1,11 @@
+[Unit]
+Description=VPS Guardian - Monitor Preventivo (a cada 1 minuto)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=vpsguardian-monitor.service
+
+[Install]
+WantedBy=timers.target

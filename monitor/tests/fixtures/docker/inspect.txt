@@ -1,0 +1,6 @@
+aaa111111111ffffffffffffffffffffffffffffffffffffffffffffffffffff|/bugroyale-worker|2|unless-stopped|0|2026-07-17T05:00:00.000000000Z|running|none|402653184|134217728|1000000000|0|0||true|uuid-bugroyale-app||bugroyale-worker|Bug Royale|production|bugroyale:latest
+bbb222222222ffffffffffffffffffffffffffffffffffffffffffffffffffff|/automind|0|always|0|2026-07-17T03:00:00.000000000Z|running|none|0|0|0|0|0||||||||automind:latest
+ccc333333333ffffffffffffffffffffffffffffffffffffffffffffffffffff|/postgres-x1y2z3|0|always|0|2026-07-15T03:00:00.000000000Z|running|healthy|1073741824|0|0|200000|100000||||||||postgres:16
+ddd444444444ffffffffffffffffffffffffffffffffffffffffffffffffffff|/esus|1|unless-stopped|0|2026-07-17T07:00:00.000000000Z|running|unhealthy|536870912|0|500000000|0|0||||||||esus:latest
+eee555555555ffffffffffffffffffffffffffffffffffffffffffffffffffff|/flaky-app|7|always|0|2026-07-17T08:00:00.000000000Z|restarting|none|268435456|0|0|0|0||||||||flaky:latest
+fff666666666ffffffffffffffffffffffffffffffffffffffffffffffffffff|/old-app|0|no|0|2026-07-10T03:00:00.000000000Z|exited|none|0|0|0|0|0||||||||old:latest

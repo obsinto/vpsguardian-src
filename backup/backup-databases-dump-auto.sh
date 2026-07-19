@@ -1,5 +1,7 @@
 #!/bin/bash
 ################################################################################
+
+umask 077
 # Script: backup-databases-dump-auto.sh
 # Propósito: Wrapper para backup automático via dump SQL (usa migrar-databases-dump.sh)
 # Uso: ./backup-databases-dump-auto.sh [--dest=local|google-drive|aws-s3|all]
@@ -25,26 +27,40 @@ source "$SCRIPT_DIR/../lib/notificacoes.sh" 2>/dev/null || true
 # Marcar início para calcular duração
 BACKUP_START_TIME=$(date +%s)
 
-# Carregar configurações
-if [ -f "/opt/vpsguardian/config/config.env" ]; then
-    source "/opt/vpsguardian/config/config.env" 2>/dev/null
+# Carregar configurações da instalação real
+if [ -f "$VPSGUARDIAN_ROOT/config/config.env" ]; then
+    source "$VPSGUARDIAN_ROOT/config/config.env" 2>/dev/null
 fi
-if [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
-    source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
+if [ -f "$VPSGUARDIAN_ROOT/config/default.conf" ]; then
+    source "$VPSGUARDIAN_ROOT/config/default.conf" 2>/dev/null
 fi
 
 # Carregar configurações de destino de backup
-BACKUP_DESTINATIONS_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+BACKUP_DESTINATIONS_CONFIG="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$VPSGUARDIAN_ROOT/config/backup-destinations.conf}"
 if [ -f "$BACKUP_DESTINATIONS_CONFIG" ]; then
     source "$BACKUP_DESTINATIONS_CONFIG"
 fi
 
 ### ========== CONFIGURAÇÃO ==========
 UPLOAD_DEST="${1:-local}"
-BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
+BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-${BACKUP_ROOT:-/var/backups/vpsguardian}/databases}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_FILE="/var/log/vpsguardian/backup-databases-auto-${TIMESTAMP}.log"
+LOG_FILE="${LOG_DIR:-/var/log/vpsguardian}/backup-databases-auto-${TIMESTAMP}.log"
 PROJECT_FILTER=""
+REMOTE_RESULT=0
+TARBALL=""
+TARBALL_SIZE=""
+RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
+
+if command -v flock >/dev/null 2>&1; then
+    DATABASE_BACKUP_LOCK_FILE="${DATABASE_BACKUP_LOCK_FILE:-${LOCK_DIR:-/var/lock}/vpsguardian-database-backup.lock}"
+    mkdir -p "$(dirname "$DATABASE_BACKUP_LOCK_FILE")"
+    exec 9>"$DATABASE_BACKUP_LOCK_FILE"
+    if ! flock -n 9; then
+        log_error "Já existe um backup de bancos em execução"
+        exit 4
+    fi
+fi
 
 # Parse argumentos
 while [[ $# -gt 0 ]]; do
@@ -104,9 +120,12 @@ if [ -n "$PROJECT_FILTER" ]; then
     log_info "Configuração: Filtrado por projeto '$PROJECT_FILTER'"
 fi
 
-# Executar em modo automático (--auto) para não pedir confirmação
-log_info "Executando: $DUMP_SCRIPT --auto $COOLIFY_FLAG $PROJECT_FLAG"
-bash "$DUMP_SCRIPT" --target=local --auto $COOLIFY_FLAG $PROJECT_FLAG
+# Executar em modo automático (--auto) para não pedir confirmação. Arrays
+# preservam filtros com espaços e impedem expansão acidental de argumentos.
+DUMP_ARGS=(--target=local --auto "$COOLIFY_FLAG")
+[ -n "$PROJECT_FLAG" ] && DUMP_ARGS+=("$PROJECT_FLAG")
+log_info "Executando gerador de dumps em modo automático"
+bash "$DUMP_SCRIPT" "${DUMP_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     log_error "Falha ao criar dumps"
@@ -162,12 +181,15 @@ if [ "$UPLOAD_DEST" != "local" ]; then
                 fi
             else
                 log_error "Falha no upload para destino remoto"
+                REMOTE_RESULT=1
             fi
         else
             log_error "Script de upload não encontrado: $DESTINOS_SCRIPT"
+            REMOTE_RESULT=1
         fi
     else
         log_error "Falha ao criar tarball para upload"
+        REMOTE_RESULT=1
     fi
     echo ""
 fi
@@ -180,8 +202,6 @@ CLEANUP_SCRIPT="$SCRIPT_DIR/../scripts-auxiliares/limpar-backups-antigos.sh"
 
 if [ -x "$CLEANUP_SCRIPT" ]; then
     RETENTION_STRATEGY="${BACKUP_RETENTION_STRATEGY:-simple}"
-    RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
-
     log_info "Executando limpeza (estratégia: $RETENTION_STRATEGY)"
 
     bash "$CLEANUP_SCRIPT" \
@@ -233,15 +253,14 @@ echo ""
 echo "  📂 Arquivos salvos em:"
 echo "     $LATEST_BATCH"
 if [ "$UPLOAD_DEST" != "local" ]; then
-    echo ""
-    echo "  📦 Tarball criado: $(basename "$TARBALL") ($TARBALL_SIZE)"
-    echo "     $TARBALL"
+    if [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; then
+        echo ""
+        echo "  📦 Tarball criado: $(basename "$TARBALL") ($TARBALL_SIZE)"
+        echo "     $TARBALL"
+    fi
 fi
 echo ""
 echo "  📝 Log completo: $LOG_FILE"
-echo ""
-
-log_success "Backup automático concluído com sucesso!"
 echo ""
 
 # Calcular duração
@@ -252,7 +271,13 @@ BACKUP_DURATION_FMT=$(printf '%02d:%02d:%02d' $((BACKUP_DURATION/3600)) $((BACKU
 # Contar bancos de dados backupeados
 DB_COUNT=$(find "$LATEST_BATCH" -name "*.sql.gz" -o -name "*.gz" 2>/dev/null | wc -l)
 
-# Notificar sucesso com detalhes
+if [ "$REMOTE_RESULT" -ne 0 ]; then
+    log_error "Dumps locais criados, mas o destino remoto solicitado falhou"
+    notify_backup_error "Databases" "Dumps locais preservados; falha no upload para $UPLOAD_DEST"
+    exit 1
+fi
+
+log_success "Backup automático concluído com sucesso!"
 notify_backup_success "Databases (Dumps SQL)" "$BATCH_SIZE" "$BACKUP_DURATION_FMT" "$UPLOAD_DEST" \
     "$DB_COUNT bancos de dados | Lote: $(basename "$LATEST_BATCH")"
 

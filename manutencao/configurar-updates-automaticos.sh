@@ -12,6 +12,15 @@ LOG_PREFIX="[ Updates Automáticos ]"
 log() {
     echo "$LOG_PREFIX [ $1 ] $2"
 }
+log_info() { log "INFO" "$*"; }
+log_success() { log "OK" "$*"; }
+log_error() { log "ERRO" "$*"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    source "/etc/vpsguardian/install.conf"
+fi
 
 # Verificar se é root
 if [ "$EUID" -ne 0 ]; then
@@ -81,10 +90,19 @@ REBOOT_TIME=${REBOOT_TIME:-03:00}
 
 read -p "$LOG_PREFIX [ INPUT ] Email para notificações (deixe vazio para pular): " EMAIL_ADDRESS
 
+if [[ ! "$REBOOT_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+    log_error "Horário inválido: use HH:MM entre 00:00 e 23:59"
+    exit 2
+fi
+if [ -n "$EMAIL_ADDRESS" ] && [[ ! "$EMAIL_ADDRESS" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+    log_error "Endereço de email inválido"
+    exit 2
+fi
+
 echo ""
 
 # Verificar se webhook Discord está configurado
-WEBHOOK_CONFIG="/opt/vpsguardian/config/backup-destinations.conf"
+WEBHOOK_CONFIG="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$INSTALL_ROOT/config/backup-destinations.conf}"
 WEBHOOK_URL=""
 if [ -f "$WEBHOOK_CONFIG" ]; then
     source "$WEBHOOK_CONFIG"
@@ -130,7 +148,7 @@ declare -a PACKAGES=(
 
 # Detectar se Coolify está instalado (pré-selecionar Docker)
 COOLIFY_INSTALLED=false
-if systemctl is-active --quiet coolify 2>/dev/null || [ -d "/opt/coolify" ]; then
+if systemctl is-active --quiet coolify 2>/dev/null || [ -d "/data/coolify" ] || [ -d "/opt/coolify" ]; then
     COOLIFY_INSTALLED=true
     log "WARN" "⚠️  Coolify detectado no sistema!"
 fi
@@ -165,7 +183,7 @@ render_package_menu() {
             checkbox="[✓]"
         fi
         printf "  %s %2d. %-30s %s\n" "$checkbox" "$counter" "$package_name" "($description)"
-        ((counter++))
+        counter=$((counter + 1))
     done
 
     echo ""
@@ -181,7 +199,7 @@ while [ "$selecting_packages" = true ]; do
     if [ "$selection" = "0" ]; then
         selecting_packages=false
     elif [[ "$selection" =~ ^[0-9]+$ ]]; then
-        local index=$((selection - 1))
+        index=$((selection - 1))
         if [ "$index" -ge 0 ] && [ "$index" -lt "${#PACKAGES[@]}" ]; then
             # Toggle seleção
             if [ "${SELECTED[$index]}" -eq 0 ]; then
@@ -217,7 +235,7 @@ for i in "${!PACKAGES[@]}"; do
     if [ "${SELECTED[$i]}" -eq 1 ]; then
         IFS=':' read -r package_name description <<< "${PACKAGES[$i]}"
         log_info "    ✓ $package_name ($description)"
-        ((selected_count++))
+        selected_count=$((selected_count + 1))
     fi
 done
 
@@ -445,7 +463,7 @@ if [[ "$ENABLE_DISCORD" =~ ^[Yy]$ ]]; then
     echo ""
 
     # Verificar se script de notificação existe
-    NOTIF_SCRIPT="/opt/vpsguardian/manutencao/notificar-updates.sh"
+    NOTIF_SCRIPT="$INSTALL_ROOT/manutencao/notificar-updates.sh"
     if [ -f "$NOTIF_SCRIPT" ]; then
         chmod +x "$NOTIF_SCRIPT"
 
@@ -460,7 +478,11 @@ EOF
         # Adicionar cron para relatório diário (se não existir)
         if ! crontab -l 2>/dev/null | grep -q "notificar-updates.sh daily"; then
             log_info "Adicionando relatório diário ao cron..."
-            (crontab -l 2>/dev/null; echo "# Relatório diário de updates (Discord)"; echo "0 10 * * * $NOTIF_SCRIPT daily >> /var/log/vpsguardian/cron-updates-notify.log 2>&1") | crontab -
+            NOTIF_LOG_DIR="${LOG_ROOT:-/var/log/vpsguardian}"
+            mkdir -p "$NOTIF_LOG_DIR"
+            NOTIF_SCRIPT_Q=$(printf '%q' "$NOTIF_SCRIPT")
+            NOTIF_LOG_Q=$(printf '%q' "$NOTIF_LOG_DIR/cron-updates-notify.log")
+            (crontab -l 2>/dev/null; echo "# Relatório diário de updates (Discord)"; echo "0 10 * * * $NOTIF_SCRIPT_Q daily >> $NOTIF_LOG_Q 2>&1") | crontab -
             log_success "Relatório diário agendado para 10:00"
         fi
 

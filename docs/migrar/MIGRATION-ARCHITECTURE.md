@@ -152,12 +152,12 @@ detect_crash_loop() {
 
 ## 📦 Novos Scripts
 
-### `backup-database-volumes.sh`
+### `backup-volumes.sh`
 - **Propósito**: Backup inteligente com detecção de DBs
 - **Estratégia**: SQL Dump + Volume Snapshot
 - **Uso**:
   ```bash
-  ./backup-database-volumes.sh
+  ./backup-volumes.sh
   ```
 
 ### `restore-database-volumes.sh`
@@ -285,7 +285,7 @@ docker exec mongo-db mongo --username root --password $MONGO_PASSWORD \
 
 ## 📊 Comparação: Antes vs Depois
 
-| Aspecto | Antes (backup-volumes.sh) | Depois (backup-database-volumes.sh) |
+| Aspecto | Antes | Implementação unificada (`backup-volumes.sh`) |
 |---------|---------------------------|-------------------------------------|
 | **Detecção de DB** | ❌ Não detecta | ✅ Detecção dinâmica |
 | **Dump SQL** | ❌ Não faz | ✅ MySQL, PostgreSQL, MongoDB |
@@ -307,7 +307,7 @@ docker exec mongo-db mongo --username root --password $MONGO_PASSWORD \
 ### 2. Testar em Staging Primeiro
 ```bash
 # Fazer backup de produção
-./migrar/backup-database-volumes.sh
+./migrar/backup-volumes.sh
 
 # Restaurar em staging
 export BACKUP_DIR="/path/to/backup"
@@ -359,7 +359,7 @@ cp *-dump-*.sql /backup/sql-dumps/
 ### v2.0.0 - Migração Robusta (2026-02-02)
 
 **Adicionado**:
-- `backup-database-volumes.sh` - Backup com Double-Check
+- `backup-volumes.sh` - Backup unificado com Double-Check
 - `restore-database-volumes.sh` - Restore inteligente
 - `validate-database-health.sh` - Validação pós-restore
 - Detecção dinâmica de bancos de dados

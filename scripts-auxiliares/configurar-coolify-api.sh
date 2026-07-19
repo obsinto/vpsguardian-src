@@ -33,8 +33,8 @@ GRAY="${GRAY:-\033[0;90m}"
 NC="${NC:-\033[0m}"
 
 # Configuração
-CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
 DEV_CONFIG_FILE="$SCRIPT_DIR/../config/backup-destinations.conf"
+CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$DEV_CONFIG_FILE}"
 
 # Usar arquivo de desenvolvimento se existir e produção não existir
 if [ ! -f "$CONFIG_FILE" ] && [ -f "$DEV_CONFIG_FILE" ]; then
@@ -139,20 +139,27 @@ load_current_config() {
 update_config_var() {
     local var_name="$1"
     local var_value="$2"
+    local config_tmp found=false line
 
-    if grep -q "^${var_name}=" "$CONFIG_FILE" 2>/dev/null; then
-        # Variável existe, atualizar
-        sed -i "s|^${var_name}=.*|${var_name}=\"${var_value}\"|" "$CONFIG_FILE"
-    else
-        # Variável não existe, verificar se seção existe
-        if grep -q "# ========== COOLIFY API ==========" "$CONFIG_FILE" 2>/dev/null; then
-            # Seção existe, adicionar após ela
-            sed -i "/# ========== COOLIFY API ==========/a ${var_name}=\"${var_value}\"" "$CONFIG_FILE"
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+    [ -f "$CONFIG_FILE" ] || printf '#!/bin/bash\n# ========== COOLIFY API ==========\n' > "$CONFIG_FILE"
+    config_tmp=$(mktemp "$(dirname "$CONFIG_FILE")/.coolify-api.conf.XXXXXX")
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" == "$var_name="* ]]; then
+            printf '%s=%q\n' "$var_name" "$var_value" >> "$config_tmp"
+            found=true
         else
-            log_warning "Seção COOLIFY API não encontrada no arquivo de configuração"
-            echo "${var_name}=\"${var_value}\"" >> "$CONFIG_FILE"
+            printf '%s\n' "$line" >> "$config_tmp"
         fi
+    done < "$CONFIG_FILE"
+
+    if [ "$found" != true ]; then
+        printf '%s=%q\n' "$var_name" "$var_value" >> "$config_tmp"
     fi
+
+    chmod 600 "$config_tmp"
+    mv -f "$config_tmp" "$CONFIG_FILE"
 }
 
 # Testar conexão com API
@@ -164,7 +171,7 @@ test_api_connection() {
     echo -e "${CYAN}Testando conexão com API do Coolify...${NC}"
     echo ""
     echo -e "  ${GRAY}URL:${NC} $url"
-    echo -e "  ${GRAY}Token:${NC} ${token:0:10}...${token: -5}"
+    echo -e "  ${GRAY}Token:${NC} configurado (valor oculto)"
     echo ""
 
     # Verificar jq
@@ -264,7 +271,7 @@ interactive_setup() {
     fi
     echo -e "  URL: ${GRAY}${COOLIFY_API_URL:-http://localhost:8000/api/v1}${NC}"
     if [ -n "$COOLIFY_API_TOKEN" ]; then
-        echo -e "  Token: ${GRAY}${COOLIFY_API_TOKEN:0:10}...${COOLIFY_API_TOKEN: -5}${NC}"
+        echo -e "  Token: ${GRAY}configurado (valor oculto)${NC}"
     else
         echo -e "  Token: ${RED}NÃO CONFIGURADO${NC}"
     fi
@@ -327,7 +334,8 @@ configure_token() {
 
     # Token
     echo ""
-    read -p "Token de API: " input_token
+    read -s -p "Token de API: " input_token
+    echo ""
 
     if [ -z "$input_token" ]; then
         log_error "Token não pode ser vazio"

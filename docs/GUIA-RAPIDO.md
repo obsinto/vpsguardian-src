@@ -27,13 +27,13 @@ sudo /opt/vpsguardian/backup/backup-coolify.sh
 
 ### Backup de Bancos de Dados
 ```bash
-sudo /opt/vpsguardian/backup/backup-databases.sh
+sudo /opt/vpsguardian/backup/backup-databases-dump-auto.sh --dest=local
 ```
-Interativo - selecione os bancos que quer backup.
+Use `--project=NOME` para limitar o backup a um projeto.
 
 ### Backup de Volume Específico
 ```bash
-sudo /opt/vpsguardian/backup/backup-volume.sh
+sudo /opt/vpsguardian/backup/backup-volume-interativo.sh
 ```
 Interativo - selecione volumes Docker.
 
@@ -113,7 +113,7 @@ sudo crontab -e
 0 2 * * * /opt/vpsguardian/backup/backup-coolify.sh
 
 # Backup semanal de DBs (domingo, 3h)
-0 3 * * 0 /opt/vpsguardian/backup/backup-databases.sh
+0 3 * * 0 /opt/vpsguardian/backup/backup-databases-dump-auto.sh --dest=local
 
 # Manutenção mensal (dia 1, 4h)
 0 4 1 * * /opt/vpsguardian/manutencao/manutencao-completa.sh

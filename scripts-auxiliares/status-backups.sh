@@ -15,8 +15,13 @@ GRAY='\033[0;90m'
 NC='\033[0m'
 
 # Configurações
-CONFIG_FILE="/opt/vpsguardian/config/backup-destinations.conf"
-BACKUP_DIR="/var/backups/vpsguardian"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    source "/etc/vpsguardian/install.conf"
+fi
+CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$INSTALL_ROOT/config/backup-destinations.conf}"
+BACKUP_DIR="${BACKUP_ROOT:-/var/backups/vpsguardian}"
 
 get_s3_retention_strategy() {
     echo "${S3_RETENTION_STRATEGY:-${BACKUP_RETENTION_STRATEGY:-simple}}"
@@ -133,7 +138,7 @@ echo ""
 
 CRON_BACKUP_COOLIFY=$(crontab -l 2>/dev/null | grep -c "backup-coolify.sh")
 CRON_BACKUP_DATABASES=$(crontab -l 2>/dev/null | grep -c "backup-databases")
-CRON_BACKUP_VOLUMES=$(crontab -l 2>/dev/null | grep -c "backup-database-volumes.sh")
+CRON_BACKUP_VOLUMES=$(crontab -l 2>/dev/null | grep -c "migrar/backup-volumes.sh")
 CRON_MANUTENCAO=$(crontab -l 2>/dev/null | grep -c "manutencao-completa.sh")
 CRON_ALERTA=$(crontab -l 2>/dev/null | grep -c "alerta-disco.sh")
 CRON_LIMPEZA=$(crontab -l 2>/dev/null | grep -c "limpar-backups")
@@ -167,8 +172,8 @@ fi
 
 # Backup Volumes
 if [ "$CRON_BACKUP_VOLUMES" -gt 0 ]; then
-    HORARIO=$(crontab -l 2>/dev/null | grep "backup-database-volumes.sh" | awk '{print $2":"$1}' | head -1)
-    DIA=$(crontab -l 2>/dev/null | grep "backup-database-volumes.sh" | awk '{print $5}' | head -1)
+    HORARIO=$(crontab -l 2>/dev/null | grep "migrar/backup-volumes.sh" | awk '{print $2":"$1}' | head -1)
+    DIA=$(crontab -l 2>/dev/null | grep "migrar/backup-volumes.sh" | awk '{print $5}' | head -1)
     DIA_NOME=$(case $DIA in 0) echo "Domingo";; 1) echo "Segunda";; 2) echo "Terça";; 3) echo "Quarta";; 4) echo "Quinta";; 5) echo "Sexta";; 6) echo "Sábado";; *) echo "Diário";; esac)
     echo -e "  ${GREEN}✅${NC} Backup de Volumes"
     echo -e "     ${GRAY}Quando: $DIA_NOME às $HORARIO${NC}"

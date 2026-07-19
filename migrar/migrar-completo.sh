@@ -19,7 +19,7 @@ BACKUP_FILE="${BACKUP_FILE:-}"
 SKIP_VOLUMES=false
 AUTO_MODE=false
 
-VOLUMES_BACKUP_DIR="/tmp/coolify-volumes-migration-$$"
+VOLUMES_BACKUP_DIR=""
 
 ### ========== PARSE ARGUMENTOS ==========
 CONFIG_FILE=""
@@ -143,7 +143,7 @@ fi
 
 # Obter backup mais recente se não especificado
 if [ -z "$BACKUP_FILE" ]; then
-    BACKUP_FILE=$(ls -t /var/backups/vpsguardian/coolify/*.tar.gz 2>/dev/null | head -1)
+    BACKUP_FILE=$(ls -t "${COOLIFY_BACKUP_DIR:-$BACKUP_ROOT/coolify}"/*.tar.gz 2>/dev/null | head -1)
 fi
 
 if [ ! -f "$BACKUP_FILE" ]; then
@@ -157,19 +157,23 @@ log_success "Coolify backup: $(basename $BACKUP_FILE)"
 if [ "$SKIP_VOLUMES" = false ]; then
     log_section "Step 2/5: Backup Docker Volumes (Modo Robusto)"
 
-    mkdir -p "$VOLUMES_BACKUP_DIR"
+    if ! VOLUMES_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-volumes-migration.XXXXXX"); then
+        log_error "Não foi possível criar diretório temporário seguro"
+        exit 1
+    fi
 
     log_info "Usando backup inteligente com detecção de bancos de dados..."
     log_info "Estratégia: Double-Check (SQL Dump + Volume Snapshot)"
     echo ""
 
     # Usar novo script robusto
-    export BACKUP_OUTPUT_DIR="$VOLUMES_BACKUP_DIR"
-    "$SCRIPT_DIR/backup-database-volumes.sh"
+    "$SCRIPT_DIR/backup-volumes.sh" --all --auto \
+        --output="$VOLUMES_BACKUP_DIR" --strategy=double-check
 
     if [ $? -ne 0 ]; then
-        log_error "Alguns volumes falharam no backup"
-        log_warning "Continuando mesmo assim..."
+        log_error "Um ou mais volumes falharam no backup; migração cancelada"
+        log_info "Backups parciais preservados em: $VOLUMES_BACKUP_DIR"
+        exit 1
     fi
 
     # Contar backups criados (arquivos .meta são criados para cada volume)
@@ -181,7 +185,7 @@ if [ "$SKIP_VOLUMES" = false ]; then
         log_success "$backup_count volume backups created"
 
         # Mostrar estatísticas
-        local db_backups=$(find "$VOLUMES_BACKUP_DIR" -name "*-dump-*.sql" -type f | wc -l)
+        db_backups=$(find "$VOLUMES_BACKUP_DIR" -name "*-dump-*.sql" -type f | wc -l)
         if [ "$db_backups" -gt 0 ]; then
             log_info "  📊 Dumps SQL criados: $db_backups"
         fi
@@ -211,7 +215,7 @@ fi
 if [ $? -ne 0 ]; then
     log_error "Coolify migration failed"
     log_info "Cleaning up..."
-    rm -rf "$VOLUMES_BACKUP_DIR"
+        [ -n "$VOLUMES_BACKUP_DIR" ] && rm -rf "$VOLUMES_BACKUP_DIR"
     exit 1
 fi
 
@@ -252,83 +256,55 @@ if [ "$SKIP_VOLUMES" = false ] && [ "$backup_count" -gt 0 ]; then
     log_info "Estratégia: Volume primeiro, SQL dump se crash loop detectado"
     echo ""
 
-    # Transferir script de restore inteligente para servidor remoto
+    # Preservar a mesma estrutura relativa esperada pelos scripts (migrar/../lib).
     log_info "Transferindo scripts de restore..."
-    scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
+    if ! ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "mkdir -p /tmp/vpsguardian-migration/migrar /tmp/vpsguardian-migration/lib" >/dev/null 2>&1 ||
+       ! scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
         "$SCRIPT_DIR/restore-database-volumes.sh" \
-        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/restore-database-volumes.sh" >/dev/null 2>&1
-
-    # Transferir lib/common.sh e dependências
-    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" "$NEW_SERVER_USER@$NEW_SERVER_IP" \
-        "mkdir -p /tmp/vpsguardian-lib" >/dev/null 2>&1
-
-    scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/vpsguardian-migration/migrar/" >/dev/null 2>&1 ||
+       ! scp -i "$SSH_PRIVATE_KEY_PATH" -P "$NEW_SERVER_PORT" \
         "$SCRIPT_DIR/../lib/"*.sh \
-        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/vpsguardian-lib/" >/dev/null 2>&1
+        "$NEW_SERVER_USER@$NEW_SERVER_IP:/tmp/vpsguardian-migration/lib/" >/dev/null 2>&1; then
+        log_error "Falha ao transferir os scripts de restore"
+        log_info "Backup local preservado em: $VOLUMES_BACKUP_DIR"
+        exit 1
+    fi
 
     log_info "Executando restore inteligente remotamente..."
     echo ""
 
     # Executar restore no servidor remoto
-    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" "$NEW_SERVER_USER@$NEW_SERVER_IP" bash <<'EOF'
-#!/bin/bash
-
-# Ajustar paths para ambiente remoto
-export SCRIPT_DIR="/tmp"
-export BACKUP_DIR="/root/coolify-volumes-backup"
-
-# Criar common.sh temporário simplificado
-cat > /tmp/vpsguardian-lib/common.sh <<'COMMON'
-#!/bin/bash
-
-# Funções de logging simplificadas
-log_info() { echo "[ INFO ] $*"; }
-log_success() { echo "[ SUCCESS ] $*"; }
-log_error() { echo "[ ERROR ] $*"; }
-log_warning() { echo "[ WARNING ] $*"; }
-log_section() { echo ""; echo "========== $* =========="; echo ""; }
-ensure_directory() { mkdir -p "$1" 2>/dev/null; }
-
-# Carregar bibliotecas de cores se existirem
-if [ -f "/tmp/vpsguardian-lib/colors.sh" ]; then
-    source /tmp/vpsguardian-lib/colors.sh
-fi
-if [ -f "/tmp/vpsguardian-lib/logging.sh" ]; then
-    source /tmp/vpsguardian-lib/logging.sh
-fi
-COMMON
-
-# Executar restore
-chmod +x /tmp/restore-database-volumes.sh
-/tmp/restore-database-volumes.sh
-
-restore_result=$?
-
-# Cleanup
-rm -f /tmp/restore-database-volumes.sh
-rm -rf /tmp/vpsguardian-lib
-
-exit $restore_result
-EOF
+    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "BACKUP_DIR=/root/coolify-volumes-backup bash /tmp/vpsguardian-migration/migrar/restore-database-volumes.sh"
 
     restore_exit_code=$?
 
     if [ $restore_exit_code -eq 0 ]; then
         log_success "Todos os volumes restaurados com sucesso"
     elif [ $restore_exit_code -eq 2 ]; then
-        log_warning "Volumes restaurados com avisos - verifique logs"
-        log_info "Alguns containers podem precisar de verificação manual"
+        log_error "Volumes restaurados apenas parcialmente; migração requer verificação"
+        log_info "Backup local preservado em: $VOLUMES_BACKUP_DIR"
+        exit 2
     else
         log_error "Alguns volumes falharam ao restaurar"
         log_warning "Verifique logs em $NEW_SERVER_IP para detalhes"
+        log_info "Backup local preservado em: $VOLUMES_BACKUP_DIR"
+        exit 1
     fi
+
+    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT" \
+        "$NEW_SERVER_USER@$NEW_SERVER_IP" \
+        "rm -rf /tmp/vpsguardian-migration" >/dev/null 2>&1 || true
 else
     log_section "Step 5/5: SKIPPED (no volumes to restore)"
 fi
 
 ### ========== CLEANUP ==========
 log_info "Cleaning up local temporary files..."
-rm -rf "$VOLUMES_BACKUP_DIR"
+[ -n "$VOLUMES_BACKUP_DIR" ] && rm -rf "$VOLUMES_BACKUP_DIR"
 
 ### ========== FINAL SUMMARY ==========
 echo ""

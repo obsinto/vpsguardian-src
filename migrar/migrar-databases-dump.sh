@@ -1,5 +1,7 @@
 #!/bin/bash
 ################################################################################
+
+umask 077
 # Script: migrar-databases-dump.sh
 # Propósito: Migração de bancos de dados via DUMP SQL (leve e seguro)
 # Uso: ./migrar-databases-dump.sh [--target=IP] [--auto]
@@ -23,20 +25,17 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
 }
 
 # Carregar configurações do VPS Guardian
-if [ -f "/opt/vpsguardian/config/config.env" ]; then
-    source "/opt/vpsguardian/config/config.env" 2>/dev/null
+if [ -f "$VPSGUARDIAN_ROOT/config/config.env" ]; then
+    source "$VPSGUARDIAN_ROOT/config/config.env" 2>/dev/null
 fi
-if [ -f "/opt/vpsguardian/config/default.conf" ]; then
-    source "/opt/vpsguardian/config/default.conf" 2>/dev/null
-elif [ -f "$SCRIPT_DIR/../config/default.conf" ]; then
-    source "$SCRIPT_DIR/../config/default.conf" 2>/dev/null
+if [ -f "$VPSGUARDIAN_ROOT/config/default.conf" ]; then
+    source "$VPSGUARDIAN_ROOT/config/default.conf" 2>/dev/null
 fi
 
 # Carregar configurações de destino de backup (inclui Coolify API)
-if [ -f "/opt/vpsguardian/config/backup-destinations.conf" ]; then
-    source "/opt/vpsguardian/config/backup-destinations.conf" 2>/dev/null
-elif [ -f "$SCRIPT_DIR/../config/backup-destinations.conf" ]; then
-    source "$SCRIPT_DIR/../config/backup-destinations.conf" 2>/dev/null
+SHARED_CONFIG_FILE="${VPSGUARDIAN_SHARED_CONFIG_FILE:-$VPSGUARDIAN_ROOT/config/backup-destinations.conf}"
+if [ -f "$SHARED_CONFIG_FILE" ]; then
+    source "$SHARED_CONFIG_FILE" 2>/dev/null
 fi
 
 # Carregar biblioteca de API do Coolify
@@ -50,7 +49,7 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 AUTO_MODE=false
 INCLUDE_COOLIFY=""  # vazio = perguntar, true = incluir, false = excluir
 PROJECT_FILTER=""   # vazio = todos, ou UUID/nome do projeto
-DUMP_DIR="/tmp/database-dumps-$$"
+DUMP_DIR=""
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 ### ========== PARSE ARGUMENTOS ==========
@@ -159,13 +158,13 @@ detect_databases_via_api() {
         # Adicionar ao array apropriado
         case "$normalized_type" in
             mysql|mariadb)
-                echo "$container" >> /tmp/api_mysql_containers.$$
+                echo "$container" >> "$API_MYSQL_FILE"
                 ;;
             postgres)
-                echo "$container" >> /tmp/api_postgres_containers.$$
+                echo "$container" >> "$API_POSTGRES_FILE"
                 ;;
             mongodb)
-                echo "$container" >> /tmp/api_mongodb_containers.$$
+                echo "$container" >> "$API_MONGODB_FILE"
                 ;;
         esac
 
@@ -356,9 +355,9 @@ dump_mysql() {
     # Executa o dump usando as variáveis higienizadas
     # IMPORTANTE: --add-drop-table permite restaurar sobre dados existentes
     if [ "$database" = "all" ]; then
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table 2>/dev/null > "$output_file"
+        docker exec -e MYSQL_PWD="$password" "$container" $dump_cmd -u "$user" --all-databases --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table 2>/dev/null > "$output_file"
     else
-        docker exec "$container" $dump_cmd -u "$user" -p"$password" --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table "$database" 2>/dev/null > "$output_file"
+        docker exec -e MYSQL_PWD="$password" "$container" $dump_cmd -u "$user" --single-transaction --quick --lock-tables=false --routines --triggers --add-drop-table "$database" 2>/dev/null > "$output_file"
     fi
     
     # Verificação de segurança: se gerou um arquivo com 0 bytes, algo deu errado
@@ -441,7 +440,7 @@ if [ "${LIST_PROJECTS_ONLY:-false}" = true ]; then
         exit 1
     fi
 
-    local projects
+    projects=""
     projects=$(coolify_list_project_names 2>/dev/null)
 
     if [ -z "$projects" ]; then
@@ -469,7 +468,7 @@ if [ "$AUTO_MODE" = false ] && [ -z "$PROJECT_FILTER" ] && coolify_api_available
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC:-}"
 
     # Listar projetos disponíveis
-    local projects_list
+    projects_list=""
     projects_list=$(coolify_list_project_names 2>/dev/null)
 
     if [ -n "$projects_list" ]; then
@@ -477,7 +476,7 @@ if [ "$AUTO_MODE" = false ] && [ -z "$PROJECT_FILTER" ] && coolify_api_available
         echo "  Projetos disponíveis (via Coolify API):"
         echo ""
 
-        local idx=1
+        idx=1
         declare -a PROJECT_OPTIONS
         while IFS='|' read -r uuid name desc; do
             printf "    ${GREEN:-}%2d${NC:-} → %s" "$idx" "$name"
@@ -498,7 +497,7 @@ if [ "$AUTO_MODE" = false ] && [ -z "$PROJECT_FILTER" ] && coolify_api_available
 
         if [ -n "$project_choice" ] && [ "$project_choice" != "0" ] && [ -n "${PROJECT_OPTIONS[$project_choice]}" ]; then
             PROJECT_FILTER=$(echo "${PROJECT_OPTIONS[$project_choice]}" | cut -d'|' -f1)
-            local project_name=$(echo "${PROJECT_OPTIONS[$project_choice]}" | cut -d'|' -f2)
+            project_name=$(echo "${PROJECT_OPTIONS[$project_choice]}" | cut -d'|' -f2)
             log_info "Projeto selecionado: $project_name"
         else
             log_info "Backup de todos os bancos (sem filtro de projeto)"
@@ -510,16 +509,18 @@ fi
 ### ========== DETECTAR BANCOS DE DADOS ==========
 log_section "Detectando Bancos de Dados"
 
-# Limpar arquivos temporários
-rm -f /tmp/api_mysql_containers.$$ /tmp/api_postgres_containers.$$ /tmp/api_mongodb_containers.$$
+# Arquivos temporários seguros para o inventário retornado pela API.
+API_DISCOVERY_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-api-discovery.XXXXXX")
+API_MYSQL_FILE="$API_DISCOVERY_DIR/mysql"
+API_POSTGRES_FILE="$API_DISCOVERY_DIR/postgres"
+API_MONGODB_FILE="$API_DISCOVERY_DIR/mongodb"
 
 # Tentar usar API do Coolify primeiro
 if detect_databases_via_api 2>/dev/null; then
     # Carregar containers dos arquivos temporários
-    MYSQL_CONTAINERS=($(cat /tmp/api_mysql_containers.$$ 2>/dev/null | sort -u))
-    POSTGRES_CONTAINERS=($(cat /tmp/api_postgres_containers.$$ 2>/dev/null | sort -u))
-    MONGODB_CONTAINERS=($(cat /tmp/api_mongodb_containers.$$ 2>/dev/null | sort -u))
-    rm -f /tmp/api_mysql_containers.$$ /tmp/api_postgres_containers.$$ /tmp/api_mongodb_containers.$$
+    mapfile -t MYSQL_CONTAINERS < <(sort -u "$API_MYSQL_FILE" 2>/dev/null)
+    mapfile -t POSTGRES_CONTAINERS < <(sort -u "$API_POSTGRES_FILE" 2>/dev/null)
+    mapfile -t MONGODB_CONTAINERS < <(sort -u "$API_MONGODB_FILE" 2>/dev/null)
 else
     # Fallback: detecção via Docker
     log_info "Usando detecção via Docker (API não disponível)"
@@ -527,6 +528,7 @@ else
     POSTGRES_CONTAINERS=($(detect_postgres_containers))
     MONGODB_CONTAINERS=($(detect_mongodb_containers))
 fi
+rm -rf "$API_DISCOVERY_DIR"
 
 TOTAL_DBS=0
 
@@ -678,6 +680,11 @@ fi
 ### ========== CRIAR DUMPS ==========
 log_section "Criando Dumps SQL"
 
+if ! DUMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-database-dumps.XXXXXX"); then
+    log_error "Não foi possível criar diretório temporário seguro"
+    exit 1
+fi
+
 mkdir -p "$DUMP_DIR"
 
 SUCCESS_COUNT=0
@@ -828,7 +835,7 @@ if [ "$TARGET_SERVER" != "local" ] && [ -n "$TARGET_SERVER" ]; then
 else
     log_section "Dumps Criados Localmente"
     # Salvando em lotes organizados usando diretório configurado
-    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}"
+    BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-${BACKUP_ROOT:-/var/backups/vpsguardian}/databases}"
     FINAL_DIR="$BASE_BACKUP_DIR/lote-${TIMESTAMP}"
     mkdir -p "$FINAL_DIR"
     mv "$DUMP_DIR"/* "$FINAL_DIR/" 2>/dev/null
@@ -869,6 +876,11 @@ echo "    - Arquivos menores que volumes"
 echo "    - Sem problemas de redo logs"
 echo "    - Portável entre versões"
 echo ""
+
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    log_error "Migração via dump incompleta: $FAIL_COUNT de $TOTAL_DBS dump(s) falharam"
+    exit 1
+fi
 
 log_success "Migração via dump concluída com sucesso!"
 exit 0

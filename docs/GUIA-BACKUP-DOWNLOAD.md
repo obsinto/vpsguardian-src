@@ -10,7 +10,7 @@
 |------|-------------|--------|------------------------|
 | **Backup Coolify** | SSH keys, .env, APP_KEY, certificados SSL, configs | `backup-coolify.sh` | Semanal |
 | **Backup Dumps SQL** | Dados dos bancos (MySQL, PostgreSQL, MongoDB) | `backup-databases-dump-auto.sh` | Diário |
-| **Backup Volumes** | Arquivos/dados dentro dos volumes Docker | `backup-database-volumes.sh` | Semanal |
+| **Backup Volumes** | Arquivos/dados dentro dos volumes Docker | `backup-volumes.sh` | Semanal |
 
 **IMPORTANTE:** Para uma migração completa você precisa dos **3 tipos de backup**!
 

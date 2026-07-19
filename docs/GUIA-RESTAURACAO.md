@@ -366,7 +366,7 @@ Crie `APPS.md`:
 ```bash
 # Antes de atualizar Coolify, migrar, etc.
 ./backup/backup-coolify.sh
-./migrar/backup-database-volumes.sh
+./migrar/backup-volumes.sh
 ```
 
 ---

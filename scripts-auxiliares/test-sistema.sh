@@ -11,18 +11,27 @@ echo ""
 
 ERROS=0
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_ROOT="${VPSGUARDIAN_ROOT:-$(dirname "$SCRIPT_DIR")}"
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/vpsguardian}"
+LOG_DIR="${LOG_DIR:-/var/log/vpsguardian}"
+if [ -f "/etc/vpsguardian/install.conf" ]; then
+    # shellcheck disable=SC1091
+    source "/etc/vpsguardian/install.conf"
+fi
+
 # Teste 1: Scripts existem e são executáveis
 echo "🔍 Teste 1: Verificando scripts..."
 declare -A scripts=(
     ["manutencao/manutencao-completa.sh"]="Manutenção completa"
     ["backup/backup-coolify.sh"]="Backup Coolify"
     ["manutencao/alerta-disco.sh"]="Alerta de disco"
-    ["backup/backup-coolify-s3.sh"]="Backup S3"
+    ["backup/backup-destinos.sh"]="Destinos remotos"
     ["scripts-auxiliares/limpar-backups-antigos.sh"]="Limpeza de backups"
 )
 
 for script in "${!scripts[@]}"; do
-    if [ -x "/opt/vpsguardian/$script" ]; then
+    if [ -x "$INSTALL_ROOT/$script" ]; then
         echo "  ✓ ${scripts[$script]} OK"
     else
         echo "  ✗ ${scripts[$script]} FALTANDO ou não executável"
@@ -33,7 +42,7 @@ echo ""
 
 # Teste 2: Diretórios existem
 echo "🔍 Teste 2: Verificando diretórios..."
-for dir in /opt/vpsguardian /var/log/vpsguardian /var/backups/vpsguardian; do
+for dir in "$INSTALL_ROOT" "$LOG_DIR" "$BACKUP_ROOT"; do
     if [ -d "$dir" ]; then
         echo "  ✓ $dir OK"
     else

@@ -227,6 +227,9 @@ r=$(monitor_laravel_evaluate HORIZON_WORKER 36000 1 100 0 128 0 SHARED_WITH_WEB 
 assert_eq "INFO" "${r%%|*}" "Horizon interno do Coolify não gera falso EMERGENCY"
 assert_true 'echo "$r" | grep -q platform_managed' "worker interno permanece inventariado como plataforma"
 assert_true '! echo "$r" | grep -q timeout_extremely_high' "timeout esperado do Coolify não vira finding perigoso"
+assert_eq "timeout extremamente alto; container sem limite de memória; worker compartilhado com servidor web" \
+    "$(monitor_laravel_findings_human timeout_extremely_high,container_without_memory_limit,shared_with_web)" \
+    "findings técnicos são apresentados em português"
 echo ""
 
 ################################################################################
@@ -354,6 +357,14 @@ assert_eq "bugroyale-worker" "$(worker_field 5003 15)" "nome Coolify herdado das
 assert_eq "Bug Royale" "$(worker_field 5003 34)" "projeto Coolify herdado das labels"
 assert_eq "production" "$(worker_field 5003 35)" "ambiente Coolify herdado das labels"
 assert_eq "" "$(worker_field 4821 13)" "container sem labels => sem UUID (sem inventar)"
+assert_eq "Projeto Bug Royale / bugroyale-worker (production)" \
+    "$(monitor_laravel_worker_label APPLICATION "Bug Royale" bugroyale-worker production bugroyale-worker aaa111111111)" \
+    "rótulo usa projeto, recurso e ambiente em vez do nome técnico isolado"
+assert_eq "Host (origem não mapeada)" \
+    "$(monitor_laravel_worker_label HOST "" "" "" "" "")" \
+    "origem desconhecida é explícita e não inventa projeto"
+assert_true '! printf "%s\n" "${LARAVEL_WORKERS_ALERTS[@]}" | grep -q "timeout_extremely_high"' \
+    "alerta não expõe finding interno em inglês"
 echo ""
 
 ################################################################################

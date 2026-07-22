@@ -383,7 +383,15 @@ build_incidents() {
     local item severity cname message
     for item in "${CONTAINERS_ALERTS[@]}"; do
         IFS='|' read -r severity cname message <<< "$item"
-        monitor_alert_register "container:${cname}" "$severity" "Container ${cname}" "$message"
+        local container_cond="Container ${cname}" coolify_ref=""
+        case "$message" in
+            *"[Coolify: "*"]"*)
+                coolify_ref="${message#*\[Coolify: }"
+                coolify_ref="${coolify_ref%%\]*}"
+                [ -n "$coolify_ref" ] && container_cond="${container_cond} [Projeto/Recurso: ${coolify_ref}]"
+                ;;
+        esac
+        monitor_alert_register "container:${cname}" "$severity" "$container_cond" "$message"
     done
 
     # Workers Laravel/Horizon (M4)

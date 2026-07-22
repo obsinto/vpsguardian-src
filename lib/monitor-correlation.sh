@@ -351,17 +351,17 @@ monitor_correlation_eval_laravel() {
     if [ -n "$target_project" ] && [ -n "$target_resource" ] && [ "$target_resource" != "$target_project" ]; then
         target_name="${target_project} / ${target_resource}"
     fi
-    EVAL_TITLE="Worker Laravel/Horizon descontrolado"
+    EVAL_TITLE="Worker Laravel/Horizon requer atenção"
     [ -n "$target_name" ] && EVAL_TITLE="${EVAL_TITLE} — ${target_name}"
     local target_container target_pid target_worker target_queues context=""
     target_container=$(_cget laravel_worst_container_name "host")
     target_pid=$(_cget laravel_target_pid "n/d")
     target_worker=$(_cget laravel_target_worker_type "worker")
     target_queues=$(_cget laravel_target_queues "n/d")
-    [ -n "$target_project" ] && context="Projeto Coolify: ${target_project} | "
-    [ -n "$target_resource" ] && context="${context}Recurso: ${target_resource} | "
-    [ -n "$target_env" ] && context="${context}Ambiente: ${target_env} | "
-    EVAL_SUMMARY="${context}Container: ${target_container} (${rid}) | Worker: ${target_worker} PID ${target_pid} | Fila: ${target_queues} | Timeout: ${maxto}s"
+    [ -n "$target_project" ] && context="Projeto: ${target_project}\n"
+    [ -n "$target_resource" ] && context="${context}Recurso: ${target_resource}\n"
+    [ -n "$target_env" ] && context="${context}Ambiente: ${target_env}\n"
+    EVAL_SUMMARY="${context}Container: ${target_container} (${rid})\nWorker: ${target_worker} PID ${target_pid}\nFila: ${target_queues} | Timeout: ${maxto}s"
     local cause="Configuração inadequada de worker"
     if [ "$grp" -gt 4 ] && [ "$maxto" -gt 900 ]; then
         cause="Grupo Laravel com ${grp} workers e timeout de ${maxto}s"
@@ -775,7 +775,7 @@ monitor_correlation_register() {
             local top3; top3=$(printf '%s' "${D_EVID[$i]}" | awk -F';;' '{n=0; for(j=1;j<=NF;j++){if($j!=""){printf "%s%s",(n?" • ":""),$j; n++; if(n>=3)break}}}')
             local body="Confiança: ${conf} | Papel: ${D_ROLE[$i]}\nCausa provável: ${D_CAUSE[$i]}\nImpacto: ${D_IMPACT[$i]}\nEvidências: ${top3}"
             case "$key" in
-                diagnosis:laravel:*) body="Alvo: ${D_SUMMARY[$i]}\n${body}" ;;
+                diagnosis:laravel:*) body="${D_SUMMARY[$i]}\n${body}" ;;
             esac
             monitor_alert_register "$key" "${D_SEV[$i]}" "Diagnóstico: ${D_TITLE[$i]}" "$body"
             D_STATUS[$i]="alerting"

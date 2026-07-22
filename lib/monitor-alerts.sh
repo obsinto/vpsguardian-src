@@ -197,12 +197,24 @@ _alert_clean() {
     printf '%s' "$1" | tr -d '"\\' | tr '\n\r\t' '   '
 }
 
+# Valores podem conter o separador JSON `\n` usado pelo transporte do Discord.
+# Preserva somente essa sequência e remove outras barras/aspas, evitando tanto o
+# `minutosnPior` quanto escapes arbitrários no payload montado pelo canal legado.
+_alert_value_clean() {
+    local value="$1" marker=$'\034'
+    value="${value//\\n/$marker}"
+    value="${value//\\/}"
+    value=$(printf '%s' "$value" | tr -d '"' | tr '\n\r\t' '   ')
+    value="${value//$marker/\\n}"
+    printf '%s' "$value"
+}
+
 # Monta título/descrição conforme a ação e envia pelo adaptador.
 # Uso: monitor_alert_dispatch <decision> <sev> <srv> <cond> <value> <prevsev> <worst>
 # Echo: resultado do canal (SUCCESS|FAILED|DISABLED)
 monitor_alert_dispatch() {
     local decision="$1" sev="$2" srv="$3" cond="$4" value="$5" prevsev="$6" worst="$7"
-    srv=$(_alert_clean "$srv"); cond=$(_alert_clean "$cond"); value=$(_alert_clean "$value")
+    srv=$(_alert_clean "$srv"); cond=$(_alert_clean "$cond"); value=$(_alert_value_clean "$value")
 
     local title type description
     case "$decision" in
@@ -281,7 +293,8 @@ monitor_alert_batch_dispatch() {
     local max_items="${MONITOR_ALERT_BATCH_MAX_ITEMS:-10}"
     [[ "$max_items" =~ ^[0-9]+$ ]] || max_items=10
     [ "$max_items" -gt 0 ] || max_items=10
-    local shown=0 label sev cond value
+    local shown=0 label sev cond value entry
+    local description_budget=3850
     for ((i=0; i<total && shown<max_items; i++)); do
         case "${ALERT_BATCH_DECISION[$i]}" in
             OPEN) label="NOVA" ;;
@@ -293,12 +306,15 @@ monitor_alert_batch_dispatch() {
         sev="${ALERT_BATCH_SEV[$i]}"
         [ "${ALERT_BATCH_DECISION[$i]}" = "RECOVER" ] && sev="${ALERT_BATCH_WORST[$i]}"
         cond=$(_alert_clean "${ALERT_BATCH_COND[$i]}")
-        value=$(_alert_clean "${ALERT_BATCH_VALUE[$i]}")
-        # Evita ultrapassar o limite de 4096 caracteres do embed do Discord.
-        cond="${cond:0:180}"
-        value="${value:0:160}"
-        description="$description\n• [$label/$sev] $cond"
-        [ -n "$value" ] && description="$description\n  $value"
+        value=$(_alert_value_clean "${ALERT_BATCH_VALUE[$i]}")
+        # Blocos legíveis, preservando o contexto mais importante. O limite é
+        # aplicado ao embed inteiro, em vez de truncar cada diagnóstico cedo.
+        cond="${cond:0:220}"
+        value="${value:0:500}"
+        entry="\n\n• **$label · $sev**\n  $cond"
+        [ -n "$value" ] && entry="$entry\n  $value"
+        [ $(( ${#description} + ${#entry} )) -gt "$description_budget" ] && break
+        description="${description}${entry}"
         ((shown++))
     done
     [ "$total" -gt "$shown" ] && description="$description\n• … e $((total-shown)) outra(s) transição(ões) registradas no estado local"

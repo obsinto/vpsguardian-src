@@ -134,6 +134,49 @@ monitor_laravel_is_platform_container() {
     esac
 }
 
+monitor_laravel_findings_human() {
+    local findings="$1" item label="" out=""
+    local IFS=','
+    for item in $findings; do
+        case "$item" in
+            timeout_extremely_high) label="timeout extremamente alto" ;;
+            timeout_very_high) label="timeout muito alto" ;;
+            timeout_high) label="timeout alto" ;;
+            excessive_worker_count) label="quantidade excessiva de workers" ;;
+            container_without_memory_limit) label="container sem limite de memória" ;;
+            no_memory_limit_anywhere) label="worker e container sem limite de memória" ;;
+            missing_memory_option) label="opção de memória ausente" ;;
+            missing_max_time) label="tempo máximo ausente" ;;
+            shared_with_web) label="worker compartilhado com servidor web" ;;
+            queue_listen_in_production) label="queue:listen em produção" ;;
+            schedule_run_stuck) label="agendador possivelmente travado" ;;
+            zombie_process) label="processo zumbi" ;;
+            platform_managed) label="componente gerenciado da plataforma" ;;
+            *) label="${item//_/ }" ;;
+        esac
+        out="${out}${out:+; }${label}"
+    done
+    printf '%s' "$out"
+}
+
+monitor_laravel_worker_label() {
+    local origin="$1" project="$2" resource="$3" environment="$4"
+    local container_name="$5" container_id="$6" label=""
+    if [ "$origin" = "COOLIFY_PLATFORM" ]; then
+        label="Plataforma Coolify / ${container_name:-componente interno}"
+    elif [ -n "$project" ] || [ -n "$resource" ]; then
+        label="Projeto ${project:-Coolify}${resource:+ / $resource}"
+        [ -n "$environment" ] && label="${label} (${environment})"
+    elif [ -n "$container_name" ]; then
+        label="Container $container_name"
+    elif [ -n "$container_id" ]; then
+        label="Container ${container_id} (não mapeado)"
+    else
+        label="Host (origem não mapeada)"
+    fi
+    printf '%s' "$label"
+}
+
 ################################################################################
 # Regras de severidade (funções puras, testáveis)
 ################################################################################
@@ -501,9 +544,10 @@ collect_laravel_workers() {
         LARAVEL_WORKERS_DATA+=("$p_pid|${W_PPID[$i]}|${W_USER[$i]}|$p_stat|$p_elapsed|${W_CPU[$i]}|$cpu_norm|${W_MEM[$i]}|${W_RSS[$i]}|$p_type|$p_cid|$cname|$cuuid|$cctype|$ccname|$queues|$timeout_s|$timeout_source|$memory_mb|$memory_source|$max_time_s|$max_jobs|$tries|$sleep_s|$cpolicy|$cmem_limit|$ccpu_allowed|$isolation|$severity|$gcount|$findings|$cmd_sanitized|$origin|$cproject|$cenv")
 
         if [ "$severity" != "INFO" ]; then
-            local wdesc="${cname:-host}"
-            [ -n "$ccname" ] && wdesc="${ccname} / ${wdesc}"
-            LARAVEL_WORKERS_ALERTS+=("$severity|$wdesc|$p_type pid $p_pid: ${findings//,/, }${timeout_s:+ [timeout=${timeout_s}s]}${gcount:+ [${gcount} no grupo]}")
+            local wdesc human_findings
+            wdesc=$(monitor_laravel_worker_label "$origin" "$cproject" "$ccname" "$cenv" "$cname" "$p_cid")
+            human_findings=$(monitor_laravel_findings_human "$findings")
+            LARAVEL_WORKERS_ALERTS+=("$severity|$wdesc|$p_type PID $p_pid: ${human_findings}${timeout_s:+ [timeout=${timeout_s}s]}${gcount:+ [${gcount} no grupo]}")
         fi
     done
 
@@ -554,6 +598,7 @@ export -f monitor_laravel_worker_type monitor_laravel_parse_option
 export -f monitor_laravel_valid_int monitor_laravel_sanitize_cmd
 export -f monitor_laravel_cgroup_container_id monitor_laravel_is_web_process
 export -f monitor_laravel_is_platform_container
+export -f monitor_laravel_findings_human monitor_laravel_worker_label
 export -f monitor_laravel_timeout_severity monitor_laravel_count_severity
 export -f monitor_laravel_evaluate
 export -f collect_laravel_workers monitor_laravel_workers_json

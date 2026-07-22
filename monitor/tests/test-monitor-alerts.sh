@@ -187,6 +187,8 @@ assert_eq "1" "$ALERTS_RECOVERED" "incidente recuperado"
 assert_eq "1" "$(mock_calls)" "notificação de recuperação enviada"
 assert_true 'grep -q "Serviço normalizado" "$CALLS_FILE"' "mensagem de recuperação"
 assert_true 'grep -q "Medição atual: Disponível: 4096 MB (50.0%)" "$CALLS_FILE"' "recuperação inclui a medição normalizada"
+assert_true 'grep -Fq "minutos\\nPior severidade" "$CALLS_FILE"' "recuperação preserva a quebra de linha do Discord"
+assert_true '! grep -Fq "minutosnPior severidade" "$CALLS_FILE"' "recuperação não perde a barra do separador"
 assert_true '! grep -q "^host:memoria|" "$MONITOR_INCIDENT_STATE_FILE"' "incidente removido do estado"
 echo ""
 
@@ -506,11 +508,31 @@ monitor_alerts_process
 assert_eq "12" "$ALERTS_OPENED" "12 incidentes permanecem individualizados no estado"
 assert_eq "1" "$(mock_calls)" "um único webhook enviado para 12 transições"
 assert_true 'grep -q "Resumo do monitor" "$CALLS_FILE"' "mensagem usa título de resumo"
+assert_true 'grep -Fq "**NOVA · WARNING**" "$CALLS_FILE"' "cada transição usa um cabeçalho visual legível"
 assert_true 'grep -q "risco 1" "$CALLS_FILE"' "resumo inclui a medição de cada item exibido"
 assert_true 'grep -q "e 9 outra(s) transição(ões)" "$CALLS_FILE"' "detalhes excedentes aparecem como contagem"
 assert_eq "12" "$(grep -c "^container:c" "$MONITOR_INCIDENT_STATE_FILE")" "todos os incidentes foram persistidos"
 assert_true '! grep "^container:c" "$MONITOR_INCIDENT_STATE_FILE" | cut -d"|" -f6 | grep -q "^0$"' "SUCCESS marca todas as chaves como notificadas"
 MONITOR_ALERT_BATCH_MAX_ITEMS=10
+echo ""
+
+################################################################################
+echo "🔍 Teste 20: Resumo de normalizações preserva quebras de linha"
+################################################################################
+
+mock_reset
+ALERT_BATCH_DECISION=(RECOVER RECOVER)
+ALERT_BATCH_SEV=(RECOVERY RECOVERY)
+ALERT_BATCH_COND=("Worker coolify" "Diagnóstico Laravel")
+ALERT_BATCH_VALUE=("Duração: 130 minutos\nPior severidade: EMERGENCY" "Duração: 94 minutos\nPior severidade: EMERGENCY")
+ALERT_BATCH_PREV=("" "")
+ALERT_BATCH_WORST=(EMERGENCY EMERGENCY)
+monitor_alert_batch_dispatch agilytech >/dev/null
+assert_eq "1" "$(mock_calls)" "duas normalizações continuam em um webhook"
+assert_true 'grep -Fq "**NORMALIZOU · EMERGENCY**" "$CALLS_FILE"' "normalização destaca ação e pior severidade"
+assert_true 'grep -Fq "130 minutos\\nPior severidade: EMERGENCY" "$CALLS_FILE"' "resumo preserva a primeira quebra de linha"
+assert_true 'grep -Fq "94 minutos\\nPior severidade: EMERGENCY" "$CALLS_FILE"' "resumo preserva a segunda quebra de linha"
+assert_true '! grep -Fq "minutosnPior severidade" "$CALLS_FILE"' "resumo não produz minutosnPior"
 echo ""
 
 ################################################################################

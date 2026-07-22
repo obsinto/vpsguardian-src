@@ -138,6 +138,8 @@ assert_eq "" "$(monitor_laravel_worker_type 'php artisan horizon:status')" "hori
 assert_eq "" "$(monitor_laravel_worker_type 'php artisan migrate --force')" "migrate NÃO é worker"
 assert_eq "" "$(monitor_laravel_worker_type 'php artisan queue:restart')" "queue:restart NÃO é worker"
 assert_eq "" "$(monitor_laravel_worker_type 'php script.php horizon')" "php sem artisan NÃO é worker"
+monitor_laravel_is_platform_container coolify && echo "  ✓ container coolify reconhecido como plataforma" || { echo "  ✗ coolify não reconhecido"; ((ERROS++)); }
+monitor_laravel_is_platform_container automind && { echo "  ✗ aplicação confundida com plataforma"; ((ERROS++)); } || echo "  ✓ aplicação não confundida com plataforma"
 echo ""
 
 ################################################################################
@@ -220,6 +222,11 @@ assert_eq "INFO" "${r%%|*}" "worker bem configurado => INFO"
 r=$(monitor_laravel_evaluate QUEUE_WORK "" 1 100 512 "" "" SHARED_WITH_WEB S)
 assert_true 'echo "$r" | grep -q shared_with_web' "compartilhado com web sinalizado"
 assert_eq "WARNING" "${r%%|*}" "=> WARNING"
+
+r=$(monitor_laravel_evaluate HORIZON_WORKER 36000 1 100 0 128 0 SHARED_WITH_WEB S COOLIFY_PLATFORM)
+assert_eq "INFO" "${r%%|*}" "Horizon interno do Coolify não gera falso EMERGENCY"
+assert_true 'echo "$r" | grep -q platform_managed' "worker interno permanece inventariado como plataforma"
+assert_true '! echo "$r" | grep -q timeout_extremely_high' "timeout esperado do Coolify não vira finding perigoso"
 echo ""
 
 ################################################################################
@@ -344,6 +351,8 @@ echo "🔍 Teste 16: Associação Coolify preservada sem API (labels do M3)"
 
 assert_eq "uuid-bugroyale-app" "$(worker_field 5003 13)" "UUID Coolify herdado do inventário"
 assert_eq "bugroyale-worker" "$(worker_field 5003 15)" "nome Coolify herdado das labels"
+assert_eq "Bug Royale" "$(worker_field 5003 34)" "projeto Coolify herdado das labels"
+assert_eq "production" "$(worker_field 5003 35)" "ambiente Coolify herdado das labels"
 assert_eq "" "$(worker_field 4821 13)" "container sem labels => sem UUID (sem inventar)"
 echo ""
 

@@ -269,7 +269,11 @@ monitor_correlation_eval_laravel() {
     EVAL_RTYPE="laravel_worker" EVAL_RID="host" EVAL_CAUSE="" EVAL_IMPACT=""
     EVAL_EVIDENCE="" EVAL_COUNTER="" EVAL_RECS="" EVAL_RELATED=""
 
-    _num_gt laravel_total 0 || { EVAL_SCORE=0; return 0; }
+    if [ -n "${CORR[laravel_actionable_total]+x}" ]; then
+        _num_gt laravel_actionable_total 0 || { EVAL_SCORE=0; return 0; }
+    else
+        _num_gt laravel_total 0 || { EVAL_SCORE=0; return 0; }
+    fi
 
     local score=0 evid="" cev="" rel="host"
     local issues=0
@@ -339,8 +343,25 @@ monitor_correlation_eval_laravel() {
 
     EVAL_SCENARIO="$variation"
     EVAL_KEY="diagnosis:laravel:${rid}:$(echo "$variation" | tr 'A-Z' 'a-z')"
+    local target_project target_resource target_env target_name
+    target_project=$(_cget laravel_target_project "")
+    target_resource=$(_cget laravel_target_resource "")
+    target_env=$(_cget laravel_target_environment "")
+    target_name="${target_project:-${target_resource:-$(_cget laravel_worst_container_name "")}}"
+    if [ -n "$target_project" ] && [ -n "$target_resource" ] && [ "$target_resource" != "$target_project" ]; then
+        target_name="${target_project} / ${target_resource}"
+    fi
     EVAL_TITLE="Worker Laravel/Horizon descontrolado"
-    EVAL_SUMMARY="Worker Laravel/Horizon é o provável gatilho do incidente."
+    [ -n "$target_name" ] && EVAL_TITLE="${EVAL_TITLE} — ${target_name}"
+    local target_container target_pid target_worker target_queues context=""
+    target_container=$(_cget laravel_worst_container_name "host")
+    target_pid=$(_cget laravel_target_pid "n/d")
+    target_worker=$(_cget laravel_target_worker_type "worker")
+    target_queues=$(_cget laravel_target_queues "n/d")
+    [ -n "$target_project" ] && context="Projeto Coolify: ${target_project} | "
+    [ -n "$target_resource" ] && context="${context}Recurso: ${target_resource} | "
+    [ -n "$target_env" ] && context="${context}Ambiente: ${target_env} | "
+    EVAL_SUMMARY="${context}Container: ${target_container} (${rid}) | Worker: ${target_worker} PID ${target_pid} | Fila: ${target_queues} | Timeout: ${maxto}s"
     local cause="Configuração inadequada de worker"
     if [ "$grp" -gt 4 ] && [ "$maxto" -gt 900 ]; then
         cause="Grupo Laravel com ${grp} workers e timeout de ${maxto}s"
@@ -513,12 +534,19 @@ monitor_correlation_collect_signals() {
     # quantidade eram coletados independentemente e podiam pertencer a
     # aplicações diferentes, produzindo uma causa composta inexistente.
     local max_to=0 max_grp=0 restart_loop=false sched_stuck=false worst_c="host" worst_cn="" worst_rss=0
-    local target_no_limit=false target_shared=false best_score=-1 best_id=""
+    local target_no_limit=false target_shared=false best_score=-1 best_id="" actionable_total=0
+    local target_project="" target_resource="" target_env="" target_type=""
+    local target_queues="" target_pid="" target_worker_type=""
     local rec
     local -a F
     for rec in "${LARAVEL_WORKERS_DATA[@]}"; do
         IFS='|' read -r -a F <<< "$rec"
         local to="${F[16]}" grp="${F[29]}" cid="${F[10]}" cname="${F[11]}" rss="${F[8]}" find="${F[30]}"
+        local origin="${F[32]:-APPLICATION}"
+        if [ "$origin" = "COOLIFY_PLATFORM" ] || [ "${cname,,}" = "coolify" ]; then
+            continue
+        fi
+        ((actionable_total++))
         [[ "$to" =~ ^[0-9]+$ ]] || to=0
         [[ "$grp" =~ ^[0-9]+$ ]] || grp=1
 
@@ -537,12 +565,16 @@ monitor_correlation_collect_signals() {
             best_score="$candidate"; best_id="$candidate_id"
             max_to="$to"; max_grp="$grp"; worst_c="${cid:-host}"; worst_cn="$cname"
             target_no_limit="$has_no_limit"; target_shared="$has_shared"
+            target_resource="${F[14]}"; target_type="${F[13]}"; target_queues="${F[15]}"
+            target_project="${F[33]}"; target_env="${F[34]}"
+            target_pid="${F[0]}"; target_worker_type="${F[9]}"
         fi
         [[ "$rss" =~ ^[0-9]+$ ]] && [ "$((rss/1024))" -gt "$worst_rss" ] && worst_rss=$((rss/1024))
     done
     # restart loop de worker vem do inventário M3
     [ "$(_cnum containers_restart_loops 0)" -gt 0 ] && _num_gt laravel_total 0 && restart_loop=true
     CORR[laravel_max_timeout]="$max_to"
+    CORR[laravel_actionable_total]="$actionable_total"
     CORR[laravel_max_group_count]="$max_grp"
     CORR[laravel_target_no_mem_limit]="$target_no_limit"
     CORR[laravel_target_shared_with_web]="$target_shared"
@@ -550,6 +582,13 @@ monitor_correlation_collect_signals() {
     CORR[laravel_schedule_stuck]="$sched_stuck"
     CORR[laravel_worst_container]="$worst_c"
     [ -n "$worst_cn" ] && CORR[laravel_worst_container_name]="$worst_cn"
+    [ -n "$target_project" ] && CORR[laravel_target_project]="$target_project"
+    [ -n "$target_resource" ] && CORR[laravel_target_resource]="$target_resource"
+    [ -n "$target_env" ] && CORR[laravel_target_environment]="$target_env"
+    [ -n "$target_type" ] && CORR[laravel_target_coolify_type]="$target_type"
+    [ -n "$target_queues" ] && CORR[laravel_target_queues]="$target_queues"
+    [ -n "$target_pid" ] && CORR[laravel_target_pid]="$target_pid"
+    [ -n "$target_worker_type" ] && CORR[laravel_target_worker_type]="$target_worker_type"
     CORR[laravel_worst_rss_mb]="$worst_rss"
 }
 
@@ -735,6 +774,9 @@ monitor_correlation_register() {
             # Corpo compacto e sanitizado (sem segredos: derivado de métricas)
             local top3; top3=$(printf '%s' "${D_EVID[$i]}" | awk -F';;' '{n=0; for(j=1;j<=NF;j++){if($j!=""){printf "%s%s",(n?" • ":""),$j; n++; if(n>=3)break}}}')
             local body="Confiança: ${conf} | Papel: ${D_ROLE[$i]}\nCausa provável: ${D_CAUSE[$i]}\nImpacto: ${D_IMPACT[$i]}\nEvidências: ${top3}"
+            case "$key" in
+                diagnosis:laravel:*) body="Alvo: ${D_SUMMARY[$i]}\n${body}" ;;
+            esac
             monitor_alert_register "$key" "${D_SEV[$i]}" "Diagnóstico: ${D_TITLE[$i]}" "$body"
             D_STATUS[$i]="alerting"
             ((DIAG_ALERTED++))

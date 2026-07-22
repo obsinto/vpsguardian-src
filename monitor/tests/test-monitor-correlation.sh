@@ -190,6 +190,9 @@ echo "🔍 Teste 6: Fixture do incidente — encadeamento causal completo"
 
   assert_eq "ROOT_CAUSE" "$(diag_field diagnosis:laravel: ROLE)" "Laravel => ROOT_CAUSE"
   assert_eq "VERY_HIGH" "$(diag_field diagnosis:laravel: CONF)" "Laravel VERY_HIGH"
+  assert_true 'diag_field diagnosis:laravel: TITLE | grep -q "Bug Royale / bugroyale-worker"' "título identifica projeto e recurso Coolify"
+  assert_true 'diag_field diagnosis:laravel: SUMMARY | grep -q "automind (bbb222222222)"' "resumo identifica container e ID"
+  assert_true 'diag_field diagnosis:laravel: SUMMARY | grep -q "PID 4821"' "resumo identifica o PID do worker"
   assert_eq "AMPLIFIER" "$(diag_field diagnosis:memory: ROLE)" "memória (swap-death) => AMPLIFIER"
   assert_eq "SWAP_DEATH_LIKELY" "$(diag_field diagnosis:memory: SCENARIO)" "=> SWAP_DEATH_LIKELY"
   assert_eq "IMPACT" "$(diag_field diagnosis:docker: ROLE)" "Docker => IMPACT"
@@ -198,6 +201,23 @@ echo "🔍 Teste 6: Fixture do incidente — encadeamento causal completo"
   exit $ERROS
 )
 ERROS=$((ERROS + $?))
+echo ""
+
+################################################################################
+echo "🔍 Teste 6b: Horizon interno do Coolify não vira causa raiz"
+################################################################################
+LARAVEL_TOTAL=2
+LARAVEL_DANGEROUS_TIMEOUTS=2
+LARAVEL_CONTAINERS_NO_MEM_LIMIT=1
+LARAVEL_MAX_SEVERITY=EMERGENCY
+LARAVEL_WORKERS_DATA=(
+  "19504|19214|9999|S|1000|0.2|0.1|0.1|80000|HORIZON_MASTER|75113f347be5|coolify||||high,default|36000|COMMAND|128|COMMAND|0|400|1|3|always|0|4|SHARED_WITH_WEB|EMERGENCY|1|timeout_extremely_high,container_without_memory_limit,shared_with_web|php artisan horizon:supervisor|COOLIFY_PLATFORM"
+  "19505|19504|9999|S|100|2.0|0.5|0.4|80000|HORIZON_WORKER|75113f347be5|coolify||||high,default|36000|COMMAND|128|COMMAND|0|400|1|3|always|0|4|SHARED_WITH_WEB|EMERGENCY|1|timeout_extremely_high,container_without_memory_limit,shared_with_web|php artisan horizon:work|COOLIFY_PLATFORM"
+)
+monitor_correlation_collect_signals
+monitor_correlation_eval_laravel
+assert_eq "0" "$EVAL_SCORE" "Coolify interno excluído do diagnóstico de aplicação"
+assert_eq "0" "${CORR[laravel_actionable_total]}" "nenhum worker de projeto acionável"
 echo ""
 
 ################################################################################
@@ -406,7 +426,7 @@ cs
 LARAVEL_TOTAL=13; LARAVEL_HORIZON_WORKERS=1; LARAVEL_DANGEROUS_TIMEOUTS=1
 LARAVEL_SHARED_WITH_WEB=1; LARAVEL_CONTAINERS_NO_MEM_LIMIT=2; LARAVEL_MAX_SEVERITY=EMERGENCY
 LARAVEL_WORKERS_DATA=(
-  "100|1|www-data|S|7200|1|0|1|100000|HORIZON_WORKER|aaa111111111|coolify||||default|36000|COMMAND||UNKNOWN||||3|always|0|4|SHARED_WITH_WEB|EMERGENCY|1|timeout_extremely_high,container_without_memory_limit,shared_with_web|php artisan horizon:work"
+  "100|1|www-data|S|7200|1|0|1|100000|HORIZON_WORKER|aaa111111111|app-long-worker||||default|36000|COMMAND||UNKNOWN||||3|always|0|4|SHARED_WITH_WEB|EMERGENCY|1|timeout_extremely_high,container_without_memory_limit,shared_with_web|php artisan horizon:work"
   "200|1|www-data|S|7200|1|0|1|100000|QUEUE_WORK|bbb222222222|app-workers||||default||CONFIG_UNKNOWN||UNKNOWN||||3|always|0|4|ISOLATED|EMERGENCY|12|excessive_worker_count,container_without_memory_limit|php artisan queue:work"
 )
 monitor_correlation_collect_signals

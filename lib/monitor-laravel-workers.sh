@@ -31,7 +31,8 @@
 #  4 elapsed_s    12 coolify_uuid    20 max_time_s         28 severity
 #  5 cpu_raw      13 coolify_type    21 max_jobs           29 group_count
 #  6 cpu_norm     14 coolify_name    22 tries              30 findings (csv)
-#  7 mem_pct      15 queues          23 sleep_s            31 cmd_sanitized (último)
+#  7 mem_pct      15 queues          23 sleep_s            31 cmd_sanitized
+# 32 origin      33 coolify_project  34 coolify_environment
 
 ################################################################################
 # Funções puras de parsing (testáveis, sem eval)
@@ -122,6 +123,17 @@ monitor_laravel_is_web_process() {
     return 1
 }
 
+# Componentes internos conhecidos da plataforma não devem ser avaliados com as
+# mesmas heurísticas de uma aplicação do usuário. O Coolify usa Horizon com
+# timeout longo e processo web no mesmo container por desenho.
+monitor_laravel_is_platform_container() {
+    local name="${1,,}"
+    case "$name" in
+        coolify|coolify-realtime|coolify-sentinel|coolify-db|coolify-redis) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 ################################################################################
 # Regras de severidade (funções puras, testáveis)
 ################################################################################
@@ -158,12 +170,13 @@ monitor_laravel_count_severity() {
 # Avalia um worker e devolve "severidade|finding1,finding2,..."
 # Uso: monitor_laravel_evaluate <type> <timeout_s> <group_count> <elapsed_s> \
 #                               <cont_mem_limit_mb> <memory_opt> <max_time_opt> \
-#                               <isolation> <state>
+#                               <isolation> <state> [origin]
 # cont_mem_limit_mb: ""=container desconhecido | 0=sem limite | N=limite em MB
 monitor_laravel_evaluate() {
     local type="$1" timeout_s="$2" group_count="$3" elapsed_s="$4"
     local cont_mem_limit="$5" memory_opt="$6" max_time_opt="$7"
     local isolation="$8" state="$9"
+    local origin="${10:-APPLICATION}"
 
     local sched_warn="${MONITOR_LARAVEL_SCHEDULE_RUN_WARNING:-300}"
     local sched_crit="${MONITOR_LARAVEL_SCHEDULE_RUN_CRITICAL:-900}"
@@ -180,8 +193,15 @@ monitor_laravel_evaluate() {
         sev=$(monitor_severity_max "$sev" "$2")
     }
 
+    # Timeout longo, ausência de hard-limit e compartilhamento com web são
+    # esperados no container principal do Coolify. Continuamos inventariando os
+    # processos, mas não os tratamos como aplicação Laravel descontrolada.
+    if [ "$origin" = "COOLIFY_PLATFORM" ]; then
+        _add_finding "platform_managed" "INFO"
+    fi
+
     # Timeout perigoso (apenas quando informado na linha de comando)
-    if [ -n "$timeout_s" ]; then
+    if [ -n "$timeout_s" ] && [ "$origin" != "COOLIFY_PLATFORM" ]; then
         case "$(monitor_laravel_timeout_severity "$timeout_s")" in
             EMERGENCY) _add_finding "timeout_extremely_high" "EMERGENCY" ;;
             CRITICAL)  _add_finding "timeout_very_high" "CRITICAL" ;;
@@ -209,12 +229,13 @@ monitor_laravel_evaluate() {
     fi
 
     # Container sem limite de memória (dados do M3)
-    if [ "$cont_mem_limit" = "0" ]; then
+    if [ "$cont_mem_limit" = "0" ] && [ "$origin" != "COOLIFY_PLATFORM" ]; then
         _add_finding "container_without_memory_limit" "WARNING"
     fi
 
     # --memory ausente em workers de fila (pode estar em config => não é erro absoluto)
-    if [ "$type" = "QUEUE_WORK" ] || [ "$type" = "HORIZON_WORKER" ]; then
+    if { [ "$type" = "QUEUE_WORK" ] || [ "$type" = "HORIZON_WORKER" ]; } && \
+       [ "$origin" != "COOLIFY_PLATFORM" ]; then
         if [ -z "$memory_opt" ]; then
             if [ "$cont_mem_limit" = "0" ] && [ "$cfg_missing_mem" = "true" ]; then
                 _add_finding "no_memory_limit_anywhere" "WARNING"
@@ -225,7 +246,8 @@ monitor_laravel_evaluate() {
     fi
 
     # --max-time ausente: INFO isolado; sobe se combinado com outros sinais
-    if [ "$type" = "QUEUE_WORK" ] && [ -z "$max_time_opt" ]; then
+    if [ "$type" = "QUEUE_WORK" ] && [ -z "$max_time_opt" ] && \
+       [ "$origin" != "COOLIFY_PLATFORM" ]; then
         local maxtime_sev="INFO"
         if [ "$cfg_missing_maxtime" = "true" ]; then
             if [ "$cont_mem_limit" = "0" ] || \
@@ -238,7 +260,8 @@ monitor_laravel_evaluate() {
     fi
 
     # Worker no mesmo container do servidor web
-    if [ "$isolation" = "SHARED_WITH_WEB" ] && [ "$cfg_shared" = "true" ]; then
+    if [ "$isolation" = "SHARED_WITH_WEB" ] && [ "$cfg_shared" = "true" ] && \
+       [ "$origin" != "COOLIFY_PLATFORM" ]; then
         _add_finding "shared_with_web" "WARNING"
     fi
 
@@ -292,7 +315,7 @@ collect_laravel_workers() {
     LARAVEL_STATUS="ok"
 
     # ---- Mapa de containers do M3 (reuso integral, custo zero) ----
-    declare -A C_NAME C_POLICY C_MEM_LIMIT C_CPU_ALLOWED C_UUID C_TYPE C_CNAME
+    declare -A C_NAME C_POLICY C_MEM_LIMIT C_CPU_ALLOWED C_UUID C_TYPE C_CNAME C_PROJECT C_ENV
     local rec
     for rec in "${CONTAINERS_DATA[@]}"; do
         local -a CF
@@ -305,6 +328,8 @@ collect_laravel_workers() {
         C_UUID["$key"]="${CF[24]}"
         C_TYPE["$key"]="${CF[25]}"
         C_CNAME["$key"]="${CF[26]}"
+        C_PROJECT["$key"]="${CF[27]}"
+        C_ENV["$key"]="${CF[28]}"
     done
 
     # ---- Passo 1: identificar candidatos (workers) e processos web ----
@@ -401,7 +426,7 @@ collect_laravel_workers() {
         [ -n "$timeout_s" ] && timeout_source="COMMAND"
 
         # Dados do container vindos do M3
-        local cname="" cpolicy="" cmem_limit="" ccpu_allowed="" cuuid="" cctype="" ccname=""
+        local cname="" cpolicy="" cmem_limit="" ccpu_allowed="" cuuid="" cctype="" ccname="" cproject="" cenv=""
         if [ -n "$p_cid" ]; then
             cname="${C_NAME[$p_cid]:-}"
             cpolicy="${C_POLICY[$p_cid]:-}"
@@ -410,6 +435,8 @@ collect_laravel_workers() {
             cuuid="${C_UUID[$p_cid]:-}"
             cctype="${C_TYPE[$p_cid]:-}"
             ccname="${C_CNAME[$p_cid]:-}"
+            cproject="${C_PROJECT[$p_cid]:-}"
+            cenv="${C_ENV[$p_cid]:-}"
         fi
 
         local memory_source="UNKNOWN"
@@ -429,10 +456,13 @@ collect_laravel_workers() {
             fi
         fi
 
+        local origin="APPLICATION"
+        monitor_laravel_is_platform_container "$cname" && origin="COOLIFY_PLATFORM"
+
         # Severidade e findings (regras puras)
         local eval_result severity findings
         eval_result=$(monitor_laravel_evaluate "$p_type" "$timeout_s" "$gcount" \
-            "$p_elapsed" "$cmem_limit" "$memory_mb" "$max_time_s" "$isolation" "$p_stat")
+            "$p_elapsed" "$cmem_limit" "$memory_mb" "$max_time_s" "$isolation" "$p_stat" "$origin")
         severity="${eval_result%%|*}"
         findings="${eval_result#*|}"
 
@@ -460,14 +490,15 @@ collect_laravel_workers() {
             CRITICAL)  ((LARAVEL_CRITICAL++)) ;;
             EMERGENCY) ((LARAVEL_EMERGENCY++)) ;;
         esac
-        if [ -n "$timeout_s" ] && \
+        if [ "$origin" != "COOLIFY_PLATFORM" ] && [ -n "$timeout_s" ] && \
             [ "$(monitor_laravel_timeout_severity "$timeout_s")" != "INFO" ]; then
             ((LARAVEL_DANGEROUS_TIMEOUTS++))
         fi
-        [ "$cmem_limit" = "0" ] && [ -n "$p_cid" ] && NO_LIMIT_CONTAINERS["$p_cid"]=1
+        [ "$origin" != "COOLIFY_PLATFORM" ] && [ "$cmem_limit" = "0" ] && \
+            [ -n "$p_cid" ] && NO_LIMIT_CONTAINERS["$p_cid"]=1
         LARAVEL_MAX_SEVERITY=$(monitor_severity_max "$LARAVEL_MAX_SEVERITY" "$severity")
 
-        LARAVEL_WORKERS_DATA+=("$p_pid|${W_PPID[$i]}|${W_USER[$i]}|$p_stat|$p_elapsed|${W_CPU[$i]}|$cpu_norm|${W_MEM[$i]}|${W_RSS[$i]}|$p_type|$p_cid|$cname|$cuuid|$cctype|$ccname|$queues|$timeout_s|$timeout_source|$memory_mb|$memory_source|$max_time_s|$max_jobs|$tries|$sleep_s|$cpolicy|$cmem_limit|$ccpu_allowed|$isolation|$severity|$gcount|$findings|$cmd_sanitized")
+        LARAVEL_WORKERS_DATA+=("$p_pid|${W_PPID[$i]}|${W_USER[$i]}|$p_stat|$p_elapsed|${W_CPU[$i]}|$cpu_norm|${W_MEM[$i]}|${W_RSS[$i]}|$p_type|$p_cid|$cname|$cuuid|$cctype|$ccname|$queues|$timeout_s|$timeout_source|$memory_mb|$memory_source|$max_time_s|$max_jobs|$tries|$sleep_s|$cpolicy|$cmem_limit|$ccpu_allowed|$isolation|$severity|$gcount|$findings|$cmd_sanitized|$origin|$cproject|$cenv")
 
         if [ "$severity" != "INFO" ]; then
             local wdesc="${cname:-host}"
@@ -510,7 +541,7 @@ monitor_laravel_workers_json() {
         fi
 
         [ -n "$out" ] && out+=","
-        out+="{\"pid\":$(_ljv "${F[0]}"),\"ppid\":$(_ljv "${F[1]}"),\"user\":$(_ljv "${F[2]}"),\"process_state\":$(_ljv "${F[3]}"),\"elapsed_seconds\":$(_ljv "${F[4]}"),\"cpu_percent_raw\":$(_ljv "${F[5]}"),\"cpu_percent_normalized\":$(_ljv "${F[6]}"),\"memory_percent\":$(_ljv "${F[7]}"),\"rss_kb\":$(_ljv "${F[8]}"),\"worker_type\":$(_ljv "${F[9]}"),\"container_id\":$(_ljv "${F[10]}"),\"container_name\":$(_ljv "${F[11]}"),\"coolify_uuid\":$(_ljv "${F[12]}"),\"coolify_type\":$(_ljv "${F[13]}"),\"coolify_name\":\"$(monitor_json_escape "${F[14]}")\",\"queue_names\":$(_ljv "${F[15]}"),\"timeout_seconds\":$(_ljv "${F[16]}"),\"timeout_source\":$(_ljv "${F[17]}"),\"memory_option_mb\":$(_ljv "${F[18]}"),\"memory_limit_source\":$(_ljv "${F[19]}"),\"max_time_seconds\":$(_ljv "${F[20]}"),\"max_jobs\":$(_ljv "${F[21]}"),\"tries\":$(_ljv "${F[22]}"),\"sleep_seconds\":$(_ljv "${F[23]}"),\"restart_policy\":$(_ljv "${F[24]}"),\"container_memory_limit_mb\":$(_ljv "${F[25]}"),\"container_cpu_limit\":$(_ljv "${F[26]}"),\"worker_isolation\":$(_ljv "${F[27]}"),\"severity\":$(_ljv "${F[28]}"),\"group_count\":$(_ljv "${F[29]}"),\"findings\":[$findings_json],\"command_sanitized\":\"$(monitor_json_escape "${F[31]}")\"}"
+        out+="{\"pid\":$(_ljv "${F[0]}"),\"ppid\":$(_ljv "${F[1]}"),\"user\":$(_ljv "${F[2]}"),\"process_state\":$(_ljv "${F[3]}"),\"elapsed_seconds\":$(_ljv "${F[4]}"),\"cpu_percent_raw\":$(_ljv "${F[5]}"),\"cpu_percent_normalized\":$(_ljv "${F[6]}"),\"memory_percent\":$(_ljv "${F[7]}"),\"rss_kb\":$(_ljv "${F[8]}"),\"worker_type\":$(_ljv "${F[9]}"),\"container_id\":$(_ljv "${F[10]}"),\"container_name\":$(_ljv "${F[11]}"),\"coolify_uuid\":$(_ljv "${F[12]}"),\"coolify_type\":$(_ljv "${F[13]}"),\"coolify_name\":\"$(monitor_json_escape "${F[14]}")\",\"coolify_project\":\"$(monitor_json_escape "${F[33]}")\",\"coolify_environment\":\"$(monitor_json_escape "${F[34]}")\",\"queue_names\":$(_ljv "${F[15]}"),\"timeout_seconds\":$(_ljv "${F[16]}"),\"timeout_source\":$(_ljv "${F[17]}"),\"memory_option_mb\":$(_ljv "${F[18]}"),\"memory_limit_source\":$(_ljv "${F[19]}"),\"max_time_seconds\":$(_ljv "${F[20]}"),\"max_jobs\":$(_ljv "${F[21]}"),\"tries\":$(_ljv "${F[22]}"),\"sleep_seconds\":$(_ljv "${F[23]}"),\"restart_policy\":$(_ljv "${F[24]}"),\"container_memory_limit_mb\":$(_ljv "${F[25]}"),\"container_cpu_limit\":$(_ljv "${F[26]}"),\"worker_isolation\":$(_ljv "${F[27]}"),\"severity\":$(_ljv "${F[28]}"),\"group_count\":$(_ljv "${F[29]}"),\"findings\":[$findings_json],\"command_sanitized\":\"$(monitor_json_escape "${F[31]}")\",\"origin\":$(_ljv "${F[32]:-APPLICATION}")}"
     done
     printf '%s' "$out"
 }
@@ -522,6 +553,7 @@ monitor_laravel_workers_json() {
 export -f monitor_laravel_worker_type monitor_laravel_parse_option
 export -f monitor_laravel_valid_int monitor_laravel_sanitize_cmd
 export -f monitor_laravel_cgroup_container_id monitor_laravel_is_web_process
+export -f monitor_laravel_is_platform_container
 export -f monitor_laravel_timeout_severity monitor_laravel_count_severity
 export -f monitor_laravel_evaluate
 export -f collect_laravel_workers monitor_laravel_workers_json

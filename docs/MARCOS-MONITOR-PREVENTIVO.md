@@ -208,6 +208,8 @@ Custo adicionado: **1 chamada `ps`** + leituras de `/proc` apenas para PIDs cand
       REMINDER, RECOVER, SUPPRESS, NONE — função `monitor_incident_decide` pura
 - [x] Exigência de N verificações consecutivas antes de abrir
       (`MONITOR_ALERT_CONSECUTIVE`, anti-flapping)
+- [x] Histerese para load e CPU steal e confirmação de N coletas saudáveis antes
+      de recuperar (`MONITOR_ALERT_RECOVERY_CONSECUTIVE`, padrão 3)
 - [x] Anti-spam: cooldown (`MONITOR_ALERT_COOLDOWN_MINUTES`, padrão 15), dedup por
       severidade (só reenvia ao escalar), contador de ocorrências, lembrete opcional
       após cooldown; `last_notified` só avança em envio com SUCESSO

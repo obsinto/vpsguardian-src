@@ -51,6 +51,8 @@
 #MONITOR_LOAD_RATIO_WARNING=1.5
 #MONITOR_LOAD_RATIO_CRITICAL=3.0
 #MONITOR_LOAD_RATIO_EMERGENCY=5.0
+# Incidente aberto só normaliza abaixo deste valor (histerese)
+#MONITOR_LOAD_RATIO_RECOVERY=1.2
 
 # ========== CPU ==========
 # Utilização total de CPU (%)
@@ -63,6 +65,8 @@
 #MONITOR_STEAL_WARNING_PERCENT=10
 #MONITOR_STEAL_CRITICAL_PERCENT=20
 #MONITOR_STEAL_EMERGENCY_PERCENT=30
+# Incidente aberto só normaliza abaixo deste percentual (histerese)
+#MONITOR_STEAL_RECOVERY_PERCENT=8
 
 # I/O wait (%)
 #MONITOR_IOWAIT_WARNING_PERCENT=15
@@ -206,6 +210,10 @@
 # Verificações consecutivas com a condição presente antes de abrir (anti-flapping).
 # EMERGENCY continua imediato; este valor se aplica a WARNING/CRITICAL.
 #MONITOR_ALERT_CONSECUTIVE=2
+
+# Verificações saudáveis consecutivas antes de normalizar uma métrica
+# observada. Condições que desapareceram do inventário fecham imediatamente.
+#MONITOR_ALERT_RECOVERY_CONSECUTIVE=3
 
 # Máximo de detalhes individuais na mensagem resumida de cada ciclo.
 # Todos os incidentes continuam persistidos; o excedente aparece como contagem.

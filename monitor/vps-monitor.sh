@@ -165,7 +165,8 @@ CLI_NO_HISTORY=false
 
 # Contadores do motor de alertas (default seguro se o motor não rodar)
 ALERTS_OPENED=0 ALERTS_ESCALATED=0 ALERTS_REMINDED=0 ALERTS_RECOVERED=0
-ALERTS_SUPPRESSED=0 ALERTS_FAILED=0 ALERTS_PENDING=0 ALERTS_CHANNEL="none"
+ALERTS_SUPPRESSED=0 ALERTS_FAILED=0 ALERTS_PENDING=0 ALERTS_RECOVERY_PENDING=0
+ALERTS_CHANNEL="none"
 ALERTS_DRY_RUN=false ALERTS_STATE_PERSISTED=false ALERTS_NOTIFICATIONS_SENT=false
 ALERTS_DRYRUN_REPORT=()
 
@@ -356,16 +357,19 @@ build_incidents() {
     monitor_alerts_reset_current
 
     # Host
-    monitor_alert_register "host:load"    "$LOAD_SEVERITY"      "Load average alto" \
-        "Load 1min: ${LOAD_1} (ratio ${LOAD_RATIO}, vCPUs ${HOST_VCPUS})"
+    monitor_alert_register_high "host:load" "$LOAD_SEVERITY" "Load average alto" \
+        "Load 1min: ${LOAD_1} (ratio ${LOAD_RATIO}, vCPUs ${HOST_VCPUS})" \
+        "$LOAD_RATIO" "$MONITOR_LOAD_RATIO_RECOVERY"
     monitor_alert_register "host:memoria" "$MEM_SEVERITY"       "Memória disponível baixa" \
         "Disponível: ${MEM_AVAILABLE_MB} MB (${MEM_AVAILABLE_PERCENT}%)"
     monitor_alert_register "host:swap"    "$SWAP_SEVERITY"      "Uso de swap elevado" \
         "Swap: ${SWAP_USED_PERCENT}% (${SWAP_USED_MB} MB, crescimento ${SWAP_GROWTH_MB} MB)"
     monitor_alert_register "host:cpu"     "$CPU_SEVERITY"       "CPU saturada" \
         "CPU: ${CPU_USAGE_PERCENT}%"
-    monitor_alert_register "host:steal"   "$CPU_STEAL_SEVERITY" "CPU steal alto (possível throttling do provedor)" \
-        "Steal: ${CPU_STEAL_PERCENT}%"
+    monitor_alert_register_high "host:steal" "$CPU_STEAL_SEVERITY" \
+        "CPU steal alto (possível throttling do provedor)" \
+        "Steal: ${CPU_STEAL_PERCENT}%" "$CPU_STEAL_PERCENT" \
+        "$MONITOR_STEAL_RECOVERY_PERCENT"
     monitor_alert_register "host:iowait"  "$CPU_IOWAIT_SEVERITY" "I/O wait elevado" \
         "I/O wait: ${CPU_IOWAIT_PERCENT}%"
     monitor_alert_register "host:cgroup"  "$CGROUP_SEVERITY"    "Throttling de cgroup detectado" \
@@ -606,6 +610,7 @@ build_json() {
     "recovered": $(jv "$ALERTS_RECOVERED"),
     "suppressed": $(jv "$ALERTS_SUPPRESSED"),
     "pending": $(jv "$ALERTS_PENDING"),
+    "recovery_pending": $(jv "$ALERTS_RECOVERY_PENDING"),
     "failed": $(jv "$ALERTS_FAILED"),
     "last_channel_result": $(jv "$ALERTS_CHANNEL")
   },
@@ -724,6 +729,8 @@ alerts.escalated=$ALERTS_ESCALATED
 alerts.reminded=$ALERTS_REMINDED
 alerts.recovered=$ALERTS_RECOVERED
 alerts.suppressed=$ALERTS_SUPPRESSED
+alerts.pending=$ALERTS_PENDING
+alerts.recovery_pending=$ALERTS_RECOVERY_PENDING
 alerts.failed=$ALERTS_FAILED
 alerts.channel=$ALERTS_CHANNEL
 diagnostics.total=${DIAG_N:-0}
@@ -1218,7 +1225,8 @@ cmd_config_check() {
     for name in MONITOR_COMMAND_TIMEOUT MONITOR_MEM_AVAILABLE_WARNING_MB \
                 MONITOR_MEM_AVAILABLE_CRITICAL_MB MONITOR_SWAP_WARNING_PERCENT \
                 MONITOR_SWAP_CRITICAL_PERCENT MONITOR_LOAD_RATIO_WARNING \
-                MONITOR_LOAD_RATIO_CRITICAL MONITOR_CPU_WARNING_PERCENT \
+                MONITOR_LOAD_RATIO_CRITICAL MONITOR_LOAD_RATIO_RECOVERY \
+                MONITOR_STEAL_RECOVERY_PERCENT MONITOR_CPU_WARNING_PERCENT \
                 MONITOR_CPU_CRITICAL_PERCENT MONITOR_DISK_WARNING_PERCENT \
                 MONITOR_DISK_CRITICAL_PERCENT; do
         value="${!name:-}"
@@ -1227,6 +1235,25 @@ cmd_config_check() {
             errors=$((errors + 1))
         fi
     done
+
+    for name in MONITOR_ALERT_CONSECUTIVE MONITOR_ALERT_RECOVERY_CONSECUTIVE; do
+        value="${!name:-}"
+        if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
+            echo "  ERRO: $name deve ser um inteiro maior que zero (valor: ${value:-vazio})"
+            errors=$((errors + 1))
+        fi
+    done
+
+    if ! awk -v r="$MONITOR_LOAD_RATIO_RECOVERY" -v w="$MONITOR_LOAD_RATIO_WARNING" \
+        'BEGIN { exit !(r < w) }'; then
+        echo "  ERRO: MONITOR_LOAD_RATIO_RECOVERY deve ser menor que MONITOR_LOAD_RATIO_WARNING"
+        errors=$((errors + 1))
+    fi
+    if ! awk -v r="$MONITOR_STEAL_RECOVERY_PERCENT" -v w="$MONITOR_STEAL_WARNING_PERCENT" \
+        'BEGIN { exit !(r < w) }'; then
+        echo "  ERRO: MONITOR_STEAL_RECOVERY_PERCENT deve ser menor que MONITOR_STEAL_WARNING_PERCENT"
+        errors=$((errors + 1))
+    fi
 
     for name in MONITOR_ALERTS_ENABLED MONITOR_ALERT_DISCORD_ENABLED \
                 MONITOR_ALERT_REMINDERS_ENABLED MONITOR_DOCKER_REQUIRED \

@@ -104,6 +104,8 @@ monitor_load_config() {
     : "${MONITOR_LOAD_RATIO_WARNING:=1.5}"
     : "${MONITOR_LOAD_RATIO_CRITICAL:=3.0}"
     : "${MONITOR_LOAD_RATIO_EMERGENCY:=5.0}"
+    # Histerese: incidente aberto só começa a recuperar abaixo deste valor.
+    : "${MONITOR_LOAD_RATIO_RECOVERY:=1.2}"
 
     # CPU total (%)
     : "${MONITOR_CPU_WARNING_PERCENT:=85}"
@@ -113,6 +115,7 @@ monitor_load_config() {
     : "${MONITOR_STEAL_WARNING_PERCENT:=10}"
     : "${MONITOR_STEAL_CRITICAL_PERCENT:=20}"
     : "${MONITOR_STEAL_EMERGENCY_PERCENT:=30}"
+    : "${MONITOR_STEAL_RECOVERY_PERCENT:=8}"
 
     # I/O wait (%)
     : "${MONITOR_IOWAIT_WARNING_PERCENT:=15}"
@@ -133,6 +136,7 @@ monitor_load_config() {
     : "${MONITOR_ALERT_REMINDERS_ENABLED:=false}"
     : "${MONITOR_ALERT_MIN_SEVERITY:=WARNING}"
     : "${MONITOR_ALERT_CONSECUTIVE:=2}"
+    : "${MONITOR_ALERT_RECOVERY_CONSECUTIVE:=3}"
     : "${MONITOR_ALERT_BATCH_MAX_ITEMS:=10}"
     : "${MONITOR_ALERT_HTTP_TIMEOUT:=10}"
     : "${MONITOR_ALERT_DRY_RUN:=false}"

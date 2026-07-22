@@ -101,9 +101,12 @@ rotinas existentes de backup e manutenção.
 Em operação normal, cada incidente mantém estado e cooldown próprios, mas todas
 as transições de uma coleta são enviadas em uma única mensagem resumida. Por
 padrão uma condição WARNING/CRITICAL precisa aparecer em duas coletas consecutivas
-antes de abrir; EMERGENCY continua imediato;
-ajuste `MONITOR_ALERT_CONSECUTIVE` e `MONITOR_ALERT_BATCH_MAX_ITEMS` somente se
-necessário.
+antes de abrir; EMERGENCY continua imediato. Uma métrica observada precisa
+permanecer saudável por três coletas antes de normalizar. Load e CPU steal também
+usam histerese: abrem respectivamente em ratio 1,5 e 10%, mas só iniciam a
+recuperação abaixo de 1,2 e 8%. Ajuste `MONITOR_ALERT_CONSECUTIVE`,
+`MONITOR_ALERT_RECOVERY_CONSECUTIVE`, os limites `*_RECOVERY` e
+`MONITOR_ALERT_BATCH_MAX_ITEMS` somente se necessário.
 
 ## Executar e gerar relatórios
 

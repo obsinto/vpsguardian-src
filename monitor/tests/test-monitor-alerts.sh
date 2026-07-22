@@ -65,6 +65,7 @@ reset_all() {
     MONITOR_ALERTS_ENABLED=true
     MONITOR_ALERT_MIN_SEVERITY=WARNING
     MONITOR_ALERT_CONSECUTIVE=1
+    MONITOR_ALERT_RECOVERY_CONSECUTIVE=1
     MONITOR_ALERT_REMINDERS_ENABLED=false
     MOCK_NOTIFY_RC=0
 }
@@ -263,6 +264,51 @@ monitor_alert_register "host:emergency" EMERGENCY "Emergência real" "agora"
 monitor_alerts_process
 assert_eq "1" "$ALERTS_OPENED" "EMERGENCY abre imediatamente apesar do anti-flapping"
 assert_eq "1" "$(mock_calls)" "EMERGENCY imediata envia uma notificação"
+echo ""
+
+################################################################################
+echo "🔍 Teste 10b: Histerese e confirmação consecutiva da recuperação"
+################################################################################
+
+reset_all
+MONITOR_ALERT_RECOVERY_CONSECUTIVE=3
+begin_cycle
+monitor_alert_register_high "host:steal" WARNING "CPU steal alto" "Steal: 10.2%" 10.2 8
+monitor_alerts_process
+assert_eq "1" "$ALERTS_OPENED" "abre normalmente no limiar de alerta"
+
+begin_cycle
+monitor_alert_register_high "host:steal" INFO "CPU steal alto" "Steal: 9.8%" 9.8 8
+monitor_alerts_process
+assert_eq "0" "$ALERTS_RECOVERED" "zona de histerese mantém incidente aberto"
+assert_eq "open" "$(state_field 'host:steal' 2)" "estado continua aberto na zona de histerese"
+assert_eq "0" "$(state_field 'host:steal' 10)" "zona de histerese não avança confirmação"
+
+for sample in 7.9 7.5; do
+    begin_cycle
+    monitor_alert_register_high "host:steal" INFO "CPU steal alto" "Steal: ${sample}%" "$sample" 8
+    monitor_alerts_process
+done
+assert_eq "0" "$ALERTS_RECOVERED" "duas coletas saudáveis ainda não recuperam"
+assert_eq "2" "$(state_field 'host:steal' 10)" "streak de recuperação persistido"
+
+begin_cycle
+monitor_alert_register_high "host:steal" INFO "CPU steal alto" "Steal: 7.2%" 7.2 8
+monitor_alerts_process
+assert_eq "1" "$ALERTS_RECOVERED" "terceira coleta saudável normaliza"
+assert_eq "2" "$(mock_calls)" "somente abertura e recuperação foram notificadas"
+assert_true '! grep -q "^host:steal|" "$MONITOR_INCIDENT_STATE_FILE"' "incidente removido após recuperação"
+
+reset_all
+MONITOR_ALERT_RECOVERY_CONSECUTIVE=3
+begin_cycle
+monitor_alert_register_high "host:load" WARNING "Load alto" "ratio 1.6" 1.6 1.2
+monitor_alerts_process
+begin_cycle
+monitor_alert_register_high "host:load" UNKNOWN "Load alto" "ratio n/d" "" 1.2
+monitor_alerts_process
+assert_eq "0" "$ALERTS_RECOVERED" "leitura UNKNOWN não gera falsa recuperação"
+assert_eq "open" "$(state_field 'host:load' 2)" "incidente permanece aberto em UNKNOWN"
 echo ""
 
 ################################################################################

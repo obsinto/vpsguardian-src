@@ -22,6 +22,10 @@ systemctl list-timers vpsguardian-monitor.timer
 journalctl -u vpsguardian-monitor.service --since "10 min ago"
 ```
 
+O intervalo de um minuto começa quando a coleta anterior termina. Códigos de
+saída `1` a `4` representam severidade do diagnóstico e são aceitos pela unit;
+falhas operacionais continuam aparecendo como falha no systemd.
+
 Os alertas são enviados pelo webhook Discord já configurado em
 `config/backup-destinations.conf` (variável `WEBHOOK_URL`). Ajuste apenas os
 thresholds e flags em `config/monitor.conf`; não duplique o webhook.

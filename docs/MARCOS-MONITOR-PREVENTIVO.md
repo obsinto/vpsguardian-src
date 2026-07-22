@@ -211,6 +211,9 @@ Custo adicionado: **1 chamada `ps`** + leituras de `/proc` apenas para PIDs cand
 - [x] Anti-spam: cooldown (`MONITOR_ALERT_COOLDOWN_MINUTES`, padrão 15), dedup por
       severidade (só reenvia ao escalar), contador de ocorrências, lembrete opcional
       após cooldown; `last_notified` só avança em envio com SUCESSO
+- [x] Agrupamento de todas as transições do ciclo em um único webhook, com limite
+      configurável de detalhes (`MONITOR_ALERT_BATCH_MAX_ITEMS`) sem perder o
+      estado individual de cada incidente
 - [x] Alerta de `RECOVERY` quando a condição some (com duração e pior severidade);
       falha de envio **não** gera falsa recuperação (mantém aberto e retenta)
 - [x] **Reutilização integral do Discord existente**: nova função
@@ -230,7 +233,7 @@ Custo adicionado: **1 chamada `ps`** + leituras de `/proc` apenas para PIDs cand
       + `README.md` de instalação (roda no host, fora do Docker)
 - [x] Saídas JSON (`alerts{}`) e KV (`alerts.*`) com contadores; webhook nunca exposto
 
-**Testes:** `monitor/tests/test-monitor-alerts.sh` — 18 grupos, 94 asserts, com
+**Testes:** `monitor/tests/test-monitor-alerts.sh` — cobertura automatizada com
 `notify_monitor_incident` mockada (nenhum webhook real). Cobre adaptador
 SUCCESS/FAILED/DISABLED, dry-run, flag off, máquina de estados pura, abertura/
 escalonamento/recuperação, cooldown, falha de rede/timeout, severidade mínima,
@@ -238,7 +241,7 @@ N consecutivas, test-alert, isolamento dos alertas antigos, ausência do segredo
 em estado/JSON/KV e **isolamento total do dry-run** (hash byte-a-byte, mtime,
 contadores, sem criar arquivo, sem acúmulo entre execuções, dry-run→real abre normal).
 
-**Suíte completa:** 4 scripts de teste, 67 grupos, 410 asserts — todos verdes.
+**Suíte completa:** scripts isolados por módulo, sem acesso ao webhook real.
 
 **Decisão de reuso Discord:** cumpre todas as regras — não cria novo cliente/webhook/
 credencial, não duplica o `curl` fora de `lib/notificacoes.sh`, não altera as

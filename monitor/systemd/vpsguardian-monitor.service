@@ -9,7 +9,11 @@ Type=oneshot
 # O wrapper descobre INSTALL_ROOT em .install.conf, inclusive instalações legadas
 # e caminhos customizados. Assim a unit não fixa /opt/vpsguardian.
 ExecStart=/usr/local/bin/vps-guardian monitor check --quiet
+# 1..4 representam severidade do diagnóstico, não falha da unit.
+SuccessExitStatus=1 2 3 4
 # Baixo impacto no host
 Nice=10
 IOSchedulingClass=idle
-CPUQuota=25%
+# Permite até um núcleo. O limite anterior de 25% prolongava a coleta por vários
+# minutos e mantinha o monitor ocupado quase continuamente.
+CPUQuota=100%

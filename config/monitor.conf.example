@@ -203,8 +203,13 @@
 # Severidade mínima para abrir um incidente (INFO nunca notifica)
 #MONITOR_ALERT_MIN_SEVERITY=WARNING
 
-# Verificações consecutivas com a condição presente antes de abrir (anti-flapping)
-#MONITOR_ALERT_CONSECUTIVE=1
+# Verificações consecutivas com a condição presente antes de abrir (anti-flapping).
+# EMERGENCY continua imediato; este valor se aplica a WARNING/CRITICAL.
+#MONITOR_ALERT_CONSECUTIVE=2
+
+# Máximo de detalhes individuais na mensagem resumida de cada ciclo.
+# Todos os incidentes continuam persistidos; o excedente aparece como contagem.
+#MONITOR_ALERT_BATCH_MAX_ITEMS=10
 
 # Intervalo mínimo entre lembretes do mesmo incidente (minutos)
 #MONITOR_ALERT_COOLDOWN_MINUTES=15

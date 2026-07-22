@@ -88,8 +88,13 @@ fi
 assert_file "$INSTALL_ROOT/monitor/vps-monitor.sh" "monitor instalado"
 assert_file "$INSTALL_ROOT/lib/monitor-alerts.sh" "bibliotecas instaladas"
 assert_file "$INSTALL_ROOT/config/monitor.conf.example" "exemplo instalado"
+assert_contains "$INSTALL_ROOT/menu-principal.sh" "run_visual_monitor" "menu integra painel visual opcional"
+assert_contains "$INSTALL_ROOT/menu-principal.sh" "apt-get install -y btop" "btop só é instalado pelo fluxo explícito do menu"
 assert_file "$SYSTEM_ROOT/etc/systemd/system/vpsguardian-monitor.service" "service instalado"
 assert_file "$SYSTEM_ROOT/etc/systemd/system/vpsguardian-monitor.timer" "timer instalado"
+assert_contains "$SYSTEM_ROOT/etc/systemd/system/vpsguardian-monitor.timer" "OnUnitInactiveSec=1min" "timer aguarda após o término da coleta"
+assert_contains "$SYSTEM_ROOT/etc/systemd/system/vpsguardian-monitor.service" "SuccessExitStatus=1 2 3 4" "severidade não marca a unit como falha"
+assert_contains "$SYSTEM_ROOT/etc/systemd/system/vpsguardian-monitor.service" "CPUQuota=100%" "coleta pode usar até um núcleo"
 if VPSGUARDIAN_INSTALL_CONFIG="$INSTALL_ROOT/.install.conf" \
    MONITOR_CONFIG_FILE="$INSTALL_ROOT/config/monitor.conf" \
    VPSGUARDIAN_SHARED_CONFIG_FILE="$INSTALL_ROOT/config/backup-destinations.conf" \

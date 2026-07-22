@@ -228,6 +228,72 @@ monitor_alert_dispatch() {
     monitor_alert_channel_send "$type" "$title" "$description"
 }
 
+# Envia todas as transições de um ciclo em uma única mensagem. O estado continua
+# individual por chave; o agrupamento existe apenas no transporte para evitar uma
+# rajada de dezenas de webhooks na primeira coleta ou após perda de estado.
+monitor_alert_batch_dispatch() {
+    local srv="$1"
+    local total="${#ALERT_BATCH_DECISION[@]}"
+    [ "$total" -gt 0 ] || { echo "NONE"; return 0; }
+
+    # Mantém o texto tradicional quando há uma única transição.
+    if [ "$total" -eq 1 ]; then
+        monitor_alert_dispatch "${ALERT_BATCH_DECISION[0]}" "${ALERT_BATCH_SEV[0]}" \
+            "$srv" "${ALERT_BATCH_COND[0]}" "${ALERT_BATCH_VALUE[0]}" \
+            "${ALERT_BATCH_PREV[0]}" "${ALERT_BATCH_WORST[0]}"
+        return
+    fi
+
+    local opened=0 escalated=0 reminded=0 recovered=0 worst="INFO" i
+    for ((i=0; i<total; i++)); do
+        case "${ALERT_BATCH_DECISION[$i]}" in
+            OPEN) ((opened++)) ;;
+            ESCALATE) ((escalated++)) ;;
+            REMINDER) ((reminded++)) ;;
+            RECOVER) ((recovered++)) ;;
+        esac
+        if [ "${ALERT_BATCH_DECISION[$i]}" != "RECOVER" ]; then
+            worst=$(monitor_severity_max "$worst" "${ALERT_BATCH_SEV[$i]}")
+        fi
+    done
+
+    local type title description
+    if [ "$opened" -eq 0 ] && [ "$escalated" -eq 0 ] && [ "$reminded" -eq 0 ]; then
+        type="success"
+        title="✅ VPS Guardian — Serviços normalizados"
+    else
+        type=$(monitor_alert_sev_type "$worst")
+        title="🚨 VPS Guardian — Resumo do monitor"
+    fi
+
+    srv=$(_alert_clean "$srv")
+    description="Servidor: $srv\nTransições: ${opened} nova(s), ${escalated} escalada(s), ${reminded} lembrete(s), ${recovered} normalizada(s)"
+
+    local max_items="${MONITOR_ALERT_BATCH_MAX_ITEMS:-10}"
+    [[ "$max_items" =~ ^[0-9]+$ ]] || max_items=10
+    [ "$max_items" -gt 0 ] || max_items=10
+    local shown=0 label sev cond
+    for ((i=0; i<total && shown<max_items; i++)); do
+        case "${ALERT_BATCH_DECISION[$i]}" in
+            OPEN) label="NOVA" ;;
+            ESCALATE) label="ESCALOU" ;;
+            REMINDER) label="EM CURSO" ;;
+            RECOVER) label="NORMALIZOU" ;;
+            *) label="EVENTO" ;;
+        esac
+        sev="${ALERT_BATCH_SEV[$i]}"
+        [ "${ALERT_BATCH_DECISION[$i]}" = "RECOVER" ] && sev="${ALERT_BATCH_WORST[$i]}"
+        cond=$(_alert_clean "${ALERT_BATCH_COND[$i]}")
+        # Evita ultrapassar o limite de 4096 caracteres do embed do Discord.
+        cond="${cond:0:180}"
+        description="$description\n• [$label/$sev] $cond"
+        ((shown++))
+    done
+    [ "$total" -gt "$shown" ] && description="$description\n• … e $((total-shown)) outra(s) transição(ões) registradas no estado local"
+
+    monitor_alert_channel_send "$type" "$title" "$description"
+}
+
 ################################################################################
 # Processamento: compara estado anterior x atual, despacha e persiste
 ################################################################################
@@ -239,6 +305,8 @@ monitor_alerts_process() {
     ALERTS_STATE_PERSISTED=false
     ALERTS_NOTIFICATIONS_SENT=false
     ALERTS_DRYRUN_REPORT=()
+    ALERT_BATCH_DECISION=(); ALERT_BATCH_KEY=(); ALERT_BATCH_SEV=()
+    ALERT_BATCH_COND=(); ALERT_BATCH_VALUE=(); ALERT_BATCH_PREV=(); ALERT_BATCH_WORST=()
 
     if [ "${MONITOR_ALERTS_ENABLED:-true}" != "true" ]; then
         ALERTS_CHANNEL="engine_disabled"
@@ -252,7 +320,7 @@ monitor_alerts_process() {
     local now cooldown consecutive reminders srv
     now=$(date +%s)
     cooldown=$(( ${MONITOR_ALERT_COOLDOWN_MINUTES:-15} * 60 ))
-    consecutive="${MONITOR_ALERT_CONSECUTIVE:-1}"
+    consecutive="${MONITOR_ALERT_CONSECUTIVE:-2}"
     reminders="${MONITOR_ALERT_REMINDERS_ENABLED:-false}"
     srv="${MONITOR_SERVER_NAME:-${HOST_HOSTNAME:-$(hostname 2>/dev/null)}}"
 
@@ -271,16 +339,19 @@ monitor_alerts_process() {
         local pstatus="${ST_STATUS[$key]:-}" psev="${ST_LASTSEV[$key]:-}"
         local pnotified="${ST_NOTIFIED[$key]:-0}" pfirst="${ST_FIRST[$key]:-$now}"
         local pworst="${ST_WORST[$key]:-INFO}" pcount="${ST_COUNT[$key]:-0}" pstreak="${ST_STREAK[$key]:-0}"
-        local nstreak=$(( pstreak + 1 ))
+        local nstreak=$(( pstreak + 1 )) required_streak="$consecutive"
+        # Emergências não aguardam confirmação adicional. O agrupamento do
+        # transporte já impede rajadas, sem atrasar um evento realmente grave.
+        [ "$csev" = "EMERGENCY" ] && required_streak=1
         local worst; worst=$(monitor_severity_max "$pworst" "$csev")
 
         # Exigência de N verificações consecutivas antes de abrir (anti-flapping)
-        if [ "$pstatus" != "open" ] && [ "$nstreak" -lt "$consecutive" ]; then
+        if [ "$pstatus" != "open" ] && [ "$nstreak" -lt "$required_streak" ]; then
             N_STATUS[$key]="pending"; N_FIRST[$key]="$pfirst"; N_LASTSEV[$key]="$csev"
             N_WORST[$key]="$worst"; N_NOTIFIED[$key]="0"; N_COUNT[$key]="$pcount"
             N_STREAK[$key]="$nstreak"; N_COND[$key]="$cond"
             ((ALERTS_PENDING++))
-            [ "$dry_run" = "true" ] && ALERTS_DRYRUN_REPORT+=("WOULD_KEEP_PENDING|$key|$csev|ocorrências simuladas: ${nstreak}/${consecutive}")
+            [ "$dry_run" = "true" ] && ALERTS_DRYRUN_REPORT+=("WOULD_KEEP_PENDING|$key|$csev|ocorrências simuladas: ${nstreak}/${required_streak}")
             continue
         fi
 
@@ -288,7 +359,7 @@ monitor_alerts_process() {
         decision=$(monitor_incident_decide "$pstatus" "$psev" "$pnotified" "$now" \
             "$csev" "$cooldown" "$reminders")
 
-        local result="" nnotified="$pnotified" ncount="$pcount"
+        local nnotified="$pnotified" ncount="$pcount"
         case "$decision" in
             OPEN|ESCALATE|REMINDER)
                 if [ "$dry_run" = "true" ]; then
@@ -299,14 +370,10 @@ monitor_alerts_process() {
                         REMINDER) ALERTS_DRYRUN_REPORT+=("WOULD_REMIND|$key|$csev|lembrete | notificação: ${dr_note}") ;;
                     esac
                 else
-                    result=$(monitor_alert_dispatch "$decision" "$csev" "$srv" "$cond" \
-                        "$value" "$psev" "$worst")
-                    ALERTS_CHANNEL="$result"
-                    if [ "$result" = "SUCCESS" ]; then
-                        nnotified="$now"; ncount=$((pcount + 1)); ALERTS_NOTIFICATIONS_SENT=true
-                    elif [ "$result" = "FAILED" ]; then
-                        ((ALERTS_FAILED++))
-                    fi
+                    ALERT_BATCH_DECISION+=("$decision"); ALERT_BATCH_KEY+=("$key")
+                    ALERT_BATCH_SEV+=("$csev"); ALERT_BATCH_COND+=("$cond")
+                    ALERT_BATCH_VALUE+=("$value"); ALERT_BATCH_PREV+=("$psev")
+                    ALERT_BATCH_WORST+=("$worst")
                 fi
                 ;;
             SUPPRESS)
@@ -341,25 +408,49 @@ monitor_alerts_process() {
             fi
 
             local rvalue="Duração: ${dur} minutos\nPior severidade: ${rworst}"
-            local result
-            result=$(monitor_alert_dispatch RECOVER RECOVERY "$srv" "$rcond" "$rvalue" "" "$rworst")
-            ALERTS_CHANNEL="$result"
-
-            if [ "$result" = "FAILED" ]; then
-                # Não normalizou de fato: mantém aberto para retentar recuperação
-                ((ALERTS_FAILED++))
-                N_STATUS[$key]="${ST_STATUS[$key]}"; N_FIRST[$key]="${ST_FIRST[$key]}"
-                N_LASTSEV[$key]="${ST_LASTSEV[$key]}"; N_WORST[$key]="${ST_WORST[$key]}"
-                N_NOTIFIED[$key]="${ST_NOTIFIED[$key]}"; N_COUNT[$key]="${ST_COUNT[$key]}"
-                N_STREAK[$key]="${ST_STREAK[$key]}"; N_COND[$key]="${ST_COND[$key]}"
-            else
-                # SUCCESS ou DISABLED: incidente encerrado (removido do estado)
-                ((ALERTS_RECOVERED++))
-                [ "$result" = "SUCCESS" ] && ALERTS_NOTIFICATIONS_SENT=true
-            fi
+            ALERT_BATCH_DECISION+=("RECOVER"); ALERT_BATCH_KEY+=("$key")
+            ALERT_BATCH_SEV+=("RECOVERY"); ALERT_BATCH_COND+=("$rcond")
+            ALERT_BATCH_VALUE+=("$rvalue"); ALERT_BATCH_PREV+=("")
+            ALERT_BATCH_WORST+=("$rworst")
         fi
         # status "pending" ausente agora: descartado (reset do streak)
     done
+
+    # Um único webhook por ciclo. O resultado é aplicado a todas as transições
+    # incluídas no lote, preservando retry e recovery por chave.
+    if [ "$dry_run" != "true" ] && [ "${#ALERT_BATCH_DECISION[@]}" -gt 0 ]; then
+        local batch_result batch_i batch_key batch_decision
+        batch_result=$(monitor_alert_batch_dispatch "$srv")
+        ALERTS_CHANNEL="$batch_result"
+        [ "$batch_result" = "SUCCESS" ] && ALERTS_NOTIFICATIONS_SENT=true
+
+        for ((batch_i=0; batch_i<${#ALERT_BATCH_DECISION[@]}; batch_i++)); do
+            batch_key="${ALERT_BATCH_KEY[$batch_i]}"
+            batch_decision="${ALERT_BATCH_DECISION[$batch_i]}"
+            if [ "$batch_decision" = "RECOVER" ]; then
+                if [ "$batch_result" = "FAILED" ]; then
+                    # Falha no resumo: mantém aberto para retentar a recuperação.
+                    N_STATUS[$batch_key]="${ST_STATUS[$batch_key]}"
+                    N_FIRST[$batch_key]="${ST_FIRST[$batch_key]}"
+                    N_LASTSEV[$batch_key]="${ST_LASTSEV[$batch_key]}"
+                    N_WORST[$batch_key]="${ST_WORST[$batch_key]}"
+                    N_NOTIFIED[$batch_key]="${ST_NOTIFIED[$batch_key]}"
+                    N_COUNT[$batch_key]="${ST_COUNT[$batch_key]}"
+                    N_STREAK[$batch_key]="${ST_STREAK[$batch_key]}"
+                    N_COND[$batch_key]="${ST_COND[$batch_key]}"
+                else
+                    # SUCCESS ou DISABLED: incidente encerrado.
+                    ((ALERTS_RECOVERED++))
+                fi
+            elif [ "$batch_result" = "SUCCESS" ]; then
+                N_NOTIFIED[$batch_key]="$now"
+                N_COUNT[$batch_key]=$(( ${ST_COUNT[$batch_key]:-0} + 1 ))
+            fi
+        done
+        if [ "$batch_result" = "FAILED" ]; then
+            ALERTS_FAILED=$((ALERTS_FAILED + ${#ALERT_BATCH_DECISION[@]}))
+        fi
+    fi
 
     # ---- Persistência: nunca grava em dry-run ----
     if [ "$dry_run" = "true" ]; then
@@ -408,7 +499,7 @@ export -f monitor_alert_sev_type monitor_alert_channel_send
 export -f monitor_incident_decide
 export -f monitor_alerts_reset_current monitor_alert_register
 export -f monitor_alerts_load_state monitor_alerts_save_state monitor_alerts_process
-export -f monitor_alert_dispatch monitor_alert_test
+export -f monitor_alert_dispatch monitor_alert_batch_dispatch monitor_alert_test
 
 MONITOR_ALERTS_LOADED=1
 export MONITOR_ALERTS_LOADED

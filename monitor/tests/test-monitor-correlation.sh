@@ -400,6 +400,24 @@ assert_true 'echo "$EVAL_RECS" | grep -qi "containerd"' "recomendação Docker m
 echo ""
 
 ################################################################################
+echo "🔍 Teste 16: Timeout e quantidade de aplicações distintas não são combinados"
+################################################################################
+cs
+LARAVEL_TOTAL=13; LARAVEL_HORIZON_WORKERS=1; LARAVEL_DANGEROUS_TIMEOUTS=1
+LARAVEL_SHARED_WITH_WEB=1; LARAVEL_CONTAINERS_NO_MEM_LIMIT=2; LARAVEL_MAX_SEVERITY=EMERGENCY
+LARAVEL_WORKERS_DATA=(
+  "100|1|www-data|S|7200|1|0|1|100000|HORIZON_WORKER|aaa111111111|coolify||||default|36000|COMMAND||UNKNOWN||||3|always|0|4|SHARED_WITH_WEB|EMERGENCY|1|timeout_extremely_high,container_without_memory_limit,shared_with_web|php artisan horizon:work"
+  "200|1|www-data|S|7200|1|0|1|100000|QUEUE_WORK|bbb222222222|app-workers||||default||CONFIG_UNKNOWN||UNKNOWN||||3|always|0|4|ISOLATED|EMERGENCY|12|excessive_worker_count,container_without_memory_limit|php artisan queue:work"
+)
+monitor_correlation_collect_signals
+monitor_correlation_eval_laravel
+assert_eq "aaa111111111" "$EVAL_RID" "diagnóstico escolhe um único recurso alvo"
+assert_eq "1" "${CORR[laravel_max_group_count]}" "quantidade pertence ao mesmo worker do timeout"
+assert_true 'echo "$EVAL_CAUSE" | grep -q "timeout de 36000s"' "causa mantém o timeout real"
+assert_true '! echo "$EVAL_CAUSE" | grep -q "12 workers"' "causa não combina os 12 workers de outra aplicação"
+echo ""
+
+################################################################################
 echo "════════════════════════════════════════════════════════════"
 if [ "$ERROS" -eq 0 ]; then
     echo "✅ Todos os testes passaram"

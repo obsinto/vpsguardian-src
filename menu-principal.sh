@@ -206,6 +206,121 @@ run_script() {
     pause
 }
 
+# O timer pode estar coletando no momento em que o usuário abre o menu. Nesse
+# caso, não trata o lock esperado como erro: mostra um resumo do último snapshot
+# concluído e informa o PID da coleta atual.
+run_monitor_check() {
+    local monitor_script="$SCRIPT_DIR/monitor/vps-monitor.sh"
+    local lock_file="${MONITOR_LOCK_FILE:-${LOCK_DIR:-/var/lock}/vpsguardian-monitor.lock}"
+    local state_dir="${MONITOR_STATE_DIR:-/var/lib/vpsguardian/monitor}"
+    local snapshot="$state_dir/last-check.json"
+    local monitor_pid=""
+
+    [ -f "$lock_file" ] && monitor_pid=$(tr -dc '0-9' < "$lock_file" 2>/dev/null)
+    if [ -n "$monitor_pid" ] && kill -0 "$monitor_pid" 2>/dev/null; then
+        clear_screen
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${WHITE}Monitor Preventivo do Host${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${YELLOW}Uma coleta automática já está em andamento (PID: $monitor_pid).${NC}"
+        echo -e "${GRAY}Exibindo o último snapshot concluído; nenhum novo alerta será enviado.${NC}"
+        echo ""
+        log_execution "CONSULTA: Monitor Preventivo já ativo (PID: $monitor_pid)"
+
+        if [ -r "$snapshot" ] && command -v jq >/dev/null 2>&1; then
+            jq -r '
+                "Coletado em:       \(.collected_at // "n/d")",
+                "Severidade geral: \(.overall.severity // "n/d")",
+                "RAM disponível:   \(.memory.available_mb // "n/d") MB (\(.memory.available_percent // "n/d")%)",
+                "Swap utilizada:   \(.swap.used_mb // "n/d") MB (\(.swap.used_percent // "n/d")%, crescimento \(.swap.growth_mb // "n/d") MB)",
+                "CPU steal:        \(.cpu.steal_percent // "n/d")% [\(.cpu.steal_severity // "n/d")]",
+                "Docker:           \(.docker.status // "n/d") [\(.docker.severity // "n/d")]",
+                "Containers:       \(.containers_summary.running // "n/d") rodando; \(.containers_summary.without_memory_limit // "n/d") sem limite de memória",
+                "Workers Laravel:  \(.laravel_workers_summary.workers_total // "n/d"); \(.laravel_workers_summary.workers_emergency // "n/d") em emergência"
+            ' "$snapshot" 2>/dev/null || echo -e "${YELLOW}Não foi possível interpretar o snapshot: $snapshot${NC}"
+        elif [ -r "$snapshot" ]; then
+            echo -e "${YELLOW}Snapshot disponível em: $snapshot${NC}"
+            echo -e "${GRAY}Instale jq para visualizar o resumo diretamente no menu.${NC}"
+        else
+            echo -e "${YELLOW}Ainda não há snapshot concluído em $snapshot.${NC}"
+        fi
+        pause
+        return 0
+    fi
+
+    run_script "$monitor_script" "Monitor Preventivo do Host" "check"
+}
+
+# Painel visual opcional. O VPS Guardian não incorpora nem mantém o btop; apenas
+# oferece um atalho seguro para o pacote da distribuição e nunca o instala sem
+# confirmação explícita do operador.
+install_visual_monitor() {
+    local -a elevate=()
+    if [ "$EUID" -ne 0 ]; then
+        if command -v sudo >/dev/null 2>&1; then
+            elevate=(sudo)
+        else
+            echo -e "${RED}É necessário executar o menu como root ou instalar o btop manualmente.${NC}"
+            return 1
+        fi
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        "${elevate[@]}" apt-get install -y btop
+    elif command -v dnf >/dev/null 2>&1; then
+        "${elevate[@]}" dnf install -y btop
+    elif command -v yum >/dev/null 2>&1; then
+        "${elevate[@]}" yum install -y btop
+    elif command -v pacman >/dev/null 2>&1; then
+        "${elevate[@]}" pacman -S --needed --noconfirm btop
+    elif command -v apk >/dev/null 2>&1; then
+        "${elevate[@]}" apk add btop
+    else
+        echo -e "${RED}Gerenciador de pacotes compatível não encontrado.${NC}"
+        return 1
+    fi
+}
+
+run_visual_monitor() {
+    clear_screen
+    if ! command -v btop >/dev/null 2>&1; then
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo -e "${WHITE}📈 Painel Visual em Tempo Real${NC}"
+        echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
+        echo ""
+        echo -e "${YELLOW}O btop ainda não está instalado.${NC}"
+        echo -e "${GRAY}Ele exibe CPU, RAM, swap, disco, rede e processos com gráficos no terminal.${NC}"
+        if ! confirm "Instalar o pacote btop agora?"; then
+            return 0
+        fi
+
+        log_execution "INÍCIO: Instalação do Painel Visual (btop)"
+        if ! install_visual_monitor || ! command -v btop >/dev/null 2>&1; then
+            log_execution "ERRO: Instalação do Painel Visual (btop)"
+            echo -e "${RED}Não foi possível instalar o btop pelo gerenciador de pacotes.${NC}"
+            pause
+            return 1
+        fi
+        log_execution "SUCESSO: Instalação do Painel Visual (btop)"
+    fi
+
+    clear_screen
+    echo -e "${GRAY}Abrindo btop — pressione 'q' para voltar ao VPS Guardian e '?' para ajuda.${NC}"
+    sleep 1
+    log_execution "INÍCIO: Painel Visual em Tempo Real (btop)"
+    btop
+    local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        log_execution "SUCESSO: Painel Visual em Tempo Real (btop)"
+    else
+        log_execution "ERRO: Painel Visual em Tempo Real (btop) (código: $exit_code)"
+        echo -e "${RED}O btop terminou com código $exit_code.${NC}"
+        pause
+    fi
+    return "$exit_code"
+}
+
 # Cabeçalho do menu
 print_header() {
     clear_screen
@@ -288,6 +403,9 @@ show_status_menu() {
     echo -e "  ${GREEN}4${NC} → 🩺 Monitor Preventivo do Host"
     echo -e "       ${GRAY}(RAM, swap, load, CPU, steal, throttling, disco)${NC}"
     echo -e "       ${GRAY}(Detecção precoce de sobrecarga da VPS)${NC}"
+    echo ""
+    echo -e "  ${GREEN}5${NC} → 📈 Painel Visual em Tempo Real"
+    echo -e "       ${GRAY}(Gráficos de CPU, RAM, swap, disco, rede e processos com btop)${NC}"
     echo ""
     echo -e "  ${RED}0${NC} → ↩️  Voltar ao Menu Principal"
     echo ""
@@ -532,7 +650,10 @@ handle_status_menu() {
                 run_script "$SCRIPT_DIR/scripts-auxiliares/test-sistema.sh" "Teste do Sistema"
                 ;;
             4)
-                run_script "$SCRIPT_DIR/monitor/vps-monitor.sh" "Monitor Preventivo do Host" "check"
+                run_monitor_check
+                ;;
+            5)
+                run_visual_monitor
                 ;;
             0)
                 return

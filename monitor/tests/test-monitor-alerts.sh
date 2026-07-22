@@ -49,7 +49,7 @@ CALLS_FILE="$TEST_TMP/calls.log"
 MOCK_NOTIFY_RC=0
 notify_monitor_incident() {
     # $1=type $2=title $3=description
-    printf '%s\t%s\n' "$1" "$2" >> "$CALLS_FILE"
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$CALLS_FILE"
     return "${MOCK_NOTIFY_RC:-0}"
 }
 export -f notify_monitor_incident
@@ -248,6 +248,15 @@ monitor_alert_register "host:load" WARNING "Load alto" "ratio 2.0"
 monitor_alerts_process
 assert_eq "1" "$ALERTS_OPENED" "3ª verificação consecutiva: abre"
 MONITOR_ALERT_CONSECUTIVE=1
+echo ""
+
+reset_all
+MONITOR_ALERT_CONSECUTIVE=3
+begin_cycle
+monitor_alert_register "host:emergency" EMERGENCY "Emergência real" "agora"
+monitor_alerts_process
+assert_eq "1" "$ALERTS_OPENED" "EMERGENCY abre imediatamente apesar do anti-flapping"
+assert_eq "1" "$(mock_calls)" "EMERGENCY imediata envia uma notificação"
 echo ""
 
 ################################################################################
@@ -477,6 +486,26 @@ env MONITOR_CONFIG_FILE=/dev/null MONITOR_STATE_DIR="$TEST_TMP/na" \
     MONITOR_LARAVEL_WORKERS_ENABLED=false \
     "$MONITOR_DIR/vps-monitor.sh" check --no-alerts >/dev/null 2>&1
 assert_true '[ ! -f "$TEST_TMP/na/incidents.state" ]' "--no-alerts não cria estado de incidentes"
+echo ""
+
+################################################################################
+echo "🔍 Teste 19: Muitas transições geram um único resumo limitado"
+################################################################################
+
+reset_all
+MONITOR_ALERT_BATCH_MAX_ITEMS=3
+begin_cycle
+for i in $(seq 1 12); do
+    monitor_alert_register "container:c$i" WARNING "Container c$i sem limite" "risco $i"
+done
+monitor_alerts_process
+assert_eq "12" "$ALERTS_OPENED" "12 incidentes permanecem individualizados no estado"
+assert_eq "1" "$(mock_calls)" "um único webhook enviado para 12 transições"
+assert_true 'grep -q "Resumo do monitor" "$CALLS_FILE"' "mensagem usa título de resumo"
+assert_true 'grep -q "e 9 outra(s) transição(ões)" "$CALLS_FILE"' "detalhes excedentes aparecem como contagem"
+assert_eq "12" "$(grep -c "^container:c" "$MONITOR_INCIDENT_STATE_FILE")" "todos os incidentes foram persistidos"
+assert_true '! grep "^container:c" "$MONITOR_INCIDENT_STATE_FILE" | cut -d"|" -f6 | grep -q "^0$"' "SUCCESS marca todas as chaves como notificadas"
+MONITOR_ALERT_BATCH_MAX_ITEMS=10
 echo ""
 
 ################################################################################

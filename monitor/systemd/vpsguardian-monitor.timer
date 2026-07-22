@@ -3,7 +3,9 @@ Description=VPS Guardian - Monitor Preventivo (a cada 1 minuto)
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1min
+# Conta o intervalo somente depois que a coleta anterior terminou. Evita um novo
+# disparo imediato quando uma verificação demora mais de um minuto.
+OnUnitInactiveSec=1min
 AccuracySec=10s
 Unit=vpsguardian-monitor.service
 

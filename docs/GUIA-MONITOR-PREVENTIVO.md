@@ -98,6 +98,13 @@ sudo vps-guardian monitor test-alert
 O primeiro comando não chama o webhook. O segundo usa o mesmo `WEBHOOK_URL` das
 rotinas existentes de backup e manutenção.
 
+Em operação normal, cada incidente mantém estado e cooldown próprios, mas todas
+as transições de uma coleta são enviadas em uma única mensagem resumida. Por
+padrão uma condição WARNING/CRITICAL precisa aparecer em duas coletas consecutivas
+antes de abrir; EMERGENCY continua imediato;
+ajuste `MONITOR_ALERT_CONSECUTIVE` e `MONITOR_ALERT_BATCH_MAX_ITEMS` somente se
+necessário.
+
 ## Executar e gerar relatórios
 
 ```bash
@@ -107,6 +114,18 @@ sudo vps-guardian monitor report --last 24h
 sudo vps-guardian monitor report --last 7d --format json
 sudo vps-guardian monitor report --from "2026-07-17 10:00" --to "2026-07-17 12:00" --format csv
 ```
+
+Se o timer já estiver coletando, o menu mostra o último snapshot concluído em
+vez de iniciar uma segunda coleta. Na linha de comando, o código `10` continua
+reservado para uma tentativa concorrente.
+
+### Painel visual no terminal
+
+No menu **Status e Diagnóstico**, a opção **Painel Visual em Tempo Real** abre o
+`btop`, com gráficos de CPU, RAM, swap, disco, rede e processos. Se o pacote não
+estiver disponível, o menu oferece a instalação pelo gerenciador da distribuição
+e só prossegue após confirmação explícita. Dentro do painel, use `q` para voltar
+ao VPS Guardian e `?` para consultar os atalhos.
 
 ## Gerar pacote de emergência
 

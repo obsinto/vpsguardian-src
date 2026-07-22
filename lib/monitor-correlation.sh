@@ -289,10 +289,16 @@ monitor_correlation_eval_laravel() {
     elif [ "$grp" -gt 2 ]; then
         score=$((score+12)); evid+="muitos workers equivalentes (${grp});;"; ((issues++))
     fi
-    if _num_gt laravel_containers_no_mem_limit 0; then
+    local target_no_limit target_shared no_limit_active=false
+    target_no_limit=$(_cget laravel_target_no_mem_limit "")
+    target_shared=$(_cget laravel_target_shared_with_web "")
+    if { [ -n "$target_no_limit" ] && _is_true laravel_target_no_mem_limit; } || \
+       { [ -z "$target_no_limit" ] && _num_gt laravel_containers_no_mem_limit 0; }; then
+        no_limit_active=true
         score=$((score+15)); evid+="worker em container sem limite de memória;;"; ((issues++))
     fi
-    if _num_gt laravel_shared_with_web 0; then
+    if { [ -n "$target_shared" ] && _is_true laravel_target_shared_with_web; } || \
+       { [ -z "$target_shared" ] && _num_gt laravel_shared_with_web 0; }; then
         score=$((score+10)); evid+="worker compartilhado com servidor web;;"; ((issues++))
     fi
     if _is_true laravel_restart_loop; then
@@ -325,7 +331,7 @@ monitor_correlation_eval_laravel() {
         variation="HORIZON_EXCESSIVE_WORKERS"
     elif [ "$maxto" -gt 3600 ]; then
         variation="LONG_RUNNING_JOB_SUSPECTED"
-    elif _num_gt laravel_containers_no_mem_limit 0; then
+    elif [ "$no_limit_active" = true ]; then
         variation="WORKER_RESOURCE_LEAK_SUSPECTED"
     else
         variation="LARAVEL_WORKER_MISCONFIGURATION"
@@ -336,12 +342,17 @@ monitor_correlation_eval_laravel() {
     EVAL_TITLE="Worker Laravel/Horizon descontrolado"
     EVAL_SUMMARY="Worker Laravel/Horizon é o provável gatilho do incidente."
     local cause="Configuração inadequada de worker"
-    [ "$grp" -gt 4 ] && cause="Horizon com ${grp} workers"
-    [ "$maxto" -gt 900 ] && cause="${cause} e timeout de ${maxto}s"
+    if [ "$grp" -gt 4 ] && [ "$maxto" -gt 900 ]; then
+        cause="Grupo Laravel com ${grp} workers e timeout de ${maxto}s"
+    elif [ "$grp" -gt 4 ]; then
+        cause="Grupo Laravel com ${grp} workers equivalentes"
+    elif [ "$maxto" -gt 900 ]; then
+        cause="Worker Laravel com timeout de ${maxto}s"
+    fi
     EVAL_CAUSE="$cause"
     EVAL_IMPACT="Pressão de memória/swap e degradação do Docker"
     EVAL_SEV="WARNING"
-    { [ "$maxto" -gt 3600 ] && _num_gt laravel_containers_no_mem_limit 0; } && EVAL_SEV="EMERGENCY"
+    { [ "$maxto" -gt 3600 ] && [ "$no_limit_active" = true ]; } && EVAL_SEV="EMERGENCY"
     [ "$EVAL_SEV" = "WARNING" ] && _num_gt laravel_dangerous_timeouts 0 && EVAL_SEV="CRITICAL"
     EVAL_CONF=$(monitor_correlation_confidence "$score")
     [ "$EVAL_CONF" = "VERY_HIGH" ] && EVAL_SEV="EMERGENCY"
@@ -498,21 +509,43 @@ monitor_correlation_collect_signals() {
     _cset laravel_containers_no_mem_limit "${LARAVEL_CONTAINERS_NO_MEM_LIMIT:-0}"
     _cset laravel_max_severity "${LARAVEL_MAX_SEVERITY:-INFO}"
 
+    # Seleciona um único worker/grupo alvo. Antes, o maior timeout e a maior
+    # quantidade eram coletados independentemente e podiam pertencer a
+    # aplicações diferentes, produzindo uma causa composta inexistente.
     local max_to=0 max_grp=0 restart_loop=false sched_stuck=false worst_c="host" worst_cn="" worst_rss=0
+    local target_no_limit=false target_shared=false best_score=-1 best_id=""
     local rec
     local -a F
     for rec in "${LARAVEL_WORKERS_DATA[@]}"; do
         IFS='|' read -r -a F <<< "$rec"
         local to="${F[16]}" grp="${F[29]}" cid="${F[10]}" cname="${F[11]}" rss="${F[8]}" find="${F[30]}"
-        [[ "$to" =~ ^[0-9]+$ ]] && [ "$to" -gt "$max_to" ] && { max_to="$to"; }
-        [[ "$grp" =~ ^[0-9]+$ ]] && [ "$grp" -gt "$max_grp" ] && { max_grp="$grp"; worst_c="${cid:-host}"; worst_cn="$cname"; }
-        case "$find" in *schedule_run_stuck*) sched_stuck=true ;; esac
+        [[ "$to" =~ ^[0-9]+$ ]] || to=0
+        [[ "$grp" =~ ^[0-9]+$ ]] || grp=1
+
+        local candidate=0 has_no_limit=false has_shared=false candidate_id
+        if [ "$to" -gt 3600 ]; then candidate=$((candidate+30))
+        elif [ "$to" -gt 900 ]; then candidate=$((candidate+18)); fi
+        if [ "$grp" -gt 4 ]; then candidate=$((candidate+25))
+        elif [ "$grp" -gt 2 ]; then candidate=$((candidate+12)); fi
+        case ",$find," in *,container_without_memory_limit,*) candidate=$((candidate+15)); has_no_limit=true ;; esac
+        case ",$find," in *,shared_with_web,*) candidate=$((candidate+10)); has_shared=true ;; esac
+        case ",$find," in *,schedule_run_stuck,*) candidate=$((candidate+18)); sched_stuck=true ;; esac
+        candidate_id="${cid:-host}|${F[9]:-worker}|${F[15]:-}"
+
+        if [ "$candidate" -gt "$best_score" ] || \
+           { [ "$candidate" -eq "$best_score" ] && { [ -z "$best_id" ] || [[ "$candidate_id" < "$best_id" ]]; }; }; then
+            best_score="$candidate"; best_id="$candidate_id"
+            max_to="$to"; max_grp="$grp"; worst_c="${cid:-host}"; worst_cn="$cname"
+            target_no_limit="$has_no_limit"; target_shared="$has_shared"
+        fi
         [[ "$rss" =~ ^[0-9]+$ ]] && [ "$((rss/1024))" -gt "$worst_rss" ] && worst_rss=$((rss/1024))
     done
     # restart loop de worker vem do inventário M3
     [ "$(_cnum containers_restart_loops 0)" -gt 0 ] && _num_gt laravel_total 0 && restart_loop=true
     CORR[laravel_max_timeout]="$max_to"
     CORR[laravel_max_group_count]="$max_grp"
+    CORR[laravel_target_no_mem_limit]="$target_no_limit"
+    CORR[laravel_target_shared_with_web]="$target_shared"
     CORR[laravel_restart_loop]="$restart_loop"
     CORR[laravel_schedule_stuck]="$sched_stuck"
     CORR[laravel_worst_container]="$worst_c"

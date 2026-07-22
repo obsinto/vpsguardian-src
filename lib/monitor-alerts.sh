@@ -43,6 +43,9 @@ declare -A ST_STATUS ST_FIRST ST_LASTSEV ST_WORST ST_NOTIFIED ST_COUNT ST_STREAK
 
 # Incidentes correntes (registrados a cada ciclo)
 declare -A INC_SEV INC_COND INC_VALUE
+# Todas as medições observadas, inclusive INFO/UNKNOWN. Isso permite que a
+# recuperação informe o valor atual que normalizou um incidente.
+declare -A OBS_SEV OBS_COND OBS_VALUE
 INC_KEYS=()
 
 ################################################################################
@@ -137,6 +140,7 @@ monitor_incident_decide() {
 
 monitor_alerts_reset_current() {
     INC_SEV=(); INC_COND=(); INC_VALUE=(); INC_KEYS=()
+    OBS_SEV=(); OBS_COND=(); OBS_VALUE=()
 }
 
 # Registra uma condição corrente. Filtra INFO/UNKNOWN e o que estiver abaixo da
@@ -145,15 +149,19 @@ monitor_alerts_reset_current() {
 monitor_alert_register() {
     local key="$1" sev="$2" cond="$3" value="$4"
 
+    key=$(printf '%s' "$key" | tr -d '|' | tr ' ' '_')
+    cond=$(printf '%s' "$cond" | tr -d '"|' | tr '\n\r\t' '   ')
+    value=$(printf '%s' "$value" | tr -d '"|' | tr '\n\r\t' '   ')
+
+    OBS_SEV[$key]="$sev"
+    OBS_COND[$key]="$cond"
+    OBS_VALUE[$key]="$value"
+
     local min_rank sev_rank
     min_rank=$(monitor_severity_rank "${MONITOR_ALERT_MIN_SEVERITY:-WARNING}")
     sev_rank=$(monitor_severity_rank "$sev")
     [ "$sev_rank" -lt 1 ] && return 0            # INFO(0) e UNKNOWN(-1) nunca abrem
     [ "$sev_rank" -ge "$min_rank" ] || return 0
-
-    key=$(printf '%s' "$key" | tr -d '|' | tr ' ' '_')
-    cond=$(printf '%s' "$cond" | tr -d '"|' | tr '\n\r\t' '   ')
-    value=$(printf '%s' "$value" | tr -d '"|' | tr '\n\r\t' '   ')
 
     if [ -z "${INC_SEV[$key]:-}" ]; then INC_KEYS+=("$key"); fi
     INC_SEV[$key]="$sev"
@@ -194,7 +202,7 @@ _alert_clean() {
 # Echo: resultado do canal (SUCCESS|FAILED|DISABLED)
 monitor_alert_dispatch() {
     local decision="$1" sev="$2" srv="$3" cond="$4" value="$5" prevsev="$6" worst="$7"
-    srv=$(_alert_clean "$srv"); cond=$(_alert_clean "$cond")
+    srv=$(_alert_clean "$srv"); cond=$(_alert_clean "$cond"); value=$(_alert_clean "$value")
 
     local title type description
     case "$decision" in
@@ -208,6 +216,7 @@ monitor_alert_dispatch() {
             title="🆘 VPS Guardian — Incidente escalou"
             type=$(monitor_alert_sev_type "$sev")
             description="Servidor: $srv\nIncidente: $cond\nSeveridade anterior: $prevsev\nSeveridade atual: $sev"
+            [ -n "$value" ] && description="$description\n$value"
             ;;
         REMINDER)
             title="🔁 VPS Guardian — Incidente em curso"
@@ -272,7 +281,7 @@ monitor_alert_batch_dispatch() {
     local max_items="${MONITOR_ALERT_BATCH_MAX_ITEMS:-10}"
     [[ "$max_items" =~ ^[0-9]+$ ]] || max_items=10
     [ "$max_items" -gt 0 ] || max_items=10
-    local shown=0 label sev cond
+    local shown=0 label sev cond value
     for ((i=0; i<total && shown<max_items; i++)); do
         case "${ALERT_BATCH_DECISION[$i]}" in
             OPEN) label="NOVA" ;;
@@ -284,9 +293,12 @@ monitor_alert_batch_dispatch() {
         sev="${ALERT_BATCH_SEV[$i]}"
         [ "${ALERT_BATCH_DECISION[$i]}" = "RECOVER" ] && sev="${ALERT_BATCH_WORST[$i]}"
         cond=$(_alert_clean "${ALERT_BATCH_COND[$i]}")
+        value=$(_alert_clean "${ALERT_BATCH_VALUE[$i]}")
         # Evita ultrapassar o limite de 4096 caracteres do embed do Discord.
         cond="${cond:0:180}"
+        value="${value:0:160}"
         description="$description\n• [$label/$sev] $cond"
+        [ -n "$value" ] && description="$description\n  $value"
         ((shown++))
     done
     [ "$total" -gt "$shown" ] && description="$description\n• … e $((total-shown)) outra(s) transição(ões) registradas no estado local"
@@ -400,6 +412,7 @@ monitor_alerts_process() {
         if [ "${ST_STATUS[$key]}" = "open" ]; then
             local dur=$(( (now - ${ST_FIRST[$key]:-$now}) / 60 ))
             local rworst="${ST_WORST[$key]:-INFO}" rcond="${ST_COND[$key]:-incidente}"
+            local current_value="${OBS_VALUE[$key]:-}"
 
             if [ "$dry_run" = "true" ]; then
                 ((ALERTS_RECOVERED++))
@@ -407,7 +420,9 @@ monitor_alerts_process() {
                 continue
             fi
 
-            local rvalue="Duração: ${dur} minutos\nPior severidade: ${rworst}"
+            local rvalue=""
+            [ -n "$current_value" ] && rvalue="Medição atual: ${current_value}\n"
+            rvalue="${rvalue}Duração: ${dur} minutos\nPior severidade: ${rworst}"
             ALERT_BATCH_DECISION+=("RECOVER"); ALERT_BATCH_KEY+=("$key")
             ALERT_BATCH_SEV+=("RECOVERY"); ALERT_BATCH_COND+=("$rcond")
             ALERT_BATCH_VALUE+=("$rvalue"); ALERT_BATCH_PREV+=("")

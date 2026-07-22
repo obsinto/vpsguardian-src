@@ -144,6 +144,7 @@ assert_eq "SUCCESS" "$ALERTS_CHANNEL" "canal SUCCESS"
 assert_eq "open" "$(state_field host:memoria 2)" "estado persistido como open"
 assert_true '[ "$(state_field host:memoria 6)" -gt 0 ]' "last_notified atualizado após SUCCESS"
 assert_true 'grep -q "Incidente detectado" "$CALLS_FILE"' "mensagem de abertura enviada"
+assert_true 'grep -q "842 MB" "$CALLS_FILE"' "abertura inclui a medição atual"
 echo ""
 
 ################################################################################
@@ -169,6 +170,7 @@ monitor_alerts_process
 assert_eq "1" "$ALERTS_ESCALATED" "severidade subiu => escalonado"
 assert_eq "1" "$(mock_calls)" "notificação de escalonamento enviada"
 assert_true 'grep -q "Incidente escalou" "$CALLS_FILE"' "mensagem de escalonamento"
+assert_true 'grep -q "500 MB" "$CALLS_FILE"' "escalonamento inclui a medição atual"
 assert_eq "EMERGENCY" "$(state_field host:memoria 4)" "última severidade EMERGENCY"
 echo ""
 
@@ -178,11 +180,13 @@ echo "🔍 Teste 7: Recuperação"
 
 mock_reset
 begin_cycle
-# nenhum registro corrente => condição sumiu
+# A métrica continua sendo observada, agora em INFO, e deve aparecer na recovery.
+monitor_alert_register "host:memoria" INFO "Memória disponível baixa" "Disponível: 4096 MB (50.0%)"
 monitor_alerts_process
 assert_eq "1" "$ALERTS_RECOVERED" "incidente recuperado"
 assert_eq "1" "$(mock_calls)" "notificação de recuperação enviada"
 assert_true 'grep -q "Serviço normalizado" "$CALLS_FILE"' "mensagem de recuperação"
+assert_true 'grep -q "Medição atual: Disponível: 4096 MB (50.0%)" "$CALLS_FILE"' "recuperação inclui a medição normalizada"
 assert_true '! grep -q "^host:memoria|" "$MONITOR_INCIDENT_STATE_FILE"' "incidente removido do estado"
 echo ""
 
@@ -502,6 +506,7 @@ monitor_alerts_process
 assert_eq "12" "$ALERTS_OPENED" "12 incidentes permanecem individualizados no estado"
 assert_eq "1" "$(mock_calls)" "um único webhook enviado para 12 transições"
 assert_true 'grep -q "Resumo do monitor" "$CALLS_FILE"' "mensagem usa título de resumo"
+assert_true 'grep -q "risco 1" "$CALLS_FILE"' "resumo inclui a medição de cada item exibido"
 assert_true 'grep -q "e 9 outra(s) transição(ões)" "$CALLS_FILE"' "detalhes excedentes aparecem como contagem"
 assert_eq "12" "$(grep -c "^container:c" "$MONITOR_INCIDENT_STATE_FILE")" "todos os incidentes foram persistidos"
 assert_true '! grep "^container:c" "$MONITOR_INCIDENT_STATE_FILE" | cut -d"|" -f6 | grep -q "^0$"' "SUCCESS marca todas as chaves como notificadas"

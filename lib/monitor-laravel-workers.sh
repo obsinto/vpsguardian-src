@@ -112,6 +112,27 @@ monitor_laravel_cgroup_container_id() {
     echo "$content" | grep -oE '[0-9a-f]{64}' | head -n1 | cut -c1-12
 }
 
+# Resolve o container enquanto o processo ainda existe. Workers Horizon são
+# curtos e podem terminar entre o snapshot do ps e a leitura de /proc; nesse
+# caso, o pai (supervisor) continua no mesmo cgroup e preserva a origem.
+monitor_laravel_process_container_id() {
+    local pid="$1" ppid="${2:-}" proc_dir="${MONITOR_PROC_DIR:-/proc}"
+    local candidate cgroup_file cid
+
+    for candidate in "$pid" "$ppid"; do
+        [[ "$candidate" =~ ^[0-9]+$ ]] || continue
+        [ "$candidate" -gt 0 ] || continue
+        cgroup_file="$proc_dir/$candidate/cgroup"
+        [ -r "$cgroup_file" ] || continue
+        cid=$(monitor_laravel_cgroup_container_id "$(cat "$cgroup_file" 2>/dev/null)")
+        if [ -n "$cid" ]; then
+            printf '%s' "$cid"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Detecta se um comando é um processo web/servidor (para isolamento).
 # Cuida para não marcar auxiliares como web.
 monitor_laravel_is_web_process() {
@@ -409,11 +430,25 @@ collect_laravel_workers() {
         wtype=$(monitor_laravel_worker_type "$full_cmd")
         [ -n "$wtype" ] || continue
 
-        # Container de origem via /proc/<pid>/cgroup (v1 e v2)
+        # Container de origem via cgroup do worker ou do supervisor pai. O
+        # fallback evita falso "Host" quando um worker curto termina depois do
+        # snapshot do ps, antes da leitura de /proc.
         local cid=""
-        local cgroup_file="$MONITOR_PROC_DIR/$pid/cgroup"
-        if [ -r "$cgroup_file" ]; then
-            cid=$(monitor_laravel_cgroup_container_id "$(cat "$cgroup_file" 2>/dev/null)")
+        cid=$(monitor_laravel_process_container_id "$pid" "$ppid" 2>/dev/null || true)
+
+        # O Horizon inclui o identificador do supervisor no próprio comando.
+        # No Coolify ele começa pelo short ID do container. Só aceitamos esse
+        # fallback se o ID também estiver no inventário Docker desta coleta,
+        # evitando inferir containers inexistentes em instalações comuns.
+        if [ -z "$cid" ] && [ "$wtype" = "HORIZON_WORKER" ]; then
+            local supervisor_id
+            supervisor_id=$(monitor_laravel_parse_option "$full_cmd" --supervisor)
+            supervisor_id="${supervisor_id%%-*}"
+            supervisor_id="${supervisor_id%%:*}"
+            if [[ "$supervisor_id" =~ ^[0-9a-f]{12}$ ]] && \
+               [ -n "${C_NAME[$supervisor_id]:-}" ]; then
+                cid="$supervisor_id"
+            fi
         fi
 
         # Grupo: container + tipo + filas (workers equivalentes)
@@ -600,6 +635,7 @@ export -f monitor_laravel_cgroup_container_id monitor_laravel_is_web_process
 export -f monitor_laravel_is_platform_container
 export -f monitor_laravel_findings_human monitor_laravel_worker_label
 export -f monitor_laravel_timeout_severity monitor_laravel_count_severity
+export -f monitor_laravel_process_container_id
 export -f monitor_laravel_evaluate
 export -f collect_laravel_workers monitor_laravel_workers_json
 

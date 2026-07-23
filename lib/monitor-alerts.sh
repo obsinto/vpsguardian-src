@@ -41,6 +41,7 @@ fi
 # Estado do incidente persistido entre execuções (carregado de disco)
 declare -A ST_STATUS ST_FIRST ST_LASTSEV ST_WORST ST_NOTIFIED ST_COUNT ST_STREAK ST_COND
 declare -A ST_RECOVERY_STREAK
+declare -A ST_NOTIFIEDSEV
 
 # Incidentes correntes (registrados a cada ciclo)
 declare -A INC_SEV INC_COND INC_VALUE
@@ -118,15 +119,16 @@ monitor_incident_decide() {
     if [ "$pstatus" != "open" ]; then echo "OPEN"; return 0; fi
 
     # Já estava aberto
+    # Ainda não notificado com sucesso (ex.: falha anterior) => tentar a
+    # abertura novamente antes de avaliar qualquer escalada.
+    if ! [[ "$pnotified" =~ ^[0-9]+$ ]] || [ "$pnotified" -eq 0 ]; then
+        echo "OPEN"; return 0
+    fi
+
     local cr pr
     cr=$(monitor_severity_rank "$csev")
     pr=$(monitor_severity_rank "$psev")
     if [ "$cr" -gt "$pr" ]; then echo "ESCALATE"; return 0; fi
-
-    # Ainda não notificado com sucesso (ex.: falha anterior) => tentar novamente
-    if ! [[ "$pnotified" =~ ^[0-9]+$ ]] || [ "$pnotified" -eq 0 ]; then
-        echo "OPEN"; return 0
-    fi
 
     # Mesma (ou menor) severidade, já notificado: lembrete só após cooldown
     if [ "$reminders" = "true" ] && [ $((now - pnotified)) -ge "$cooldown" ]; then
@@ -196,17 +198,30 @@ monitor_alert_register_high() {
 monitor_alerts_load_state() {
     ST_STATUS=(); ST_FIRST=(); ST_LASTSEV=(); ST_WORST=()
     ST_NOTIFIED=(); ST_COUNT=(); ST_STREAK=(); ST_COND=(); ST_RECOVERY_STREAK=()
+    ST_NOTIFIEDSEV=()
 
     local f="${MONITOR_INCIDENT_STATE_FILE:-$MONITOR_STATE_DIR/incidents.state}"
     [ -f "$f" ] || return 0
 
-    local key status first lastsev worst notified count streak cond recovery_streak
-    while IFS='|' read -r key status first lastsev worst notified count streak cond recovery_streak; do
+    local key status first lastsev worst notified count streak cond recovery_streak notified_sev
+    while IFS='|' read -r key status first lastsev worst notified count streak cond recovery_streak notified_sev; do
         [ -n "$key" ] || continue
         ST_STATUS[$key]="$status"; ST_FIRST[$key]="$first"; ST_LASTSEV[$key]="$lastsev"
         ST_WORST[$key]="$worst"; ST_NOTIFIED[$key]="$notified"; ST_COUNT[$key]="$count"
         ST_STREAK[$key]="$streak"; ST_COND[$key]="$cond"
         ST_RECOVERY_STREAK[$key]="${recovery_streak:-0}"
+        case "$notified_sev" in
+            WARNING|CRITICAL|EMERGENCY) ST_NOTIFIEDSEV[$key]="$notified_sev" ;;
+            *)
+                # Migração transparente do formato anterior (10 campos).
+                # Um incidente com last_notified já havia comunicado seu pico.
+                if [[ "$notified" =~ ^[0-9]+$ ]] && [ "$notified" -gt 0 ]; then
+                    ST_NOTIFIEDSEV[$key]="${worst:-INFO}"
+                else
+                    ST_NOTIFIEDSEV[$key]="INFO"
+                fi
+                ;;
+        esac
     done < "$f"
 }
 
@@ -383,6 +398,7 @@ monitor_alerts_process() {
     # Estado novo, apenas em memória (persistido ao final somente fora do dry-run)
     local -A N_STATUS N_FIRST N_LASTSEV N_WORST N_NOTIFIED N_COUNT N_STREAK N_COND
     local -A N_RECOVERY_STREAK
+    local -A N_NOTIFIEDSEV
     local -A seen
     local key
 
@@ -393,6 +409,7 @@ monitor_alerts_process() {
         local pstatus="${ST_STATUS[$key]:-}" psev="${ST_LASTSEV[$key]:-}"
         local pnotified="${ST_NOTIFIED[$key]:-0}" pfirst="${ST_FIRST[$key]:-$now}"
         local pworst="${ST_WORST[$key]:-INFO}" pcount="${ST_COUNT[$key]:-0}" pstreak="${ST_STREAK[$key]:-0}"
+        local pnotifiedsev="${ST_NOTIFIEDSEV[$key]:-INFO}"
         local nstreak=$(( pstreak + 1 )) required_streak="$consecutive"
         # Emergências não aguardam confirmação adicional. O agrupamento do
         # transporte já impede rajadas, sem atrasar um evento realmente grave.
@@ -404,13 +421,17 @@ monitor_alerts_process() {
             N_STATUS[$key]="pending"; N_FIRST[$key]="$pfirst"; N_LASTSEV[$key]="$csev"
             N_WORST[$key]="$worst"; N_NOTIFIED[$key]="0"; N_COUNT[$key]="$pcount"
             N_STREAK[$key]="$nstreak"; N_COND[$key]="$cond"; N_RECOVERY_STREAK[$key]=0
+            N_NOTIFIEDSEV[$key]="$pnotifiedsev"
             ((ALERTS_PENDING++))
             [ "$dry_run" = "true" ] && ALERTS_DRYRUN_REPORT+=("WOULD_KEEP_PENDING|$key|$csev|ocorrências simuladas: ${nstreak}/${required_streak}")
             continue
         fi
 
         local decision
-        decision=$(monitor_incident_decide "$pstatus" "$psev" "$pnotified" "$now" \
+        # Compara contra o pico já notificado, não contra a leitura anterior.
+        # Sem isso, EMERGENCY -> WARNING -> CRITICAL notificaria uma falsa
+        # "escalada", embora CRITICAL não ultrapasse o nível já comunicado.
+        decision=$(monitor_incident_decide "$pstatus" "$pnotifiedsev" "$pnotified" "$now" \
             "$csev" "$cooldown" "$reminders")
 
         local nnotified="$pnotified" ncount="$pcount"
@@ -445,6 +466,7 @@ monitor_alerts_process() {
         N_STATUS[$key]="open"; N_FIRST[$key]="$pfirst"; N_LASTSEV[$key]="$csev"
         N_WORST[$key]="$worst"; N_NOTIFIED[$key]="$nnotified"; N_COUNT[$key]="$ncount"
         N_STREAK[$key]="$nstreak"; N_COND[$key]="$cond"; N_RECOVERY_STREAK[$key]=0
+        N_NOTIFIEDSEV[$key]="$pnotifiedsev"
     done
 
     # ---- Incidentes anteriores ausentes agora: recuperação ou descarte ----
@@ -482,6 +504,7 @@ monitor_alerts_process() {
                     N_STREAK[$key]="${ST_STREAK[$key]}"
                     N_COND[$key]="${ST_COND[$key]}"
                     N_RECOVERY_STREAK[$key]="$recovery_streak"
+                    N_NOTIFIEDSEV[$key]="${ST_NOTIFIEDSEV[$key]:-INFO}"
                     ((ALERTS_RECOVERY_PENDING++))
                     continue
                 fi
@@ -527,6 +550,7 @@ monitor_alerts_process() {
                     N_STREAK[$batch_key]="${ST_STREAK[$batch_key]}"
                     N_COND[$batch_key]="${ST_COND[$batch_key]}"
                     N_RECOVERY_STREAK[$batch_key]="${ST_RECOVERY_STREAK[$batch_key]:-0}"
+                    N_NOTIFIEDSEV[$batch_key]="${ST_NOTIFIEDSEV[$batch_key]:-INFO}"
                 else
                     # SUCCESS ou DISABLED: incidente encerrado.
                     ((ALERTS_RECOVERED++))
@@ -534,6 +558,8 @@ monitor_alerts_process() {
             elif [ "$batch_result" = "SUCCESS" ]; then
                 N_NOTIFIED[$batch_key]="$now"
                 N_COUNT[$batch_key]=$(( ${ST_COUNT[$batch_key]:-0} + 1 ))
+                N_NOTIFIEDSEV[$batch_key]=$(monitor_severity_max \
+                    "${N_NOTIFIEDSEV[$batch_key]:-INFO}" "${ALERT_BATCH_SEV[$batch_i]}")
             fi
         done
         if [ "$batch_result" = "FAILED" ]; then
@@ -546,7 +572,7 @@ monitor_alerts_process() {
         ALERTS_STATE_PERSISTED=false
     else
         if monitor_alerts_save_state N_STATUS N_FIRST N_LASTSEV N_WORST \
-            N_NOTIFIED N_COUNT N_STREAK N_COND N_RECOVERY_STREAK; then
+            N_NOTIFIED N_COUNT N_STREAK N_COND N_RECOVERY_STREAK N_NOTIFIEDSEV; then
             ALERTS_STATE_PERSISTED=true
         fi
     fi
@@ -558,17 +584,18 @@ monitor_alerts_save_state() {
     local -n _status="$1" _first="$2" _lastsev="$3" _worst="$4"
     local -n _notified="$5" _count="$6" _streak="$7" _cond="$8"
     local -n _recovery_streak="$9"
+    local -n _notified_sev="${10}"
 
     local f="${MONITOR_INCIDENT_STATE_FILE:-$MONITOR_STATE_DIR/incidents.state}"
     local tmp="$f.tmp.$$"
     local key
     : > "$tmp" 2>/dev/null || { log_debug "Sem permissão para gravar estado de incidentes"; return 1; }
     for key in "${!_status[@]}"; do
-        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+        printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
             "$key" "${_status[$key]}" "${_first[$key]}" "${_lastsev[$key]}" \
             "${_worst[$key]}" "${_notified[$key]}" "${_count[$key]}" \
             "${_streak[$key]}" "${_cond[$key]}" \
-            "${_recovery_streak[$key]:-0}" >> "$tmp"
+            "${_recovery_streak[$key]:-0}" "${_notified_sev[$key]:-INFO}" >> "$tmp"
     done
     mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
 }

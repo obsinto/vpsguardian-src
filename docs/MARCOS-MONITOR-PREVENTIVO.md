@@ -211,8 +211,9 @@ Custo adicionado: **1 chamada `ps`** + leituras de `/proc` apenas para PIDs cand
 - [x] Histerese para load e CPU steal e confirmação de N coletas saudáveis antes
       de recuperar (`MONITOR_ALERT_RECOVERY_CONSECUTIVE`, padrão 3)
 - [x] Anti-spam: cooldown (`MONITOR_ALERT_COOLDOWN_MINUTES`, padrão 15), dedup por
-      severidade (só reenvia ao escalar), contador de ocorrências, lembrete opcional
-      após cooldown; `last_notified` só avança em envio com SUCESSO
+      pico de severidade efetivamente notificado (só reenvia ao superar o maior
+      nível já entregue), contador de ocorrências, lembrete opcional após
+      cooldown; `last_notified` só avança em envio com SUCESSO
 - [x] Agrupamento de todas as transições do ciclo em um único webhook, com limite
       configurável de detalhes (`MONITOR_ALERT_BATCH_MAX_ITEMS`) sem perder o
       estado individual de cada incidente

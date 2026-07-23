@@ -199,6 +199,11 @@ echo "🔍 Teste 6: Extração de container do cgroup (v1 e v2)"
 assert_eq "bbb222222222" "$(monitor_laravel_cgroup_container_id '0::/system.slice/docker-bbb222222222ffffffffffffffffffffffffffffffffffffffffffffffffffff.scope')" "cgroup v2 => id12"
 assert_eq "ccc333333333" "$(monitor_laravel_cgroup_container_id '2:cpu:/docker/ccc333333333ffffffffffffffffffffffffffffffffffffffffffffffffffff')" "cgroup v1 => id12"
 assert_eq "" "$(monitor_laravel_cgroup_container_id '0::/system.slice/app.service')" "processo do host => vazio"
+mkdir -p "$TEST_TMP/proc/5560"
+printf '%s\n' '0::/system.slice/docker-aaa111111111ffffffffffffffffffffffffffffffffffffffffffffffffffff.scope' \
+    > "$TEST_TMP/proc/5560/cgroup"
+assert_eq "aaa111111111" "$(monitor_laravel_process_container_id 5561 5560)" \
+    "PID encerrado herda container do supervisor pai"
 echo ""
 
 ################################################################################
@@ -337,6 +342,46 @@ assert_eq "" "$(worker_field 5555 11)" "container desconhecido para PID sumido"
 assert_eq "UNKNOWN" "$(worker_field 5555 28)" "isolamento UNKNOWN sem cgroup"
 assert_true 'worker_exists 5556' "PID com /proc sem permissão ainda inventariado"
 assert_eq "" "$(worker_field 5556 11)" "cgroup ilegível => container vazio"
+echo ""
+
+################################################################################
+echo "🔍 Teste 14b: Horizon curto recupera origem pelo identificador do supervisor"
+################################################################################
+
+printf '%s\n' \
+    ' 5561  5560 www-data S 60 1.0 0.5 81920 php artisan horizon:work redis --supervisor=aaa111111111-d13M:s6 --queue=high,default --timeout=36000 --memory=128 --max-time=0' \
+    > "$TEST_TMP/ps-horizon-race.txt"
+MONITOR_LARAVEL_PS_SOURCE="$TEST_TMP/ps-horizon-race.txt" collect_laravel_workers
+assert_eq "aaa111111111" "$(worker_field 5561 11)" "short ID do supervisor mapeia para container existente"
+assert_eq "bugroyale-worker" "$(worker_field 5561 12)" "worker não vira origem Host durante a troca de PID"
+assert_eq "Projeto Bug Royale / bugroyale-worker (production)" \
+    "$(printf '%s\n' "${LARAVEL_WORKERS_ALERTS[@]}" | cut -d'|' -f2 | head -n1)" \
+    "alerta mantém identidade estável do recurso"
+
+# Mesmo race, agora no Horizon interno do Coolify: o fallback precisa impedir o
+# falso EMERGENCY que aparecia como "Worker Host (origem não mapeada)".
+for rec in "${CONTAINERS_DATA[@]}"; do
+    case "$rec" in
+        aaa111111111*)
+            coolify_rec="${rec//aaa111111111/fff666666666}"
+            coolify_rec="${coolify_rec//bugroyale-worker/coolify}"
+            CONTAINERS_DATA+=("$coolify_rec")
+            break
+            ;;
+    esac
+done
+printf '%s\n' \
+    ' 5562     1 www-data S 60 1.0 0.5 81920 php artisan horizon:work redis --supervisor=fff666666666-d13M:s6 --queue=high,default --timeout=36000 --memory=128 --max-time=0' \
+    > "$TEST_TMP/ps-coolify-horizon-race.txt"
+MONITOR_LARAVEL_PS_SOURCE="$TEST_TMP/ps-coolify-horizon-race.txt" collect_laravel_workers
+assert_eq "coolify" "$(worker_field 5562 12)" "Horizon curto é associado ao container Coolify"
+assert_eq "COOLIFY_PLATFORM" "$(worker_field 5562 33)" "origem é reconhecida como plataforma"
+assert_eq "INFO" "$(worker_field 5562 29)" "timeout 36000 esperado do Coolify não abre incidente"
+assert_eq "0" "${#LARAVEL_WORKERS_ALERTS[@]}" "nenhum alerta Worker Host é produzido"
+
+# Restaura a fixture principal para os testes seguintes.
+MONITOR_LARAVEL_PS_SOURCE="$FIXTURES/laravel-workers/ps-incident.txt"
+collect_laravel_workers
 echo ""
 
 ################################################################################

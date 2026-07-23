@@ -109,11 +109,26 @@ assert_eq "NONE"     "$(monitor_incident_decide '' '' 0 1000 INFO 900 false)"   
 assert_eq "ESCALATE" "$(monitor_incident_decide open WARNING 990 1000 CRITICAL 900 false)" "sobe severidade => ESCALATE"
 assert_eq "SUPPRESS" "$(monitor_incident_decide open CRITICAL 990 1000 CRITICAL 900 false)" "mesma sev dentro do cooldown => SUPPRESS"
 assert_eq "OPEN"     "$(monitor_incident_decide open CRITICAL 0 1000 CRITICAL 900 false)"    "aberto mas nunca enviado => OPEN (retry)"
+assert_eq "OPEN"     "$(monitor_incident_decide open INFO 0 1000 CRITICAL 900 false)" \
+    "falha na abertura continua OPEN mesmo se a severidade subir"
 assert_eq "RECOVER"  "$(monitor_incident_decide open CRITICAL 990 1000 INFO 900 false)"      "aberto e some => RECOVER"
 assert_eq "NONE"     "$(monitor_incident_decide '' '' 0 1000 UNKNOWN 900 false)"       "UNKNOWN => NONE"
 assert_eq "SUPPRESS" "$(monitor_incident_decide open WARNING 1500 2000 WARNING 900 true)" "reminder ligado mas dentro do cooldown => SUPPRESS"
 assert_eq "SUPPRESS" "$(monitor_incident_decide open WARNING 100 5000 WARNING 900 false)" "reminder desligado, cooldown vencido => SUPPRESS"
 assert_eq "REMINDER" "$(monitor_incident_decide open WARNING 100 5000 WARNING 900 true)" "reminder ligado e cooldown vencido => REMINDER"
+echo ""
+
+################################################################################
+echo "🔍 Teste 2b: Migração do estado anterior preserva o pico notificado"
+################################################################################
+
+reset_all
+printf '%s\n' \
+    'host:steal|open|1000|WARNING|EMERGENCY|1200|5|10|CPU steal alto|0' \
+    > "$MONITOR_INCIDENT_STATE_FILE"
+monitor_alerts_load_state
+assert_eq "EMERGENCY" "${ST_NOTIFIEDSEV[host:steal]}" \
+    "estado legado de 10 campos migra sem reabrir escaladas antigas"
 echo ""
 
 ################################################################################
@@ -173,6 +188,49 @@ assert_eq "1" "$(mock_calls)" "notificação de escalonamento enviada"
 assert_true 'grep -q "Incidente escalou" "$CALLS_FILE"' "mensagem de escalonamento"
 assert_true 'grep -q "500 MB" "$CALLS_FILE"' "escalonamento inclui a medição atual"
 assert_eq "EMERGENCY" "$(state_field host:memoria 4)" "última severidade EMERGENCY"
+echo ""
+
+################################################################################
+echo "🔍 Teste 6b: Oscilação abaixo do pico não reenvia escalada"
+################################################################################
+
+mock_reset
+begin_cycle
+monitor_alert_register "host:memoria" WARNING "Memória disponível baixa" "900 MB"
+monitor_alerts_process
+assert_eq "0" "$(mock_calls)" "queda para WARNING permanece silenciosa"
+
+begin_cycle
+monitor_alert_register "host:memoria" CRITICAL "Memória disponível baixa" "700 MB"
+monitor_alerts_process
+assert_eq "0" "$ALERTS_ESCALATED" "CRITICAL abaixo do pico EMERGENCY não é nova escalada"
+assert_eq "0" "$(mock_calls)" "flapping EMERGENCY → WARNING → CRITICAL não gera spam"
+assert_eq "EMERGENCY" "$(state_field host:memoria 5)" "pico do incidente continua EMERGENCY"
+assert_eq "EMERGENCY" "$(state_field host:memoria 11)" "pico efetivamente notificado é persistido"
+echo ""
+
+reset_all
+MONITOR_ALERT_CONSECUTIVE=2
+begin_cycle
+monitor_alert_register "host:load" CRITICAL "Load alto" "ratio 3.2"
+monitor_alerts_process
+assert_eq "0" "$ALERTS_OPENED" "CRITICAL pendente ainda não foi notificado"
+begin_cycle
+monitor_alert_register "host:load" WARNING "Load alto" "ratio 1.8"
+monitor_alerts_process
+assert_eq "1" "$ALERTS_OPENED" "incidente abre em WARNING após confirmação"
+assert_eq "WARNING" "$(state_field host:load 11)" "guarda o nível entregue, não o pico pendente"
+begin_cycle
+monitor_alert_register "host:load" CRITICAL "Load alto" "ratio 3.2"
+monitor_alerts_process
+assert_eq "1" "$ALERTS_ESCALATED" "pico que nunca foi entregue ainda gera escalada legítima"
+
+# Recria a pré-condição usada pelo teste de recuperação seguinte.
+reset_all
+begin_cycle
+monitor_alert_register "host:memoria" EMERGENCY "Memória disponível baixa" "500 MB"
+monitor_alerts_process
+mock_reset
 echo ""
 
 ################################################################################

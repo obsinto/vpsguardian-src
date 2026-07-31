@@ -411,9 +411,13 @@ monitor_alerts_process() {
         local pworst="${ST_WORST[$key]:-INFO}" pcount="${ST_COUNT[$key]:-0}" pstreak="${ST_STREAK[$key]:-0}"
         local pnotifiedsev="${ST_NOTIFIEDSEV[$key]:-INFO}"
         local nstreak=$(( pstreak + 1 )) required_streak="$consecutive"
-        # Emergências não aguardam confirmação adicional. O agrupamento do
-        # transporte já impede rajadas, sem atrasar um evento realmente grave.
-        [ "$csev" = "EMERGENCY" ] && required_streak=1
+        # Emergências normalmente não aguardam confirmação adicional. CPU
+        # steal é a exceção: picos isolados do hypervisor são comuns e não
+        # representam degradação sustentada, então respeitam o mesmo
+        # anti-flapping configurado para WARNING/CRITICAL.
+        if [ "$csev" = "EMERGENCY" ] && [ "$key" != "host:steal" ]; then
+            required_streak=1
+        fi
         local worst; worst=$(monitor_severity_max "$pworst" "$csev")
 
         # Exigência de N verificações consecutivas antes de abrir (anti-flapping)

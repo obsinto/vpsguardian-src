@@ -325,6 +325,38 @@ assert_eq "1" "$(mock_calls)" "EMERGENCY imediata envia uma notificação"
 echo ""
 
 ################################################################################
+echo "🔍 Teste 10a: CPU steal EMERGENCY exige confirmação consecutiva"
+################################################################################
+
+reset_all
+MONITOR_ALERT_CONSECUTIVE=2
+begin_cycle
+monitor_alert_register_high "host:steal" EMERGENCY "CPU steal alto" "Steal: 39.6%" 39.6 8
+monitor_alerts_process
+assert_eq "0" "$ALERTS_OPENED" "1º pico de steal EMERGENCY permanece pendente"
+assert_eq "1" "$ALERTS_PENDING" "pico isolado de steal entra no anti-flapping"
+assert_eq "0" "$(mock_calls)" "pico isolado de steal não envia Discord"
+
+# Uma leitura saudável após o pico deve descartar o pendente silenciosamente.
+begin_cycle
+monitor_alert_register_high "host:steal" INFO "CPU steal alto" "Steal: 1.5%" 1.5 8
+monitor_alerts_process
+assert_eq "0" "$ALERTS_RECOVERED" "pendente isolado não gera falsa normalização"
+assert_true '! grep -q "^host:steal|" "$MONITOR_INCIDENT_STATE_FILE"' "pico isolado é removido do estado"
+assert_eq "0" "$(mock_calls)" "pico isolado não produz nenhuma mensagem"
+
+# Duas leituras consecutivas continuam abrindo uma emergência legítima.
+for sample in 35.0 36.0; do
+    begin_cycle
+    monitor_alert_register_high "host:steal" EMERGENCY "CPU steal alto" "Steal: ${sample}%" "$sample" 8
+    monitor_alerts_process
+done
+assert_eq "1" "$ALERTS_OPENED" "2º pico consecutivo abre steal EMERGENCY"
+assert_eq "1" "$(mock_calls)" "emergência sustentada envia uma notificação"
+assert_eq "open" "$(state_field 'host:steal' 2)" "steal sustentado permanece aberto"
+echo ""
+
+################################################################################
 echo "🔍 Teste 10b: Histerese e confirmação consecutiva da recuperação"
 ################################################################################
 

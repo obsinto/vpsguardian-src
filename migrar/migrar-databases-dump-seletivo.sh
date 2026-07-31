@@ -16,6 +16,11 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
 
+source "$SCRIPT_DIR/../lib/database-detection.sh" 2>/dev/null || {
+    log_error "Biblioteca de detecção de bancos não encontrada"
+    exit 1
+}
+
 # Carregar configurações do VPS Guardian
 if [ -f "/opt/vpsguardian/config/config.env" ]; then
     source "/opt/vpsguardian/config/config.env" 2>/dev/null
@@ -63,41 +68,12 @@ detect_app_databases() {
     done
 }
 
-# Detectar TODOS os bancos de aplicações por LABELS + IMAGEM + PORTAS
+# Detectar todos os bancos por marcadores do servidor + ferramenta nativa.
 detect_all_app_databases() {
-    docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        local is_database=false
-        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-
-        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
-        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
-            continue
-        fi
-
-        local coolify_type=$(docker inspect --format='{{index .Config.Labels "coolify.type"}}' "$name" 2>/dev/null)
-        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-
-        # Critério 1: Tem label coolify.type = database ou service
-        if [ "$coolify_type" = "database" ] || [ "$coolify_type" = "service" ]; then
-            if [[ "$image" =~ mysql|mariadb|postgres|redis|mongo|mongodb|esus_database ]] || [[ "$exposed_ports" =~ 3306|5432|6379|27017 ]]; then
-                is_database=true
-            fi
-        fi
-
-        # Critério 2: Detectar por imagem conhecida
-        if [[ "$image" =~ mysql|mariadb|postgres|redis|mongo|mongodb|esus_database ]]; then
-            is_database=true
-        fi
-
-        # Critério 3: Detectar por portas expostas clássicas
-        if [[ "$exposed_ports" =~ 3306|5432|6379|27017 ]]; then
-            is_database=true
-        fi
-
-        if [ "$is_database" = true ]; then
-            echo "$name"
-        fi
-    done
+    local engine
+    for engine in mysql postgres mongodb redis; do
+        detect_database_containers_by_engine "$engine"
+    done | sort -u
 }
 
 detect_coolify_database() {
@@ -146,22 +122,9 @@ get_mongodb_credentials() {
     echo "admin"
 }
 
-# Detecção INTELIGENTE de tipo de banco (Imagem + Env Vars + Portas)
+# Detecção conservadora do tipo de banco.
 detect_database_type() {
-    local container="$1"
-    local image=$(docker inspect --format='{{.Config.Image}}' "$container" 2>/dev/null)
-    local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$container" 2>/dev/null)
-    local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$container" 2>/dev/null)
-
-    if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
-        echo "mysql"
-    elif [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
-        echo "postgres"
-    elif [[ "$image" =~ redis ]] || echo "$env_vars" | grep -qEi 'REDIS_PASSWORD' || [[ "$exposed_ports" =~ 6379 ]]; then
-        echo "redis"
-    else
-        echo "unknown"
-    fi
+    detect_database_engine "$1"
 }
 
 ### ========== FUNÇÕES DE DUMP ==========
@@ -398,6 +361,17 @@ for container in "${DATABASES_TO_MIGRATE[@]}"; do
             gzip "$output_file"; output_file="${output_file}.gz"; size=$(du -h "$output_file" | cut -f1)
             log_success "  Dump criado: $size"; DUMP_FILES["$container"]="$output_file"; ((SUCCESS_COUNT++))
         else log_error "  Falha"; ((FAIL_COUNT++)); fi
+
+    elif [ "$db_type" = "mongodb" ]; then
+        credentials=$(get_mongodb_credentials "$container")
+        output_dir="$DUMP_DIR/${container}-mongodb-${TIMESTAMP}"
+        mkdir -p "$output_dir"
+        if dump_mongodb "$container" "$output_dir" "$credentials"; then
+            tar -czf "${output_dir}.tar.gz" -C "$DUMP_DIR" "$(basename "$output_dir")"
+            rm -rf "$output_dir"
+            output_file="${output_dir}.tar.gz"; size=$(du -h "$output_file" | cut -f1)
+            log_success "  Dump criado: $size"; DUMP_FILES["$container"]="$output_file"; ((SUCCESS_COUNT++))
+        else rm -rf "$output_dir"; log_error "  Falha"; ((FAIL_COUNT++)); fi
 
     else
         log_warning "  Tipo de banco não reconhecido pelo container $container. Pulando."

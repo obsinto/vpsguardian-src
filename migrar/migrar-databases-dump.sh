@@ -41,6 +41,12 @@ fi
 # Carregar biblioteca de API do Coolify
 source "$SCRIPT_DIR/../lib/coolify-api.sh" 2>/dev/null || true
 
+# Detecção conservadora por engine (evita aplicações com credenciais herdadas)
+source "$SCRIPT_DIR/../lib/database-detection.sh" 2>/dev/null || {
+    log_error "Biblioteca de detecção de bancos não encontrada"
+    exit 1
+}
+
 ### ========== CONFIGURAÇÃO ==========
 TARGET_SERVER="${TARGET_SERVER:-}"
 TARGET_USER="${TARGET_USER:-root}"
@@ -205,57 +211,15 @@ get_credentials_from_api() {
 ### ========== FUNÇÕES DE DETECÇÃO (Tripla Checagem) ==========
 
 detect_mysql_containers() {
-    docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-
-        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
-        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
-            continue
-        fi
-
-        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
-        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-
-        if [[ "$image" =~ mysql|mariadb ]] || echo "$env_vars" | grep -qEi 'MYSQL_ROOT_PASSWORD|MARIADB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 3306 ]]; then
-            echo "$name"
-        fi
-    done
+    detect_database_containers_by_engine mysql
 }
 
 detect_postgres_containers() {
-    docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-
-        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
-        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
-            continue
-        fi
-
-        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
-        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-
-        if [[ "$image" =~ postgres|esus_database ]] || echo "$env_vars" | grep -qEi 'POSTGRES_PASSWORD' || [[ "$exposed_ports" =~ 5432 ]]; then
-            echo "$name"
-        fi
-    done
+    detect_database_containers_by_engine postgres
 }
 
 detect_mongodb_containers() {
-    docker ps --format '{{.Names}}' 2>/dev/null | while read name; do
-        local image=$(docker inspect --format='{{.Config.Image}}' "$name" 2>/dev/null)
-
-        # Filtro Anti-Impostor: Ignorar proxies e aplicações web
-        if [[ "$image" =~ nginx|traefik|wordpress|webserver|php|apache ]] || [[ "$name" =~ -proxy ]]; then
-            continue
-        fi
-
-        local env_vars=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null)
-        local exposed_ports=$(docker inspect --format='{{range $p, $conf := .Config.ExposedPorts}}{{$p}} {{end}}' "$name" 2>/dev/null)
-
-        if [[ "$image" =~ mongo ]] || echo "$env_vars" | grep -qEi 'MONGO_INITDB_ROOT_PASSWORD' || [[ "$exposed_ports" =~ 27017 ]]; then
-            echo "$name"
-        fi
-    done
+    detect_database_containers_by_engine mongodb
 }
 
 ### ========== FUNÇÕES DE CREDENCIAIS (Linha por Linha) ==========

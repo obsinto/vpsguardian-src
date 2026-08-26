@@ -10,12 +10,14 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$TEST_DIR")"
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-database-detection.XXXXXX")
 MOCK_BIN="$TMP_ROOT/bin"
+MOCK_EXEC_LOG="$TMP_ROOT/docker-exec.log"
 FAILURES=0
 
 cleanup() { rm -rf "$TMP_ROOT"; }
 trap cleanup EXIT
 
 mkdir -p "$MOCK_BIN"
+export MOCK_EXEC_LOG
 cat > "$MOCK_BIN/docker" <<'EOF'
 #!/bin/bash
 
@@ -69,7 +71,17 @@ fi
 
 if [ "${1:-}" = "exec" ]; then
     container="${2:-}"
-    tool="${3:-}"
+    if [ "${3:-}" = "sh" ]; then
+        if [ "${5:-}" = ":" ]; then
+            printf 'shell|%s\n' "$container" >> "$MOCK_EXEC_LOG"
+            exit 0
+        fi
+        tool="${7:-}"
+        printf 'shell-command|%s|%s\n' "$container" "$tool" >> "$MOCK_EXEC_LOG"
+    else
+        tool="${3:-}"
+        printf 'direct|%s|%s\n' "$container" "$tool" >> "$MOCK_EXEC_LOG"
+    fi
     case "$container:$tool" in
         postgres-real:pg_dump|postgres-custom:pg_dump|redis-real:redis-server|mysql-real:mariadb-dump|mongo-real:mongodump)
             exit 0
@@ -107,6 +119,13 @@ assert_output 'redis-real' "Redis não é confundido com PostgreSQL" detect_data
 assert_output 'unknown' "aplicação com POSTGRES_* não é banco" detect_database_engine web-false
 assert_output 'unknown' "API com credenciais herdadas não é banco" detect_database_engine api-false
 assert_output 'unknown' "worker com credenciais herdadas não é banco" detect_database_engine worker-false
+
+if grep -q '^direct|' "$MOCK_EXEC_LOG" 2>/dev/null; then
+    printf '  ✗ containers com shell receberam sondagem direta ruidosa\n'
+    FAILURES=$((FAILURES + 1))
+else
+    printf '  ✓ ferramentas ausentes são sondadas silenciosamente via shell\n'
+fi
 
 printf '\nDatabase detection: %d falha(s)\n' "$FAILURES"
 exit "$FAILURES"

@@ -159,9 +159,59 @@ collect_memory() {
     return 0
 }
 
+# Classifica swap com contexto. Percentual ocupado é retenção histórica; só
+# promovemos para CRITICAL/EMERGENCY quando há evidência de pressão ativa.
+monitor_swap_classify_context() {
+    local used="$1" growth="$2" activity_pages="$3" mem_severity="$4"
+    local warn="$5" crit="$6" emerg="$7"
+    local growth_warn="${8:-${MONITOR_SWAP_GROWTH_WARNING_MB:-64}}"
+    local activity_warn="${9:-${MONITOR_SWAP_ACTIVITY_WARNING_PAGES:-256}}"
+
+    local raw active=false
+    raw=$(monitor_classify_high "$used" "$warn" "$crit" "$emerg")
+    case "$raw" in UNKNOWN|INFO) echo "$raw"; return 0 ;; esac
+
+    if [ "$(monitor_severity_rank "$mem_severity")" -ge "$(monitor_severity_rank WARNING)" ]; then
+        active=true
+    fi
+    if monitor_is_number "$growth" && monitor_is_number "$growth_warn" && \
+       awk -v a="$growth" -v b="$growth_warn" 'BEGIN{exit !(a>=b)}'; then
+        active=true
+    fi
+    if monitor_is_number "$activity_pages" && monitor_is_number "$activity_warn" && \
+       awk -v a="$activity_pages" -v b="$activity_warn" 'BEGIN{exit !(a>=b)}'; then
+        active=true
+    fi
+
+    case "$raw" in
+        EMERGENCY)
+            if [ "$active" = true ] && \
+               [ "$(monitor_severity_rank "$mem_severity")" -ge "$(monitor_severity_rank CRITICAL)" ]; then
+                echo EMERGENCY
+            elif [ "$active" = true ]; then
+                echo CRITICAL
+            else
+                echo WARNING
+            fi
+            ;;
+        CRITICAL)
+            [ "$active" = true ] && echo CRITICAL || echo WARNING
+            ;;
+        *) echo WARNING ;;
+    esac
+}
+
+monitor_vmstat_counter() {
+    local key="$1" file="${2:-$MONITOR_PROC_DIR/vmstat}"
+    awk -v k="$key" '$1==k {print $2; found=1; exit} END{if(!found) exit 1}' \
+        "$file" 2>/dev/null
+}
+
 collect_swap() {
     SWAP_TOTAL_MB="" SWAP_USED_MB="" SWAP_USED_PERCENT=""
-    SWAP_GROWTH_MB="n/d" SWAP_SEVERITY="UNKNOWN" SWAP_ENABLED=true
+    SWAP_GROWTH_MB="n/d" SWAP_PSWPIN_DELTA="n/d" SWAP_PSWPOUT_DELTA="n/d"
+    SWAP_ACTIVITY_PAGES_DELTA="n/d" SWAP_ACTIVE_PRESSURE=false
+    SWAP_SEVERITY="UNKNOWN" SWAP_ENABLED=true
 
     local parsed
     parsed=$(monitor_parse_meminfo "$MONITOR_PROC_DIR/meminfo") || return 1
@@ -182,6 +232,7 @@ collect_swap() {
         # Host sem swap configurada: não é erro, apenas registra
         SWAP_ENABLED=false
         SWAP_USED_PERCENT="0.0"
+        SWAP_PSWPIN_DELTA=0 SWAP_PSWPOUT_DELTA=0 SWAP_ACTIVITY_PAGES_DELTA=0
         SWAP_SEVERITY="INFO"
         monitor_state_set "swap_used_kb" "0"
         return 0
@@ -198,10 +249,41 @@ collect_swap() {
     fi
     monitor_state_set "swap_used_kb" "$swap_used_kb"
 
-    SWAP_SEVERITY=$(monitor_classify_high "$SWAP_USED_PERCENT" \
+    # Atividade real de swap desde a coleta anterior (/proc/vmstat). Na
+    # primeira leitura os deltas permanecem n/d para não inventar pressão.
+    local pswpin pswpout prev_in prev_out
+    pswpin=$(monitor_vmstat_counter pswpin 2>/dev/null || true)
+    pswpout=$(monitor_vmstat_counter pswpout 2>/dev/null || true)
+    prev_in=$(monitor_state_get "swap_pswpin")
+    prev_out=$(monitor_state_get "swap_pswpout")
+    if monitor_is_number "$pswpin" && monitor_is_number "$pswpout"; then
+        if monitor_is_number "$prev_in" && monitor_is_number "$prev_out" && \
+           [ "$pswpin" -ge "$prev_in" ] && [ "$pswpout" -ge "$prev_out" ]; then
+            SWAP_PSWPIN_DELTA=$((pswpin - prev_in))
+            SWAP_PSWPOUT_DELTA=$((pswpout - prev_out))
+            SWAP_ACTIVITY_PAGES_DELTA=$((SWAP_PSWPIN_DELTA + SWAP_PSWPOUT_DELTA))
+        fi
+        monitor_state_set "swap_pswpin" "$pswpin"
+        monitor_state_set "swap_pswpout" "$pswpout"
+    fi
+
+    local growth_warn="${MONITOR_SWAP_GROWTH_WARNING_MB:-64}"
+    local activity_warn="${MONITOR_SWAP_ACTIVITY_WARNING_PAGES:-256}"
+    if [ "$(monitor_severity_rank "${MEM_SEVERITY:-UNKNOWN}")" -ge "$(monitor_severity_rank WARNING)" ]; then
+        SWAP_ACTIVE_PRESSURE=true
+    elif monitor_is_number "$SWAP_GROWTH_MB" && \
+         awk -v a="$SWAP_GROWTH_MB" -v b="$growth_warn" 'BEGIN{exit !(a>=b)}'; then
+        SWAP_ACTIVE_PRESSURE=true
+    elif monitor_is_number "$SWAP_ACTIVITY_PAGES_DELTA" && \
+         awk -v a="$SWAP_ACTIVITY_PAGES_DELTA" -v b="$activity_warn" 'BEGIN{exit !(a>=b)}'; then
+        SWAP_ACTIVE_PRESSURE=true
+    fi
+
+    SWAP_SEVERITY=$(monitor_swap_classify_context "$SWAP_USED_PERCENT" \
+        "$SWAP_GROWTH_MB" "$SWAP_ACTIVITY_PAGES_DELTA" "${MEM_SEVERITY:-UNKNOWN}" \
         "$MONITOR_SWAP_WARNING_PERCENT" \
         "$MONITOR_SWAP_CRITICAL_PERCENT" \
-        "$MONITOR_SWAP_EMERGENCY_PERCENT")
+        "$MONITOR_SWAP_EMERGENCY_PERCENT" "$growth_warn" "$activity_warn")
 
     return 0
 }
@@ -500,6 +582,7 @@ collect_disk() {
 export -f collect_host_info
 export -f monitor_calc_load_ratio collect_load
 export -f monitor_parse_meminfo collect_memory collect_swap
+export -f monitor_swap_classify_context monitor_vmstat_counter
 export -f monitor_cpu_read_sample monitor_cpu_calc_delta collect_cpu
 export -f monitor_cgroup_parse_v1 monitor_cgroup_parse_v2 collect_cgroup
 export -f monitor_top_processes collect_processes

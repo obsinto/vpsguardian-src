@@ -99,6 +99,10 @@ monitor_load_config() {
     : "${MONITOR_SWAP_WARNING_PERCENT:=10}"
     : "${MONITOR_SWAP_CRITICAL_PERCENT:=20}"
     : "${MONITOR_SWAP_EMERGENCY_PERCENT:=50}"
+    # Swap ocupada, por si só, pode representar apenas páginas frias. Pressão
+    # ativa exige crescimento relevante, paginação recente ou RAM baixa.
+    : "${MONITOR_SWAP_GROWTH_WARNING_MB:=64}"
+    : "${MONITOR_SWAP_ACTIVITY_WARNING_PAGES:=256}"
 
     # Load ratio (load_1min / vCPUs)
     : "${MONITOR_LOAD_RATIO_WARNING:=1.5}"
@@ -120,6 +124,14 @@ monitor_load_config() {
     # I/O wait (%)
     : "${MONITOR_IOWAIT_WARNING_PERCENT:=15}"
     : "${MONITOR_IOWAIT_CRITICAL_PERCENT:=30}"
+
+    # CPU de container precisa persistir por mais de uma coleta antes de afetar
+    # a saúde efetiva. A leitura instantânea continua disponível no JSON.
+    : "${MONITOR_CONTAINER_CPU_CONSECUTIVE:=2}"
+
+    # Ausência de limite continua sendo WARNING por padrão: além de aparecer no
+    # inventário, preserva o alerta de risco de configuração já esperado.
+    : "${MONITOR_CONTAINER_NO_MEM_LIMIT_SEVERITY:=WARNING}"
 
     # Disco e inodes (%)
     : "${MONITOR_DISK_WARNING_PERCENT:=80}"

@@ -27,7 +27,7 @@
 #  6 health       14 cpu_norm_pct       22 mem_pct_of_limit    30 worker_hint
 #  7 policy       15 cpu_allowed        23 mem_severity        31 full_id
 #  8 policy_max   16 cpu_limited        24 severity
-# (32 issues — sempre o último campo, texto livre sem '|')
+# 32 issues (texto livre sem '|')  33 cpu_observed_severity  34 cpu_high_streak
 
 ################################################################################
 # Conversões e helpers puros (testáveis)
@@ -319,6 +319,8 @@ collect_containers() {
     local no_cpu_sev="${MONITOR_CONTAINER_NO_CPU_LIMIT_SEVERITY:-INFO}"
     local cpu_warn="${MONITOR_CONTAINER_CPU_WARNING_PERCENT:-80}"
     local cpu_crit="${MONITOR_CONTAINER_CPU_CRITICAL_PERCENT:-95}"
+    local cpu_consecutive="${MONITOR_CONTAINER_CPU_CONSECUTIVE:-2}"
+    [[ "$cpu_consecutive" =~ ^[1-9][0-9]*$ ]] || cpu_consecutive=2
     local restart_warn="${MONITOR_CONTAINER_RESTART_WARNING:-3}"
     local restart_crit="${MONITOR_CONTAINER_RESTART_CRITICAL:-5}"
     local restart_window_min="${MONITOR_CONTAINER_RESTART_WINDOW_MINUTES:-15}"
@@ -401,7 +403,8 @@ collect_containers() {
 
         # ---- CPU: bruto, normalizado e relativo ao permitido ----
         local cpu_raw="${S_CPU[$cid]:-}"
-        local cpu_allowed cpu_limited cpu_norm="" cpu_of_allowed="" cpu_sev="INFO"
+        local cpu_allowed cpu_limited cpu_norm="" cpu_of_allowed=""
+        local cpu_sev="INFO" cpu_observed_sev="INFO" cpu_high_streak=0
         IFS='|' read -r cpu_allowed cpu_limited <<< \
             "$(monitor_container_cpus_allowed "$i_nano" "$i_quota" "$i_period" "$i_cpuset" "$HOST_VCPUS")"
 
@@ -415,25 +418,41 @@ collect_containers() {
             cpu_norm=$(awk -v c="$cpu_raw" -v v="${HOST_VCPUS:-1}" 'BEGIN{printf "%.1f", c/v}')
             cpu_of_allowed=$(awk -v c="$cpu_raw" -v a="$cpu_allowed" \
                 'BEGIN{if (a>0) printf "%.1f", c/a}')
-            cpu_sev=$(monitor_classify_high "$cpu_of_allowed" "$cpu_warn" "$cpu_crit")
-            # Sem limite de CPU só eleva severidade se configurado
-            if [ "$cpu_limited" = "false" ] && [ "$cpu_sev" = "INFO" ]; then
-                cpu_sev="$no_cpu_sev"
-            fi
-            case "$cpu_sev" in
-                WARNING|CRITICAL)
-                    issues="${issues}CPU em ${cpu_of_allowed}% do permitido (${cpu_raw}% bruto); " ;;
-            esac
+            cpu_observed_sev=$(monitor_classify_high "$cpu_of_allowed" "$cpu_warn" "$cpu_crit")
         elif [ "$state" = "running" ]; then
+            cpu_observed_sev="UNKNOWN"
             cpu_sev="UNKNOWN"
         fi
 
-        # Leituras altas consecutivas: persistir contador para o M5
-        if [ "$cpu_sev" = "WARNING" ] || [ "$cpu_sev" = "CRITICAL" ]; then
+        # CPU instantânea é observação; só vira severidade efetiva após N ciclos.
+        # O contador é explicitamente zerado quando a leitura normaliza.
+        if [ "$cpu_observed_sev" = "WARNING" ] || [ "$cpu_observed_sev" = "CRITICAL" ]; then
             local prev_high
             prev_high=$(monitor_state_get "ch_$cid")
             monitor_is_number "$prev_high" || prev_high=0
-            monitor_state_set "ch_$cid" "$((prev_high + 1))"
+            cpu_high_streak=$((prev_high + 1))
+            monitor_state_set "ch_$cid" "$cpu_high_streak"
+            if [ "$cpu_high_streak" -ge "$cpu_consecutive" ]; then
+                cpu_sev="$cpu_observed_sev"
+                issues="${issues}CPU sustentada por ${cpu_high_streak} coleta(s): ${cpu_of_allowed}% do permitido (${cpu_raw}% bruto); "
+            else
+                cpu_sev="INFO"
+            fi
+        elif [ "$cpu_observed_sev" = "INFO" ]; then
+            monitor_state_set "ch_$cid" "0"
+            cpu_high_streak=0
+            cpu_sev="INFO"
+        else
+            # Uma coleta sem dado de CPU interrompe a sequência: duas leituras
+            # altas separadas por uma falha de stats não são consecutivas.
+            monitor_state_set "ch_$cid" "0"
+            cpu_high_streak=0
+        fi
+
+        # Sem limite de CPU só eleva severidade se explicitamente configurado.
+        if [ "$cpu_limited" = "false" ] && [ "$cpu_sev" = "INFO" ] && \
+           [ "$cpu_observed_sev" = "INFO" ]; then
+            cpu_sev="$no_cpu_sev"
         fi
 
         # ---- Restart loop por delta dentro da janela ----
@@ -513,7 +532,7 @@ collect_containers() {
         name=$(echo "$name" | tr -d '|')
         image=$(echo "$image" | tr -d '|')
 
-        CONTAINERS_DATA+=("$cid|$name|$image|$state|$status_text|$i_health|${i_policy:-}|${i_policy_max:-}|${i_restart_count:-}|$restart_windowed|$restart_sev|${uptime_seconds:-}|${cpu_raw:-}|${cpu_norm:-}|${cpu_allowed:-}|${cpu_limited:-}|${cpu_of_allowed:-}|$cpu_sev|${mem_used_mb:-}|${mem_limit_mb:-}|${mem_res_mb:-}|${mem_pct:-}|$mem_sev|$severity|${coolify_uuid:-}|${coolify_type:-}|${coolify_name:-}|${l_project:-}|${l_env:-}|$worker_hint|${i_full:-}|$issues")
+        CONTAINERS_DATA+=("$cid|$name|$image|$state|$status_text|$i_health|${i_policy:-}|${i_policy_max:-}|${i_restart_count:-}|$restart_windowed|$restart_sev|${uptime_seconds:-}|${cpu_raw:-}|${cpu_norm:-}|${cpu_allowed:-}|${cpu_limited:-}|${cpu_of_allowed:-}|$cpu_sev|${mem_used_mb:-}|${mem_limit_mb:-}|${mem_res_mb:-}|${mem_pct:-}|$mem_sev|$severity|${coolify_uuid:-}|${coolify_type:-}|${coolify_name:-}|${l_project:-}|${l_env:-}|$worker_hint|${i_full:-}|$issues|$cpu_observed_sev|$cpu_high_streak")
 
         # Alertas por container (limitados pelo chamador na exibição)
         if [ "$severity" != "INFO" ]; then
@@ -560,6 +579,7 @@ monitor_containers_json() {
     local f_rcount f_rwin f_rsev f_uptime f_craw f_cnorm f_callowed f_climited
     local f_callowedpct f_csev f_mused f_mlimit f_mres f_mpct f_msev f_sev
     local f_cuuid f_ctype f_cname f_cproj f_cenv f_worker f_fullid f_issues
+    local f_cobserved f_cstreak
 
     for rec in "${CONTAINERS_DATA[@]}"; do
         [ "$count" -ge "$max" ] && break
@@ -567,10 +587,16 @@ monitor_containers_json() {
             f_policy_max f_rcount f_rwin f_rsev f_uptime f_craw f_cnorm f_callowed \
             f_climited f_callowedpct f_csev f_mused f_mlimit f_mres f_mpct f_msev \
             f_sev f_cuuid f_ctype f_cname f_cproj f_cenv f_worker f_fullid f_issues \
+            f_cobserved f_cstreak \
             <<< "$rec"
 
         [ -n "$out" ] && out+=","
-        out+="{\"id\":\"$f_id\",\"full_id\":$(_cjv "$f_fullid"),\"name\":\"$(monitor_json_escape "$f_name")\",\"image\":\"$(monitor_json_escape "$f_image")\",\"state\":$(_cjv "$f_state"),\"status\":\"$(monitor_json_escape "$f_status")\",\"health\":$(_cjv "$f_health"),\"restart_policy\":$(_cjv "$f_policy"),\"restart_max_retries\":$(_cjv "$f_policy_max"),\"restart_count\":$(_cjv "$f_rcount"),\"restarts_in_window\":$(_cjv "$f_rwin"),\"restart_severity\":$(_cjv "$f_rsev"),\"uptime_seconds\":$(_cjv "$f_uptime"),\"cpu_percent\":$(_cjv "$f_craw"),\"cpu_percent_normalized\":$(_cjv "$f_cnorm"),\"cpu_allowed\":$(_cjv "$f_callowed"),\"cpu_limited\":${f_climited:-null},\"cpu_of_allowed_percent\":$(_cjv "$f_callowedpct"),\"cpu_severity\":$(_cjv "$f_csev"),\"mem_used_mb\":$(_cjv "$f_mused"),\"mem_limit_mb\":$(_cjv "$f_mlimit"),\"mem_reservation_mb\":$(_cjv "$f_mres"),\"mem_percent_of_limit\":$(_cjv "$f_mpct"),\"mem_severity\":$(_cjv "$f_msev"),\"severity\":$(_cjv "$f_sev"),\"issues\":\"$(monitor_json_escape "$f_issues")\",\"worker_hint\":${f_worker:-false},\"coolify\":{\"resource_uuid\":$(_cjv "$f_cuuid"),\"resource_type\":$(_cjv "$f_ctype"),\"resource_name\":\"$(monitor_json_escape "$f_cname")\",\"project\":\"$(monitor_json_escape "$f_cproj")\",\"environment\":\"$(monitor_json_escape "$f_cenv")\"}}"
+        local cpu_pending=false
+        if { [ "$f_cobserved" = "WARNING" ] || [ "$f_cobserved" = "CRITICAL" ]; } && \
+           [ "$f_csev" = "INFO" ]; then
+            cpu_pending=true
+        fi
+        out+="{\"id\":\"$f_id\",\"full_id\":$(_cjv "$f_fullid"),\"name\":\"$(monitor_json_escape "$f_name")\",\"image\":\"$(monitor_json_escape "$f_image")\",\"state\":$(_cjv "$f_state"),\"status\":\"$(monitor_json_escape "$f_status")\",\"health\":$(_cjv "$f_health"),\"restart_policy\":$(_cjv "$f_policy"),\"restart_max_retries\":$(_cjv "$f_policy_max"),\"restart_count\":$(_cjv "$f_rcount"),\"restarts_in_window\":$(_cjv "$f_rwin"),\"restart_severity\":$(_cjv "$f_rsev"),\"uptime_seconds\":$(_cjv "$f_uptime"),\"cpu_percent\":$(_cjv "$f_craw"),\"cpu_percent_normalized\":$(_cjv "$f_cnorm"),\"cpu_allowed\":$(_cjv "$f_callowed"),\"cpu_limited\":${f_climited:-null},\"cpu_of_allowed_percent\":$(_cjv "$f_callowedpct"),\"cpu_observed_severity\":$(_cjv "$f_cobserved"),\"cpu_high_streak\":$(_cjv "$f_cstreak"),\"cpu_pending\":$cpu_pending,\"cpu_severity\":$(_cjv "$f_csev"),\"mem_used_mb\":$(_cjv "$f_mused"),\"mem_limit_mb\":$(_cjv "$f_mlimit"),\"mem_reservation_mb\":$(_cjv "$f_mres"),\"mem_percent_of_limit\":$(_cjv "$f_mpct"),\"mem_severity\":$(_cjv "$f_msev"),\"severity\":$(_cjv "$f_sev"),\"issues\":\"$(monitor_json_escape "$f_issues")\",\"worker_hint\":${f_worker:-false},\"coolify\":{\"resource_uuid\":$(_cjv "$f_cuuid"),\"resource_type\":$(_cjv "$f_ctype"),\"resource_name\":\"$(monitor_json_escape "$f_cname")\",\"project\":\"$(monitor_json_escape "$f_cproj")\",\"environment\":\"$(monitor_json_escape "$f_cenv")\"}}"
         ((count++))
     done
     printf '%s' "$out"

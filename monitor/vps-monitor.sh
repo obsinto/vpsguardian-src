@@ -297,7 +297,7 @@ evaluate_metrics() {
     [ -n "$MEM_SEVERITY" ] && add_alert "$MEM_SEVERITY" "memoria" \
         "RAM disponível: ${MEM_AVAILABLE_MB:-n/d} MB de ${MEM_TOTAL_MB:-n/d} MB (${MEM_AVAILABLE_PERCENT:-n/d}%)"
     [ -n "$SWAP_SEVERITY" ] && add_alert "$SWAP_SEVERITY" "swap" \
-        "Swap utilizada: ${SWAP_USED_PERCENT:-n/d}% (${SWAP_USED_MB:-n/d} MB, crescimento: ${SWAP_GROWTH_MB:-n/d} MB)"
+        "Swap utilizada: ${SWAP_USED_PERCENT:-n/d}% (${SWAP_USED_MB:-n/d} MB, crescimento: ${SWAP_GROWTH_MB:-n/d} MB, atividade: ${SWAP_ACTIVITY_PAGES_DELTA:-n/d} páginas)"
     [ -n "$CPU_SEVERITY" ] && add_alert "$CPU_SEVERITY" "cpu" \
         "CPU total: ${CPU_USAGE_PERCENT:-n/d}%"
     [ -n "$CPU_STEAL_SEVERITY" ] && add_alert "$CPU_STEAL_SEVERITY" "cpu_steal" \
@@ -363,7 +363,7 @@ build_incidents() {
     monitor_alert_register "host:memoria" "$MEM_SEVERITY"       "Memória disponível baixa" \
         "Disponível: ${MEM_AVAILABLE_MB} MB (${MEM_AVAILABLE_PERCENT}%)"
     monitor_alert_register "host:swap"    "$SWAP_SEVERITY"      "Uso de swap elevado" \
-        "Swap: ${SWAP_USED_PERCENT}% (${SWAP_USED_MB} MB, crescimento ${SWAP_GROWTH_MB} MB)"
+        "Swap: ${SWAP_USED_PERCENT}% (${SWAP_USED_MB} MB, crescimento ${SWAP_GROWTH_MB} MB, atividade ${SWAP_ACTIVITY_PAGES_DELTA:-n/d} páginas)"
     monitor_alert_register "host:cpu"     "$CPU_SEVERITY"       "CPU saturada" \
         "CPU: ${CPU_USAGE_PERCENT}%"
     monitor_alert_register_high "host:steal" "$CPU_STEAL_SEVERITY" \
@@ -493,6 +493,10 @@ build_json() {
     "used_mb": $(jv "$SWAP_USED_MB"),
     "used_percent": $(jv "$SWAP_USED_PERCENT"),
     "growth_mb": $(jv "$SWAP_GROWTH_MB"),
+    "pswpin_delta": $(jv "$SWAP_PSWPIN_DELTA"),
+    "pswpout_delta": $(jv "$SWAP_PSWPOUT_DELTA"),
+    "activity_pages_delta": $(jv "$SWAP_ACTIVITY_PAGES_DELTA"),
+    "active_pressure": ${SWAP_ACTIVE_PRESSURE:-false},
     "severity": $(jv "$SWAP_SEVERITY")
   },
   "cpu": {
@@ -663,6 +667,10 @@ swap_total_mb=$SWAP_TOTAL_MB
 swap_used_mb=$SWAP_USED_MB
 swap_used_percent=$SWAP_USED_PERCENT
 swap_growth_mb=$SWAP_GROWTH_MB
+swap_pswpin_delta=$SWAP_PSWPIN_DELTA
+swap_pswpout_delta=$SWAP_PSWPOUT_DELTA
+swap_activity_pages_delta=$SWAP_ACTIVITY_PAGES_DELTA
+swap_active_pressure=$SWAP_ACTIVE_PRESSURE
 swap_severity=$SWAP_SEVERITY
 cpu_usage_percent=$CPU_USAGE_PERCENT
 cpu_user_percent=$CPU_USER_PERCENT

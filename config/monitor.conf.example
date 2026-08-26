@@ -44,6 +44,9 @@
 #MONITOR_SWAP_WARNING_PERCENT=10
 #MONITOR_SWAP_CRITICAL_PERCENT=20
 #MONITOR_SWAP_EMERGENCY_PERCENT=50
+# Crescimento/atividade mínimos para confirmar pressão ativa de swap
+#MONITOR_SWAP_GROWTH_WARNING_MB=64
+#MONITOR_SWAP_ACTIVITY_WARNING_PAGES=256
 
 # ========== LOAD AVERAGE ==========
 # load_ratio = load de 1 minuto / quantidade de vCPUs
@@ -116,7 +119,8 @@
 #MONITOR_CONTAINER_MEM_CRITICAL_PERCENT=90
 #MONITOR_CONTAINER_MEM_EMERGENCY_PERCENT=97
 
-# Severidade para container SEM limite de memória (WARNING recomendado)
+# Severidade para container SEM limite de memória (WARNING recomendado).
+# Use INFO somente se quiser mantê-lo como achado de inventário sem incidente.
 #MONITOR_CONTAINER_NO_MEM_LIMIT_SEVERITY=WARNING
 
 # Severidade para container sem limite de CPU (INFO ou WARNING)
@@ -125,6 +129,8 @@
 # CPU do container em % do que lhe é permitido (limite ou host inteiro)
 #MONITOR_CONTAINER_CPU_WARNING_PERCENT=80
 #MONITOR_CONTAINER_CPU_CRITICAL_PERCENT=95
+# Leituras altas consecutivas antes de afetar a saúde efetiva do container
+#MONITOR_CONTAINER_CPU_CONSECUTIVE=2
 
 # Restart loop: reinicializações dentro da janela
 #MONITOR_CONTAINER_RESTART_WARNING=3

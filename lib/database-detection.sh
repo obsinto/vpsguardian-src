@@ -8,23 +8,57 @@
 # container executa um servidor de banco.
 ################################################################################
 
+declare -A DATABASE_CONTAINER_SHELL_CACHE=()
+
+database_container_has_shell() {
+    local container="$1"
+    local cached="${DATABASE_CONTAINER_SHELL_CACHE[$container]:-}"
+
+    [ "$cached" = true ] && return 0
+    [ "$cached" = false ] && return 1
+
+    if docker exec "$container" sh -c ':' >/dev/null 2>&1; then
+        DATABASE_CONTAINER_SHELL_CACHE["$container"]=true
+        return 0
+    fi
+
+    DATABASE_CONTAINER_SHELL_CACHE["$container"]=false
+    return 1
+}
+
+database_container_has_command() {
+    local container="$1" tool="$2"
+
+    # Quando há shell, uma ferramenta ausente vira apenas exit status 1 dentro
+    # do container e não um erro OCI ruidoso no journal do dockerd.
+    if database_container_has_shell "$container"; then
+        docker exec "$container" sh -c \
+            'command -v "$1" >/dev/null 2>&1' _ "$tool" >/dev/null 2>&1
+        return $?
+    fi
+
+    # Imagens distroless podem não ter shell. Nelas mantemos a sondagem direta
+    # para não deixar de detectar uma ferramenta realmente disponível.
+    docker exec "$container" "$tool" --version >/dev/null 2>&1
+}
+
 database_container_has_tool() {
     local container="$1"
     local engine="$2"
 
     case "$engine" in
         mysql)
-            docker exec "$container" mariadb-dump --version >/dev/null 2>&1 ||
-                docker exec "$container" mysqldump --version >/dev/null 2>&1
+            database_container_has_command "$container" mariadb-dump ||
+                database_container_has_command "$container" mysqldump
             ;;
         postgres)
-            docker exec "$container" pg_dump --version >/dev/null 2>&1
+            database_container_has_command "$container" pg_dump
             ;;
         mongodb)
-            docker exec "$container" mongodump --version >/dev/null 2>&1
+            database_container_has_command "$container" mongodump
             ;;
         redis)
-            docker exec "$container" redis-server --version >/dev/null 2>&1
+            database_container_has_command "$container" redis-server
             ;;
         *)
             return 1

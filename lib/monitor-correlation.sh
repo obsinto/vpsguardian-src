@@ -404,6 +404,14 @@ monitor_correlation_eval_docker() {
     local dockerd_active=false
     [ -n "${CORR[dockerd_pid]:-}" ] && dockerd_active=true
 
+    # Pressão do host não transforma, por si só, um Docker saudável em lento.
+    # Sem uma sonda lenta ou sem resposta não há sintoma Docker para explicar;
+    # os diagnósticos de memória/provedor continuam sendo calculados à parte.
+    if [ "$unresponsive" != true ] && [ "$slow" != true ]; then
+        EVAL_SCORE=0
+        return 0
+    fi
+
     if [ "$unresponsive" = true ]; then
         score=$((score+20)); evid+="docker ps excede timeout;;"
     elif [ "$slow" = true ]; then
@@ -494,6 +502,8 @@ monitor_correlation_collect_signals() {
     _cset swap_severity "${SWAP_SEVERITY:-}"
     _cset swap_used_percent "${SWAP_USED_PERCENT:-}"
     [ -n "${SWAP_GROWTH_MB:-}" ] && [ "${SWAP_GROWTH_MB}" != "n/d" ] && CORR[swap_growth_mb]="$SWAP_GROWTH_MB"
+    [ -n "${SWAP_ACTIVITY_PAGES_DELTA:-}" ] && [ "${SWAP_ACTIVITY_PAGES_DELTA}" != "n/d" ] && CORR[swap_activity_pages_delta]="$SWAP_ACTIVITY_PAGES_DELTA"
+    _cset swap_active_pressure "${SWAP_ACTIVE_PRESSURE:-}"
     _cset load_severity "${LOAD_SEVERITY:-}"
     _cset load_ratio "${LOAD_RATIO:-}"
     _cset cpu_severity "${CPU_SEVERITY:-}"

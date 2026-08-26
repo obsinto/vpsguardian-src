@@ -158,6 +158,17 @@ assert_eq "UNKNOWN" "$(monitor_classify_low '' 2048 1024)" "valor vazio => UNKNO
 
 assert_eq "CRITICAL" "$(monitor_severity_max WARNING CRITICAL)" "max(WARNING,CRITICAL) = CRITICAL"
 assert_eq "EMERGENCY" "$(monitor_severity_max EMERGENCY INFO)" "max(EMERGENCY,INFO) = EMERGENCY"
+
+# Swap ocupada sem pressão ativa não deve virar emergência por retenção histórica.
+assert_eq "WARNING" \
+    "$(monitor_swap_classify_context 98 0 0 INFO 10 20 50 64 256)" \
+    "swap 98% estável com RAM saudável => WARNING"
+assert_eq "CRITICAL" \
+    "$(monitor_swap_classify_context 98 80 0 INFO 10 20 50 64 256)" \
+    "swap 98% crescendo => CRITICAL"
+assert_eq "EMERGENCY" \
+    "$(monitor_swap_classify_context 98 80 300 CRITICAL 10 20 50 64 256)" \
+    "swap 98% ativa com RAM crítica => EMERGENCY"
 echo ""
 
 ################################################################################

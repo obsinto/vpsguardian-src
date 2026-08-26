@@ -210,6 +210,8 @@ monitor_history_build_metrics_line() {
     printf ',"swap_total_bytes":%s' "$(_hv_bytes "${SWAP_TOTAL_MB:-}")"
     printf ',"swap_used_bytes":%s' "$(_hv_bytes "${SWAP_USED_MB:-}")"
     printf ',"swap_used_percent":%s' "$(_hv "${SWAP_USED_PERCENT:-}")"
+    printf ',"swap_activity_pages_delta":%s' "$(_hv "${SWAP_ACTIVITY_PAGES_DELTA:-}")"
+    printf ',"swap_active_pressure":%s' "$(_hv_str "${SWAP_ACTIVE_PRESSURE:-false}")"
     printf ',"swap_delta_bytes":%s' "$(_hv "$swap_delta")"
     printf ',"disk_root_total_bytes":%s' "$(_hv_bytes "${DISK_TOTAL_MB:-}")"
     printf ',"disk_root_available_bytes":%s' "$(_hv_bytes "${DISK_AVAILABLE_MB:-}")"

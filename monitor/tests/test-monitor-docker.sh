@@ -323,12 +323,24 @@ echo "🔍 Teste 11: CPU >100% multicore e limites de CPU"
 assert_eq "320.00" "$(container_field automind 13)" "CPU bruta 320% preservada"
 assert_eq "80.0" "$(container_field automind 14)" "normalizada por 4 vCPUs => 80%"
 assert_eq "80.0" "$(container_field automind 17)" "sem limite: % do host => 80%"
-assert_eq "WARNING" "$(container_field automind 18)" "80% do permitido => WARNING"
+assert_eq "INFO" "$(container_field automind 18)" "1ª amostra alta ainda não afeta a saúde"
+assert_eq "WARNING" "$(container_field automind 33)" "1ª amostra preserva severidade observada"
+assert_eq "1" "$(container_field automind 34)" "1ª amostra inicia sequência alta"
 assert_eq "1.00" "$(container_field bugroyale-worker 15)" "1 CPU permitida (NanoCpus)"
 assert_eq "97.3" "$(container_field bugroyale-worker 17)" "97.35% de 1 CPU => 97.3% (arredondamento IEEE)"
-assert_eq "CRITICAL" "$(container_field bugroyale-worker 18)" "CPU 97% do permitido => CRITICAL"
+assert_eq "INFO" "$(container_field bugroyale-worker 18)" "pico crítico isolado ainda não afeta a saúde"
+assert_eq "CRITICAL" "$(container_field bugroyale-worker 33)" "pico crítico permanece observável"
 assert_eq "false" "$(container_field automind 16)" "automind sem limite de CPU"
 assert_eq "true" "$(container_field postgres-x1y2z3 16)" "postgres com quota de CPU"
+
+# Persistir a primeira coleta e repetir os mesmos valores confirma CPU sustentada.
+monitor_state_save
+MONITOR_STATE_BUFFER=""
+collect_containers
+assert_eq "WARNING" "$(container_field automind 18)" "2ª amostra alta confirma WARNING"
+assert_eq "2" "$(container_field automind 34)" "sequência WARNING confirmada"
+assert_eq "CRITICAL" "$(container_field bugroyale-worker 18)" "2ª amostra alta confirma CRITICAL"
+assert_eq "2" "$(container_field bugroyale-worker 34)" "sequência CRITICAL confirmada"
 echo ""
 
 ################################################################################

@@ -96,6 +96,12 @@ echo ""
 ################################################################################
 echo "🔍 Teste 3: Cenário D — Docker vítima do host"
 ################################################################################
+cs; CORR[docker_installed]=true; CORR[docker_status]=HEALTHY; CORR[docker_ps_ok]=true
+CORR[containerd_responsive]=true; CORR[dockerd_pid]=100; CORR[swap_severity]=CRITICAL
+monitor_correlation_eval_docker
+assert_eq "0" "$EVAL_SCORE" "docker saudável + host pressionado não gera diagnóstico Docker"
+assert_eq "" "$EVAL_SCENARIO" "docker saudável não é rotulado como lento"
+
 cs; CORR[docker_installed]=true; CORR[docker_status]=SLOW; CORR[docker_ps_ok]=true
 CORR[containerd_responsive]=true; CORR[dockerd_pid]=100; CORR[mem_severity]=INFO
 monitor_correlation_eval_docker

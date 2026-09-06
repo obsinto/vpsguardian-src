@@ -4,7 +4,7 @@
 umask 077
 # Script: backup-databases-dump-auto.sh
 # Propósito: Wrapper para backup automático via dump SQL (usa migrar-databases-dump.sh)
-# Uso: ./backup-databases-dump-auto.sh [--dest=local|google-drive|aws-s3|all]
+# Uso: ./backup-databases-dump-auto.sh [--dest=local|google-drive|aws-s3|all] [--prefix=CAMINHO]
 #
 # Este script:
 #   1. Executa migrar-databases-dump.sh para criar dumps locais
@@ -42,7 +42,8 @@ if [ -f "$BACKUP_DESTINATIONS_CONFIG" ]; then
 fi
 
 ### ========== CONFIGURAÇÃO ==========
-UPLOAD_DEST="${1:-local}"
+UPLOAD_DEST="local"
+UPLOAD_PREFIX=""
 BASE_BACKUP_DIR="${DATABASE_BACKUP_DIR:-${BACKUP_ROOT:-/var/backups/vpsguardian}/databases}"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="${LOG_DIR:-/var/log/vpsguardian}/backup-databases-auto-${TIMESTAMP}.log"
@@ -51,6 +52,43 @@ REMOTE_RESULT=0
 TARBALL=""
 TARBALL_SIZE=""
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
+
+# Parse argumentos
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dest=*) UPLOAD_DEST="${1#*=}"; shift ;;
+        --prefix=*) UPLOAD_PREFIX="${1#*=}"; shift ;;
+        --include-coolify) BACKUP_INCLUDE_COOLIFY=true; shift ;;
+        --exclude-coolify) BACKUP_INCLUDE_COOLIFY=false; shift ;;
+        --project=*) PROJECT_FILTER="${1#*=}"; shift ;;
+        -h|--help)
+            echo "Uso: $0 [OPÇÕES]"
+            echo ""
+            echo "  --dest=DESTINO       local, google-drive, aws-s3 ou all"
+            echo "  --prefix=CAMINHO     Prefixo remoto; no S3 sobrescreve S3_PREFIX"
+            echo "  --project=NOME       Limitar a um projeto Coolify"
+            echo "  --include-coolify    Incluir coolify-db"
+            echo "  --exclude-coolify    Excluir coolify-db"
+            echo "  -h, --help            Mostrar esta ajuda"
+            exit 0
+            ;;
+        *) log_error "Opção desconhecida: $1"; exit 2 ;;
+    esac
+done
+
+case "$UPLOAD_DEST" in
+    s3) UPLOAD_DEST="aws-s3" ;;
+    local|google-drive|aws-s3|all) ;;
+    *) log_error "Destino inválido: $UPLOAD_DEST"; exit 2 ;;
+esac
+
+if [ -n "$UPLOAD_PREFIX" ]; then
+    if [[ ! "$UPLOAD_PREFIX" =~ ^[A-Za-z0-9._/-]+$ ]] || \
+       [[ "/$UPLOAD_PREFIX/" == *"/../"* ]] || [[ "/$UPLOAD_PREFIX/" == *"/./"* ]]; then
+        log_error "Prefixo remoto inválido: $UPLOAD_PREFIX"
+        exit 2
+    fi
+fi
 
 if command -v flock >/dev/null 2>&1; then
     DATABASE_BACKUP_LOCK_FILE="${DATABASE_BACKUP_LOCK_FILE:-${LOCK_DIR:-/var/lock}/vpsguardian-database-backup.lock}"
@@ -61,16 +99,6 @@ if command -v flock >/dev/null 2>&1; then
         exit 4
     fi
 fi
-
-# Parse argumentos
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --dest=*) UPLOAD_DEST="${1#*=}"; shift ;;
-        --include-coolify) INCLUDE_COOLIFY=true; shift ;;
-        --project=*) PROJECT_FILTER="${1#*=}"; shift ;;
-        *) shift ;;
-    esac
-done
 
 ### ========== INÍCIO ==========
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -83,6 +111,7 @@ echo "╚═══════════════════════�
 echo ""
 log_info "Iniciado em: $(date '+%Y-%m-%d %H:%M:%S')"
 log_info "Destino: $UPLOAD_DEST"
+[ -n "$UPLOAD_PREFIX" ] && log_info "Prefixo remoto: $UPLOAD_PREFIX"
 if [ -n "$PROJECT_FILTER" ]; then
     log_info "Projeto: $PROJECT_FILTER"
 fi
@@ -97,7 +126,7 @@ notify_backup_start "Databases (Dumps SQL)" "Destino: $UPLOAD_DEST | Coolify: ${
 log_section "Criando Dumps SQL"
 
 # Executar script de dump (modo local)
-DUMP_SCRIPT="$SCRIPT_DIR/../migrar/migrar-databases-dump.sh"
+DUMP_SCRIPT="${VPSGUARDIAN_DUMP_SCRIPT:-$SCRIPT_DIR/../migrar/migrar-databases-dump.sh}"
 
 if [ ! -x "$DUMP_SCRIPT" ]; then
     log_error "Script de dump não encontrado ou não executável: $DUMP_SCRIPT"
@@ -162,14 +191,19 @@ if [ "$UPLOAD_DEST" != "local" ]; then
         log_success "Tarball criado: $TARBALL_SIZE"
         echo ""
 
-        # Chamar backup-destinos.sh com o tarball
-        # Usar --prefix=databases para manter estrutura padronizada:
-        # bucket/databases/, bucket/coolify/, bucket/volumes/
-        DESTINOS_SCRIPT="$SCRIPT_DIR/backup-destinos.sh"
+        # Chamar backup-destinos.sh com o tarball. O prefixo genérico continua
+        # sendo "databases" para compatibilidade; no S3, respeitar S3_PREFIX ou
+        # o override explícito para que o restore procure no mesmo caminho.
+        DESTINOS_SCRIPT="${VPSGUARDIAN_DESTINATIONS_SCRIPT:-$SCRIPT_DIR/backup-destinos.sh}"
 
         if [ -x "$DESTINOS_SCRIPT" ]; then
-            log_info "Executando: $DESTINOS_SCRIPT $TARBALL --dest=$UPLOAD_DEST --prefix=databases"
-            bash "$DESTINOS_SCRIPT" "$TARBALL" --dest="$UPLOAD_DEST" --prefix=databases
+            GENERIC_PREFIX="${UPLOAD_PREFIX:-databases}"
+            S3_UPLOAD_PREFIX="${UPLOAD_PREFIX:-${S3_PREFIX:-databases}}"
+            log_info "Enviando lote (prefixo geral: $GENERIC_PREFIX; S3: $S3_UPLOAD_PREFIX)"
+            bash "$DESTINOS_SCRIPT" "$TARBALL" \
+                --dest="$UPLOAD_DEST" \
+                --prefix="$GENERIC_PREFIX" \
+                --s3-prefix="$S3_UPLOAD_PREFIX"
 
             if [ $? -eq 0 ]; then
                 log_success "Upload concluído com sucesso"

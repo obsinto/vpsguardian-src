@@ -333,6 +333,7 @@ fi
 BACKUP_FILE=""
 DEST_AUTO=""
 PREFIX_OVERRIDE=""
+S3_PREFIX_OVERRIDE=""
 TYPE_OVERRIDE=""
 
 for arg in "$@"; do
@@ -342,6 +343,9 @@ for arg in "$@"; do
             ;;
         --prefix=*)
             PREFIX_OVERRIDE="${arg#*=}"
+            ;;
+        --s3-prefix=*)
+            S3_PREFIX_OVERRIDE="${arg#*=}"
             ;;
         --type=*)
             TYPE_OVERRIDE="${arg#*=}"
@@ -694,8 +698,11 @@ if [ "$UPLOAD_S3" = true ]; then
                     S3_UPLOAD_READY=false
                 else
                     log_info "Usando bucket configurado: $S3_BUCKET"
-                    # Usar prefixo override se fornecido, senão usar configurado
-                    if [ -n "$PREFIX_OVERRIDE" ]; then
+                    # O override específico do S3 não altera SSH/Google Drive.
+                    if [ -n "$S3_PREFIX_OVERRIDE" ]; then
+                        S3_PREFIX="$S3_PREFIX_OVERRIDE"
+                        log_info "Usando prefixo S3 override: $S3_PREFIX"
+                    elif [ -n "$PREFIX_OVERRIDE" ]; then
                         S3_PREFIX="$PREFIX_OVERRIDE"
                         log_info "Usando prefixo override: $S3_PREFIX"
                     else

@@ -51,6 +51,15 @@ MIGRATE_PROXY="true"
 # Padrão: 1
 KEY_ROTATION_MODE="1"
 
+### ========== GUARDA PARA TESTES E2E (OPCIONAL) ==========
+# Quando definido, o orquestrador exige que este arquivo exista no destino e
+# que ALLOW_DESTRUCTIVE_E2E=YES esteja exportado no ambiente de execução.
+# Recomendado para VMs descartáveis usadas nos testes automatizados.
+DESTINATION_MARKER_FILE=""
+# Exemplo:
+# DESTINATION_MARKER_FILE="/etc/vpsguardian-e2e-destination"
+# export ALLOW_DESTRUCTIVE_E2E=YES
+
 ################################################################################
 # NOTAS IMPORTANTES:
 #

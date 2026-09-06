@@ -2,7 +2,7 @@
 ################################################################################
 # Script: restore-databases-dump.sh
 # Propósito: Restaurar bancos de dados de dumps SQL organizados em lotes
-# Uso: ./restore-databases-dump.sh [--dir=PATH] [--auto]
+# Uso: ./restore-databases-dump.sh [--dir=PATH] [--batch=NOME] [--auto]
 #
 # Suporta:
 #   - MySQL/MariaDB (.sql ou .sql.gz)
@@ -20,6 +20,11 @@ source "$SCRIPT_DIR/../lib/common.sh" 2>/dev/null || {
     log_warning() { echo "[ AVISO ] $*"; }
     log_section() { echo ""; echo "========== $* =========="; echo ""; }
 }
+source "$SCRIPT_DIR/../lib/reporting.sh" 2>/dev/null || {
+    vpsg_json_escape() { printf '%s' "${1:-}"; }
+    vpsg_xml_escape() { printf '%s' "${1:-}"; }
+    vpsg_prepare_report_path() { mkdir -p "$(dirname "$1")"; }
+}
 
 # Carregar configurações do VPS Guardian
 if [ -f "/opt/vpsguardian/config/config.env" ]; then
@@ -35,22 +40,49 @@ fi
 # Usar DATABASE_BACKUP_DIR da configuração ou padrão
 DUMP_DIR="${DUMP_DIR:-${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases}}"
 AUTO_MODE=false
+INCLUDE_COOLIFY=false
+BATCH_NAME=""
+TARGET_CONTAINER_OVERRIDE=""
+JSON_REPORT=""
+JUNIT_REPORT=""
+DUMP_FILTERS=()
 SELECTED_DUMPS=()
+RESULT_FILES=()
+RESULT_SOURCES=()
+RESULT_TARGETS=()
+RESULT_STATUSES=()
+SUCCESS_COUNT=0
+FAIL_COUNT=0
+REPORT_WRITTEN=false
 
 ### ========== PARSE ARGUMENTOS ==========
 while [[ $# -gt 0 ]]; do
     case $1 in
         --dir=*) DUMP_DIR="${1#*=}"; shift ;;
-        --auto) AUTO_MODE=true; shift ;;
+        --batch=*) BATCH_NAME="${1#*=}"; shift ;;
+        --dump=*) DUMP_FILTERS+=("${1#*=}"); AUTO_MODE=true; shift ;;
+        --target-container=*) TARGET_CONTAINER_OVERRIDE="${1#*=}"; shift ;;
+        --auto|--yes) AUTO_MODE=true; shift ;;
+        --include-coolify) INCLUDE_COOLIFY=true; shift ;;
+        --exclude-coolify) INCLUDE_COOLIFY=false; shift ;;
+        --json-report=*) JSON_REPORT="${1#*=}"; shift ;;
+        --junit-report=*) JUNIT_REPORT="${1#*=}"; shift ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Restaurar bancos de dados de dumps SQL"
             echo ""
             echo "Options:"
-            echo "  --dir=PATH       Diretório base (default: ${DATABASE_BACKUP_DIR:-/var/backups/vpsguardian/databases})"
-            echo "  --auto           Modo automático (restaurar todos)"
-            echo "  -h, --help       Mostrar esta ajuda"
+            echo "  --dir=PATH              Diretório base"
+            echo "  --batch=NOME            Selecionar um lote exato"
+            echo "  --dump=NOME             Selecionar container de origem ou arquivo (repetível)"
+            echo "  --target-container=NOME Sobrescrever destino quando há um único dump"
+            echo "  --auto, --yes            Não perguntar; exclui Coolify por padrão"
+            echo "  --include-coolify        Autorizar Coolify explicitamente no modo automático"
+            echo "  --exclude-coolify        Excluir Coolify no modo automático (padrão)"
+            echo "  --json-report=ARQUIVO    Gravar resultado JSON"
+            echo "  --junit-report=ARQUIVO   Gravar resultado JUnit XML"
+            echo "  -h, --help               Mostrar esta ajuda"
             echo ""
             echo "Formatos suportados:"
             echo "  - MySQL/MariaDB: *-mysql-*.sql.gz ou *-mysql-*.sql"
@@ -62,6 +94,114 @@ while [[ $# -gt 0 ]]; do
         *) log_error "Opção desconhecida: $1"; exit 1 ;;
     esac
 done
+
+if [ -n "$TARGET_CONTAINER_OVERRIDE" ] && [ ${#DUMP_FILTERS[@]} -ne 1 ]; then
+    log_error "--target-container exige exatamente um --dump"
+    exit 2
+fi
+
+is_coolify_container() {
+    [[ "$1" =~ coolify ]]
+}
+
+record_restore_result() {
+    RESULT_FILES+=("$1")
+    RESULT_SOURCES+=("$2")
+    RESULT_TARGETS+=("$3")
+    RESULT_STATUSES+=("$4")
+}
+
+update_restore_result() {
+    local file="$1"
+    local target="$2"
+    local status="$3"
+    local i
+
+    for ((i=0; i<${#RESULT_FILES[@]}; i++)); do
+        if [ "${RESULT_FILES[$i]}" = "$file" ] && [ "${RESULT_TARGETS[$i]}" = "$target" ]; then
+            RESULT_STATUSES[$i]="$status"
+            return 0
+        fi
+    done
+}
+
+write_restore_reports() {
+    local exit_code="$1"
+    local status="failed"
+    local total=${#RESULT_FILES[@]}
+    local i
+    local comma=""
+    local transport="${VPSGUARDIAN_RESTORE_SOURCE:-local}"
+    local archive_sha256="${VPSGUARDIAN_RESTORE_ARCHIVE_SHA256:-}"
+
+    [ "$REPORT_WRITTEN" = true ] && return 0
+    REPORT_WRITTEN=true
+    [ "$exit_code" -eq 0 ] && status="passed"
+
+    if [ -n "$JSON_REPORT" ]; then
+        if vpsg_prepare_report_path "$JSON_REPORT"; then
+            {
+                printf '{\n'
+                printf '  "status": "%s",\n' "$status"
+                printf '  "exit_code": %s,\n' "$exit_code"
+                printf '  "source": "%s",\n' "$(vpsg_json_escape "$transport")"
+                printf '  "batch": "%s",\n' "$(vpsg_json_escape "${VPSGUARDIAN_RESTORE_BATCH:-${BATCH_NAME:-$(basename "$DUMP_DIR")}}")"
+                printf '  "archive_sha256": "%s",\n' "$(vpsg_json_escape "$archive_sha256")"
+                printf '  "selected": %s,\n' "${#SELECTED_DUMPS[@]}"
+                printf '  "succeeded": %s,\n' "$SUCCESS_COUNT"
+                printf '  "failed": %s,\n' "$FAIL_COUNT"
+                printf '  "results": ['
+                for ((i=0; i<total; i++)); do
+                    printf '%s\n    {"dump":"%s","source_container":"%s","target_container":"%s","status":"%s"}' \
+                        "$comma" \
+                        "$(vpsg_json_escape "${RESULT_FILES[$i]}")" \
+                        "$(vpsg_json_escape "${RESULT_SOURCES[$i]}")" \
+                        "$(vpsg_json_escape "${RESULT_TARGETS[$i]}")" \
+                        "$(vpsg_json_escape "${RESULT_STATUSES[$i]}")"
+                    comma=","
+                done
+                [ "$total" -gt 0 ] && printf '\n  '
+                printf ']\n}\n'
+            } > "$JSON_REPORT"
+        else
+            log_error "Não foi possível preparar relatório JSON: $JSON_REPORT"
+        fi
+    fi
+
+    if [ -n "$JUNIT_REPORT" ]; then
+        if vpsg_prepare_report_path "$JUNIT_REPORT"; then
+            {
+                if [ "$total" -eq 0 ]; then
+                    printf '<testsuite name="vpsguardian.restore" tests="1" failures="%s">\n' "$([ "$exit_code" -eq 0 ] && echo 0 || echo 1)"
+                    printf '  <testcase name="restore-preflight">'
+                    [ "$exit_code" -ne 0 ] && printf '<failure message="restore failed before processing dumps"/>'
+                    printf '</testcase>\n'
+                else
+                    printf '<testsuite name="vpsguardian.restore" tests="%s" failures="%s">\n' "$total" "$FAIL_COUNT"
+                    for ((i=0; i<total; i++)); do
+                        printf '  <testcase name="%s -&gt; %s">' \
+                            "$(vpsg_xml_escape "${RESULT_FILES[$i]}")" \
+                            "$(vpsg_xml_escape "${RESULT_TARGETS[$i]}")"
+                        if [ "${RESULT_STATUSES[$i]}" != "passed" ]; then
+                            printf '<failure message="%s"/>' "$(vpsg_xml_escape "${RESULT_STATUSES[$i]}")"
+                        fi
+                        printf '</testcase>\n'
+                    done
+                fi
+                printf '</testsuite>\n'
+            } > "$JUNIT_REPORT"
+        else
+            log_error "Não foi possível preparar relatório JUnit: $JUNIT_REPORT"
+        fi
+    fi
+}
+
+on_restore_exit() {
+    local exit_code=$?
+    write_restore_reports "$exit_code"
+}
+
+trap on_restore_exit EXIT
 
 ### ========== FUNÇÕES DE DETECÇÃO ==========
 
@@ -88,7 +228,7 @@ find_matching_container() {
 
     while [ $waited -lt $max_wait ]; do
         # Verifica se está rodando
-        if docker ps --format '{{.Names}}' | grep -q "^${original_name}$"; then
+        if docker ps --format '{{.Names}}' | grep -Fxq -- "$original_name"; then
             echo "$original_name"
             return 0
         fi
@@ -306,22 +446,48 @@ if [ ! -d "$DUMP_DIR" ]; then
     fi
 fi
 
-# Detectar subdiretórios de lotes
-LOTES=($(find "$DUMP_DIR" -mindepth 1 -maxdepth 1 -type d | sort -r))
+directory_has_dumps() {
+    find "$1" -maxdepth 1 -type f \
+        \( -name "*-mysql-*.sql*" -o -name "*-postgres-*.sql*" -o -name "*-mongodb-*.tar.gz" \) \
+        -print -quit 2>/dev/null | grep -q .
+}
 
-# Verificar se há lotes disponíveis
-if [ ${#LOTES[@]} -eq 0 ]; then
-    echo ""
-    log_warning "Nenhum lote de backup encontrado em: $DUMP_DIR"
-    echo ""
-    echo "Para criar backups, execute:"
-    echo "  • Menu Principal → 2 (Backups) → 2 (Backup de Bancos via Dump SQL)"
-    echo "  • Ou diretamente: $SCRIPT_DIR/migrar-databases-dump.sh --target=local --auto"
-    echo ""
-    exit 0
-fi
+if [ -n "$BATCH_NAME" ]; then
+    if [[ ! "$BATCH_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || [[ "$BATCH_NAME" == "." || "$BATCH_NAME" == ".." ]]; then
+        log_error "Nome de lote inválido: $BATCH_NAME"
+        exit 2
+    fi
 
-if [ ${#LOTES[@]} -gt 0 ] && [ "$AUTO_MODE" = false ]; then
+    if [ ! -d "$DUMP_DIR/$BATCH_NAME" ]; then
+        log_error "Lote não encontrado: $DUMP_DIR/$BATCH_NAME"
+        exit 2
+    fi
+
+    DUMP_DIR="$DUMP_DIR/$BATCH_NAME"
+    log_info "Lote selecionado: $BATCH_NAME"
+elif ! directory_has_dumps "$DUMP_DIR"; then
+    LOTES=()
+    while IFS= read -r -d '' lote; do
+        LOTES+=("$lote")
+    done < <(find "$DUMP_DIR" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -zr)
+
+    if [ ${#LOTES[@]} -eq 0 ]; then
+        echo ""
+        log_warning "Nenhum lote de backup encontrado em: $DUMP_DIR"
+        echo ""
+        echo "Para criar backups, execute:"
+        echo "  • Menu Principal → 2 (Backups) → 2 (Backup de Bancos via Dump SQL)"
+        echo "  • Ou diretamente: $SCRIPT_DIR/migrar-databases-dump.sh --target=local --auto"
+        echo ""
+        [ "$AUTO_MODE" = true ] && exit 2
+        exit 0
+    fi
+
+    if [ "$AUTO_MODE" = true ]; then
+        log_error "Modo automático exige --batch=NOME quando --dir contém lotes"
+        exit 2
+    fi
+
     log_section "Lotes de Backup Disponíveis"
     
     for i in "${!LOTES[@]}"; do
@@ -354,6 +520,7 @@ done < <(find "$DUMP_DIR" -type f \( -name "*-mysql-*.sql*" -o -name "*-postgres
 
 if [ ${#DUMP_FILES[@]} -eq 0 ]; then
     log_warning "Nenhum dump encontrado em $DUMP_DIR"
+    [ "$AUTO_MODE" = true ] && exit 2
     exit 0
 fi
 
@@ -391,9 +558,48 @@ log_info "Total: ${#DUMP_FILES[@]} dump(s) encontrado(s)"
 echo ""
 
 ### ========== SELECIONAR DUMPS ==========
-if [ "$AUTO_MODE" = true ]; then
+if [ ${#DUMP_FILTERS[@]} -gt 0 ]; then
+    for filter in "${DUMP_FILTERS[@]}"; do
+        match_count=0
+        match_index=""
+
+        for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
+            if [ "${DUMP_INFO["$i,container"]}" = "$filter" ] || \
+               [ "$(basename "${DUMP_INFO["$i,file"]}")" = "$filter" ]; then
+                match_index="$i"
+                match_count=$((match_count + 1))
+            fi
+        done
+
+        if [ "$match_count" -eq 0 ]; then
+            log_error "Dump não encontrado para o filtro exato: $filter"
+            exit 2
+        elif [ "$match_count" -gt 1 ]; then
+            log_error "Filtro ambíguo, use o nome completo do arquivo: $filter"
+            exit 2
+        fi
+
+        if is_coolify_container "${DUMP_INFO["$match_index,container"]}" && \
+           [ "$INCLUDE_COOLIFY" != true ]; then
+            log_error "Restore automático do Coolify exige --include-coolify"
+            exit 2
+        fi
+
+        already_selected=false
+        for selected in "${SELECTED_DUMPS[@]}"; do
+            [ "$selected" = "$match_index" ] && already_selected=true
+        done
+        [ "$already_selected" = false ] && SELECTED_DUMPS+=("$match_index")
+    done
+elif [ "$AUTO_MODE" = true ]; then
+    log_info "Modo automático: restaurando dumps de aplicações; Coolify excluído por padrão"
     for ((i=0; i<${#DUMP_FILES[@]}; i++)); do
-        SELECTED_DUMPS+=($i)
+        container_name="${DUMP_INFO["$i,container"]}"
+        if is_coolify_container "$container_name" && [ "$INCLUDE_COOLIFY" != true ]; then
+            log_warning "  Pulando: $container_name (Coolify; use --include-coolify para autorizar)"
+            continue
+        fi
+        SELECTED_DUMPS+=("$i")
     done
 else
     echo "════════════════════════════════════════════════════════════"
@@ -462,13 +668,20 @@ else
     esac
 fi
 
-if [ ${#SELECTED_DUMPS[@]} -eq 0 ]; then log_warning "Nenhum dump válido selecionado"; exit 0; fi
+if [ ${#SELECTED_DUMPS[@]} -eq 0 ]; then
+    log_warning "Nenhum dump válido selecionado"
+    [ "$AUTO_MODE" = true ] && exit 2
+    exit 0
+fi
+
+if [ -n "$TARGET_CONTAINER_OVERRIDE" ] && [ ${#SELECTED_DUMPS[@]} -ne 1 ]; then
+    log_error "--target-container só pode ser usado com um único dump selecionado"
+    exit 2
+fi
 
 ### ========== RESTAURAR DUMPS ==========
 log_section "Restaurando Dumps"
 
-SUCCESS_COUNT=0
-FAIL_COUNT=0
 OFFLINE_CONTAINERS=()
 FAILED_CONTAINERS=()
 OFFLINE_DUMPS=()
@@ -476,7 +689,9 @@ OFFLINE_DUMPS=()
 for idx in "${SELECTED_DUMPS[@]}"; do
     dump_file="${DUMP_INFO["$idx,file"]}"
     db_type="${DUMP_INFO["$idx,type"]}"
-    target_container="${DUMP_INFO["$idx,container"]}"
+    source_container="${DUMP_INFO["$idx,container"]}"
+    target_container="$source_container"
+    [ -n "$TARGET_CONTAINER_OVERRIDE" ] && target_container="$TARGET_CONTAINER_OVERRIDE"
     filename=$(basename "$dump_file")
 
     echo ""
@@ -484,11 +699,12 @@ for idx in "${SELECTED_DUMPS[@]}"; do
 
     # Validação Severa: O container está online?
     if [ -z "$(find_matching_container "$target_container")" ]; then
-        log_error "  O container original '$target_container' está OFFLINE ou não existe mais."
+        log_error "  O container de destino '$target_container' está OFFLINE ou não existe mais."
         log_info "  Pulando restauração para evitar corromper outros bancos."
         OFFLINE_CONTAINERS+=("$target_container")
         OFFLINE_DUMPS+=("$idx")
         ((FAIL_COUNT++))
+        record_restore_result "$filename" "$source_container" "$target_container" "offline"
         continue
     fi
 
@@ -500,6 +716,7 @@ for idx in "${SELECTED_DUMPS[@]}"; do
         log_error "  Não foi possível obter credenciais do container"
         FAILED_CONTAINERS+=("$target_container (sem credenciais)")
         ((FAIL_COUNT++))
+        record_restore_result "$filename" "$source_container" "$target_container" "credentials_error"
         continue
     fi
 
@@ -508,36 +725,43 @@ for idx in "${SELECTED_DUMPS[@]}"; do
             if restore_mysql "$target_container" "$dump_file" "$credentials"; then
                 log_success "  Restaurado com sucesso!"
                 ((SUCCESS_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "passed"
             else
                 log_error "  Falha na restauração."
                 FAILED_CONTAINERS+=("$target_container (erro MySQL)")
                 ((FAIL_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "mysql_error"
             fi
             ;;
         postgres)
             if restore_postgres "$target_container" "$dump_file" "$credentials"; then
                 log_success "  Restaurado com sucesso!"
                 ((SUCCESS_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "passed"
             else
                 log_error "  Falha na restauração."
                 FAILED_CONTAINERS+=("$target_container (erro PostgreSQL)")
                 ((FAIL_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "postgres_error"
             fi
             ;;
         mongodb)
             if restore_mongodb "$target_container" "$dump_file" "$credentials"; then
                 log_success "  Restaurado com sucesso!"
                 ((SUCCESS_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "passed"
             else
                 log_error "  Falha na restauração."
                 FAILED_CONTAINERS+=("$target_container (erro MongoDB)")
                 ((FAIL_COUNT++))
+                record_restore_result "$filename" "$source_container" "$target_container" "mongodb_error"
             fi
             ;;
         *)
             log_error "  Tipo de banco desconhecido"
             FAILED_CONTAINERS+=("$target_container (tipo desconhecido)")
             ((FAIL_COUNT++))
+            record_restore_result "$filename" "$source_container" "$target_container" "unknown_type"
             ;;
     esac
 done
@@ -610,8 +834,9 @@ if [ ${#FAILED_CONTAINERS[@]} -gt 0 ]; then
     echo ""
 fi
 
-# Oferecer retry apenas se tem containers offline
-if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
+# Oferecer retry apenas se tem containers offline e a execução é interativa
+FINAL_FAIL_COUNT=$FAIL_COUNT
+if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ] && [ "$AUTO_MODE" = false ]; then
     read -p "Deseja tentar restaurar os dumps pendentes agora? (s/N): " retry
     retry=${retry,,}  # Converter para minúsculas
 
@@ -627,7 +852,9 @@ if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
         for idx in "${OFFLINE_DUMPS[@]}"; do
             dump_file="${DUMP_INFO["$idx,file"]}"
             db_type="${DUMP_INFO["$idx,type"]}"
-            target_container="${DUMP_INFO["$idx,container"]}"
+            source_container="${DUMP_INFO["$idx,container"]}"
+            target_container="$source_container"
+            [ -n "$TARGET_CONTAINER_OVERRIDE" ] && target_container="$TARGET_CONTAINER_OVERRIDE"
             filename=$(basename "$dump_file")
 
             echo ""
@@ -655,6 +882,7 @@ if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
                     if restore_mysql "$target_container" "$dump_file" "$credentials"; then
                         log_success "  Restaurado com sucesso!"
                         ((RETRY_SUCCESS++))
+                        update_restore_result "$filename" "$target_container" "passed"
                     else
                         log_error "  Falha na restauração."
                         ((RETRY_FAIL++))
@@ -664,6 +892,7 @@ if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
                     if restore_postgres "$target_container" "$dump_file" "$credentials"; then
                         log_success "  Restaurado com sucesso!"
                         ((RETRY_SUCCESS++))
+                        update_restore_result "$filename" "$target_container" "passed"
                     else
                         log_error "  Falha na restauração."
                         ((RETRY_FAIL++))
@@ -673,6 +902,7 @@ if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
                     if restore_mongodb "$target_container" "$dump_file" "$credentials"; then
                         log_success "  Restaurado com sucesso!"
                         ((RETRY_SUCCESS++))
+                        update_restore_result "$filename" "$target_container" "passed"
                     else
                         log_error "  Falha na restauração."
                         ((RETRY_FAIL++))
@@ -692,7 +922,11 @@ if [ ${#OFFLINE_CONTAINERS[@]} -gt 0 ]; then
         else
             log_warning "Ainda existem $RETRY_FAIL dump(s) que não puderam ser restaurados."
         fi
+
+        FINAL_FAIL_COUNT=$((FAIL_COUNT - RETRY_SUCCESS))
     fi
 fi
 
+FAIL_COUNT=$FINAL_FAIL_COUNT
+[ "$FAIL_COUNT" -gt 0 ] && exit 1
 exit 0

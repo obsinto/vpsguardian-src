@@ -84,6 +84,7 @@ status-vps                # = vps-guardian status
 - **[RETENCAO-BACKUPS.md](docs/RETENCAO-BACKUPS.md)** - Gestão de retenção
 - **[MIGRACAO-APPS.md](docs/MIGRACAO-APPS.md)** - Migração COMPLETA (Coolify + Apps)
 - **[GUIA-MIGRACAO-COMPLETA.md](docs/GUIA-MIGRACAO-COMPLETA.md)** - Migração apenas Coolify
+- **[PLANO-TESTES-E2E-MIGRACAO-RESTAURACAO.md](docs/PLANO-TESTES-E2E-MIGRACAO-RESTAURACAO.md)** - Testes reais de migração e restore
 - **[FIREWALL-GUIDE.md](docs/FIREWALL-GUIDE.md)** - Configuração de firewall
 - **[COMANDOS.md](docs/COMANDOS.md)** - Referência de comandos
 - **[GUIA-MONITOR-PREVENTIVO.md](docs/GUIA-MONITOR-PREVENTIVO.md)** - Monitor integrado, atualização, relatórios e emergência

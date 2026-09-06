@@ -8,6 +8,7 @@
 # Carregar bibliotecas compartilhadas
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/common.sh"
+source "$SCRIPT_DIR/../lib/reporting.sh"
 
 ### ========== CONFIGURAÇÃO PADRÃO ==========
 NEW_SERVER_IP="${NEW_SERVER_IP:-}"
@@ -18,6 +19,12 @@ SSH_PRIVATE_KEY_PATH="${SSH_PRIVATE_KEY_PATH:-/root/.ssh/id_rsa}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 SKIP_VOLUMES=false
 AUTO_MODE=false
+REPLACE_EXISTING=false
+REQUIRE_DESTINATION_MARKER=""
+JSON_REPORT=""
+JUNIT_REPORT=""
+CURRENT_PHASE="arguments"
+MIGRATION_STARTED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
 VOLUMES_BACKUP_DIR=""
 
@@ -38,6 +45,22 @@ while [[ $# -gt 0 ]]; do
             SKIP_VOLUMES=true
             shift
             ;;
+        --replace-existing)
+            REPLACE_EXISTING=true
+            shift
+            ;;
+        --require-destination-marker=*)
+            REQUIRE_DESTINATION_MARKER="${1#*=}"
+            shift
+            ;;
+        --json-report=*)
+            JSON_REPORT="${1#*=}"
+            shift
+            ;;
+        --junit-report=*)
+            JUNIT_REPORT="${1#*=}"
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -47,6 +70,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --config=FILE      Load configuration from file"
             echo "  --auto             Run in automatic mode (no prompts)"
             echo "  --skip-volumes     Skip application volumes migration"
+            echo "  --replace-existing Replace existing Coolify only with E2E guard enabled"
+            echo "  --require-destination-marker=PATH  Require marker and ALLOW_DESTRUCTIVE_E2E=YES"
+            echo "  --json-report=FILE Write a machine-readable JSON result"
+            echo "  --junit-report=FILE Write a JUnit XML result"
             echo "  -h, --help         Show this help"
             echo ""
             echo "Este script executa:"
@@ -67,12 +94,61 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Carregar configuração
-if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+if [ -n "$CONFIG_FILE" ]; then
+    if [ ! -f "$CONFIG_FILE" ]; then
+        log_error "Configuration file not found: $CONFIG_FILE"
+        exit 2
+    fi
     log_info "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"
 fi
 
+MIGRATE_PROXY="${MIGRATE_PROXY:-true}"
+KEY_ROTATION_MODE="${KEY_ROTATION_MODE:-1}"
+DESTINATION_MARKER_FILE="${REQUIRE_DESTINATION_MARKER:-${DESTINATION_MARKER_FILE:-}}"
+
+write_migration_reports() {
+    local exit_code="$1"
+    local status="failed"
+    local finished_at
+    finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    [ "$exit_code" -eq 0 ] && status="passed"
+
+    if [ -n "$JSON_REPORT" ] && vpsg_prepare_report_path "$JSON_REPORT"; then
+        {
+            printf '{\n'
+            printf '  "status": "%s",\n' "$status"
+            printf '  "exit_code": %s,\n' "$exit_code"
+            printf '  "phase": "%s",\n' "$(vpsg_json_escape "$CURRENT_PHASE")"
+            printf '  "target": "%s",\n' "$(vpsg_json_escape "$NEW_SERVER_USER@$NEW_SERVER_IP:$NEW_SERVER_PORT")"
+            printf '  "started_at": "%s",\n' "$MIGRATION_STARTED_AT"
+            printf '  "finished_at": "%s",\n' "$finished_at"
+            printf '  "skip_volumes": %s,\n' "$SKIP_VOLUMES"
+            printf '  "volume_backups": %s\n' "${backup_count:-0}"
+            printf '}\n'
+        } > "$JSON_REPORT"
+    fi
+
+    if [ -n "$JUNIT_REPORT" ] && vpsg_prepare_report_path "$JUNIT_REPORT"; then
+        {
+            printf '<testsuite name="vpsguardian.migration" tests="1" failures="%s">\n' "$([ "$exit_code" -eq 0 ] && echo 0 || echo 1)"
+            printf '  <testcase name="complete-migration-to-%s">' "$(vpsg_xml_escape "$NEW_SERVER_IP")"
+            [ "$exit_code" -ne 0 ] && printf '<failure message="failed in phase %s"/>' "$(vpsg_xml_escape "$CURRENT_PHASE")"
+            printf '</testcase>\n'
+            printf '</testsuite>\n'
+        } > "$JUNIT_REPORT"
+    fi
+}
+
+on_migration_exit() {
+    local exit_code=$?
+    write_migration_reports "$exit_code"
+}
+
+trap on_migration_exit EXIT
+
 ### ========== VALIDAÇÃO ==========
+CURRENT_PHASE="preflight"
 log_section "VPS Guardian - Migração Completa Coolify + Apps"
 
 if [ -z "$NEW_SERVER_IP" ]; then
@@ -94,6 +170,54 @@ log_info "Target server: $NEW_SERVER_USER@$NEW_SERVER_IP:$NEW_SERVER_PORT"
 if [ ! -f "$SSH_PRIVATE_KEY_PATH" ]; then
     log_error "SSH key not found: $SSH_PRIVATE_KEY_PATH"
     exit 1
+fi
+
+if [ "$REPLACE_EXISTING" = true ] && [ -z "$DESTINATION_MARKER_FILE" ]; then
+    log_error "--replace-existing exige --require-destination-marker=PATH"
+    exit 2
+fi
+
+if [ -n "$DESTINATION_MARKER_FILE" ]; then
+    if [[ ! "$DESTINATION_MARKER_FILE" =~ ^/[A-Za-z0-9._/-]+$ ]] || \
+       [[ "/$DESTINATION_MARKER_FILE/" == *"/../"* ]]; then
+        log_error "Caminho de marcador inválido: $DESTINATION_MARKER_FILE"
+        exit 2
+    fi
+    if [ "${ALLOW_DESTRUCTIVE_E2E:-}" != "YES" ]; then
+        log_error "Destino protegido: defina ALLOW_DESTRUCTIVE_E2E=YES para usar o marcador"
+        exit 2
+    fi
+fi
+
+SSH_PREFLIGHT=(
+    ssh -i "$SSH_PRIVATE_KEY_PATH" -p "$NEW_SERVER_PORT"
+    -o BatchMode=yes -o ConnectTimeout=10
+    "$NEW_SERVER_USER@$NEW_SERVER_IP"
+)
+
+log_info "Validating destination SSH before creating backups..."
+if ! "${SSH_PREFLIGHT[@]}" "exit" >/dev/null 2>&1; then
+    log_error "Cannot connect to destination with the configured SSH key"
+    exit 1
+fi
+
+SOURCE_MACHINE_ID=$(cat /etc/machine-id 2>/dev/null)
+DESTINATION_MACHINE_ID=$("${SSH_PREFLIGHT[@]}" "cat /etc/machine-id" 2>/dev/null)
+if [ -z "$SOURCE_MACHINE_ID" ] || [ -z "$DESTINATION_MACHINE_ID" ]; then
+    log_error "Could not compare source and destination machine identities"
+    exit 1
+fi
+if [ "$SOURCE_MACHINE_ID" = "$DESTINATION_MACHINE_ID" ]; then
+    log_error "Source and destination have the same /etc/machine-id; aborting"
+    exit 2
+fi
+
+if [ -n "$DESTINATION_MARKER_FILE" ]; then
+    if ! "${SSH_PREFLIGHT[@]}" "test -f '$DESTINATION_MARKER_FILE'" >/dev/null 2>&1; then
+        log_error "Required destination marker not found: $DESTINATION_MARKER_FILE"
+        exit 2
+    fi
+    log_success "Disposable destination marker validated"
 fi
 
 # Contar volumes
@@ -131,6 +255,7 @@ if [ "$AUTO_MODE" = false ]; then
 fi
 
 ### ========== STEP 1: BACKUP COOLIFY ==========
+CURRENT_PHASE="backup_coolify"
 log_section "Step 1/5: Backup Coolify"
 
 log_info "Running backup-coolify.sh..."
@@ -155,6 +280,7 @@ log_success "Coolify backup: $(basename $BACKUP_FILE)"
 
 ### ========== STEP 2: BACKUP VOLUMES (MODO ROBUSTO) ==========
 if [ "$SKIP_VOLUMES" = false ]; then
+    CURRENT_PHASE="backup_volumes"
     log_section "Step 2/5: Backup Docker Volumes (Modo Robusto)"
 
     if ! VOLUMES_BACKUP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/vpsguardian-volumes-migration.XXXXXX"); then
@@ -195,6 +321,7 @@ else
 fi
 
 ### ========== STEP 3: MIGRATE COOLIFY ==========
+CURRENT_PHASE="migrate_coolify"
 log_section "Step 3/5: Migrate Coolify to New Server"
 
 # Preparar variáveis para migrar-coolify.sh
@@ -203,14 +330,15 @@ export NEW_SERVER_USER
 export NEW_SERVER_PORT
 export SSH_PRIVATE_KEY_PATH
 export BACKUP_FILE
+export MIGRATE_PROXY
+export KEY_ROTATION_MODE
 
 log_info "Running migrar-coolify.sh..."
 
-if [ "$AUTO_MODE" = true ]; then
-    "$SCRIPT_DIR/migrar-coolify.sh" --auto
-else
-    "$SCRIPT_DIR/migrar-coolify.sh"
-fi
+COOLIFY_MIGRATION_ARGS=()
+[ "$AUTO_MODE" = true ] && COOLIFY_MIGRATION_ARGS+=(--auto)
+[ "$REPLACE_EXISTING" = true ] && COOLIFY_MIGRATION_ARGS+=(--replace-existing)
+"$SCRIPT_DIR/migrar-coolify.sh" "${COOLIFY_MIGRATION_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
     log_error "Coolify migration failed"
@@ -223,6 +351,7 @@ log_success "Coolify migrated successfully"
 
 ### ========== STEP 4: TRANSFER VOLUMES ==========
 if [ "$SKIP_VOLUMES" = false ] && [ "$backup_count" -gt 0 ]; then
+    CURRENT_PHASE="transfer_volumes"
     log_section "Step 4/5: Transfer Volumes to New Server"
 
     # Preparar configuração para transfer-volumes.sh
@@ -250,6 +379,7 @@ fi
 
 ### ========== STEP 5: RESTORE VOLUMES (MODO INTELIGENTE) ==========
 if [ "$SKIP_VOLUMES" = false ] && [ "$backup_count" -gt 0 ]; then
+    CURRENT_PHASE="restore_volumes"
     log_section "Step 5/5: Restore Volumes on New Server (Modo Inteligente)"
 
     log_info "Usando restore inteligente com fallback automático..."
@@ -344,4 +474,5 @@ echo "     Dumps SQL disponíveis em: /root/coolify-volumes-backup/"
 echo ""
 
 log_success "Migration completed successfully with intelligent database handling"
+CURRENT_PHASE="complete"
 exit 0
